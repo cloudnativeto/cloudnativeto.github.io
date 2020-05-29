@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+
+<html lang="zh-cn"><head>
+  <meta charset="utf-8">
+  <title>Kubernetes v1.17&#43; 集群下 CNI 使用 VXLAN 模式 SVC 有 63 秒延迟的触发原因定位 | 云原生社区</title>
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="本文为使用工具排查出v1.17&#43;的kubernetes集群下为何CNI的VXLAN模式下有超时，并且给出了三种解决方案和定位到问题起源。">
+  
+  <meta name="author" content="Cloud Native Community">
+  <meta name="generator" content="Hugo 0.55.5" />
+
+  <!-- plugins -->
+  
+  <link rel="stylesheet" href="/plugins/bootstrap/bootstrap.min.css">
+  
+  <link rel="stylesheet" href="/plugins/slick/slick.css">
+  
+  <link rel="stylesheet" href="/plugins/fontawesome/font-awesome.min.css">
+  
+  <link rel="stylesheet" href="/plugins/animate/animate.css">
+  
+  <link rel="stylesheet" href="/plugins/venobox/venobox.css">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="stylesheet" href="/scss/style.min.css" media="screen">
+
+  <!--Favicon-->
+  <link rel="shortcut icon" href="/images/favicon.png " type="image/x-icon">
+  <link rel="icon" href="/images/favicon.png " type="image/x-icon">
+
+</head>
+<body>
+<!-- header -->
+<header>
+  
+
+  <!-- navigation -->
+  <div class="navigation bg-white position-relative">
+    <div class="container">
+      <nav class="navbar navbar-expand-lg navbar-light bg-white">
+        <a class="navbar-brand" href="/"><img class="img-fluid pb-lg-3" src="/images/logo.png" width="189px" alt="Cloud Native Community"></a>
+        <button class="navbar-toggler border-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            <li class="nav-item">
+              <a class="nav-link" href="/"></a>
+            </li>
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/about">关于</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/blog">博客</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/team">团队</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/contact">联系</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/contribute">投稿</a>
+            </li>
+            
+            
+          </ul>
+
+          
+          
+
+          
+          <!-- search -->
+          <div class="search px-4">
+            <button id="searchOpen" class="search-btn"><i class="fa fa-search text-dark"></i></button>
+            <div class="search-wrapper">
+              <form action="/search">
+                <input class="search-box form-control" id="search-query" name="s" type="search" placeholder="输入搜索词">
+              </form>
+              <button id="searchClose" class="search-close"><i class="fa fa-close text-dark"></i></button>
+            </div>
+          </div>
+          
+          
+          <!-- get start btn -->
+          <a href="/contact" class="btn btn-primary hover-ripple">加入我们</a>
+          
+        </div>
+      </nav>
+    </div>
+  </div>
+  <!-- /navigation -->
+</header>
+<!-- /header -->
+
+
+<!-- page title -->
+<section class="section bg-cover overlay" style="background-image: url('/'),url('/'),url('/images/backgrounds/page-title.jpg');">
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <h2 class="text-white mb-3">Kubernetes v1.17&#43; 集群下 CNI 使用 VXLAN 模式 SVC 有 63 秒延迟的触发原因定位</h2>
+        <!-- breadcrumb -->
+        
+        <p class="text-white">本文为使用工具排查出v1.17+的kubernetes集群下为何CNI的VXLAN模式下有超时，并且给出了三种解决方案和定位到问题起源。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /page title -->
+
+
+<!-- blog details -->
+<section class="section">
+  <div class="container">
+    <div class="row">
+      <div class="col-lg-8">
+        <!-- post thumb -->
+        <div class="position-relative mb-5">
+          <img src="/"  onerror="this.src='\/images\/blog\/flannel-vxlan.png'" alt="post thumb" class="img-fluid w-100">
+           <div class="card-type">Kubernetes</div>
+        </div>
+        <div class="card-meta text-uppercase mb-2">作者  <strong class="text-dark"><a href="https://zhangguanzhang.github.io/">张馆长</a></strong> 发表于 <strong class="text-dark">2020年5月28日</strong></div>
+        <div class="content">
+          
+
+<h2 id="前言">前言</h2>
+
+<p>这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的A记录 UDP 下查询可能有问题。原因是 <code>v1.17+</code> 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面， WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是<code>05/28</code>，最开始发现是上周五也就是<code>05/23</code>号，文章从时间线写起，因为很多时候想发文章但是没空。</p>
+
+<h2 id="由来">由来</h2>
+
+<p>上周五我经过同事的工位看到同事的桌面是 <code>kubectl get po</code> 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套<code>1.18.2</code>的集群。1.18的 kube-proxy 的 ipvs 包的 parseIP 有 bug ，我推荐他换<code>v1.17.5</code>。他当时在部署一个入门的 SVC 实验，无法解析域名。使用dig命令排查了下，下面是对照:</p>
+
+<ul>
+<li><code>dig @&lt;podIP&gt; +short kubernetes.default.svc.cluster.local</code> 能解析</li>
+<li><code>dig @10.96.0.10 +short kubernetes.default.svc.cluster.local</code> 超时</li>
+</ul>
+
+<p>很多市面上的kubeadm部署教程都是直接命令 <code>kubeadm init</code> 的，所以我推荐同事去按照我文章的 <a href="https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/">kubeadm部署</a> 一套后再试试，叫他用<code>v1.17</code>的最新版本<code>v1.17.5</code>，结果还是上面一样。 coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：</p>
+
+<ul>
+<li><code>curl -I 10.96.0.10:9153/metrics</code> 超时，很久之后才有返回</li>
+<li><code>curl -I &lt;podIP&gt;:9153/metrics</code> 能直接返回</li>
+</ul>
+
+<p>涉及到本次排查的信息为：</p>
+
+<pre><code class="language-shell">$ kubectl get node -o wide
+NAME     STATUS   ROLES    AGE    VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                KERNEL-VERSION          CONTAINER-RUNTIME
+master   Ready    master   7d8h   v1.18.2   10.0.100.3    &lt;none&gt;        CentOS Linux 7 (Core)   3.10.0-957.el7.x86_64   docker://19.3.8
+node1    Ready    &lt;none&gt;   7d7h   v1.18.2   10.0.100.4    &lt;none&gt;        CentOS Linux 7 (Core)   3.10.0-957.el7.x86_64   docker://19.3.8
+node2    Ready    &lt;none&gt;   7d7h   v1.18.2   10.0.100.15   &lt;none&gt;        CentOS Linux 7 (Core)   3.10.0-957.el7.x86_64   docker://19.3.8
+
+$ kubectl get po -o wide -n kube-system -l k8s-app=kube-dns
+NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE    NOMINATED NODE   READINESS GATES
+coredns-546565776c-v5wwg   1/1     Running   2          25h   10.244.2.73   node2   &lt;none&gt;           &lt;none&gt;
+</code></pre>
+
+<p>多次尝试发现很久的时间都是一样，用 time 命令观察了下一直是63秒返回。包括其他任何 SVC 都是这样。</p>
+
+<pre><code class="language-shell">$ time    curl -I 10.96.0.10:9153/metrics
+HTTP/1.1 200 OK
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+Date: Wed, 25 May 2020 08:39:35 GMT
+
+
+real	1m3.091s
+user	0m0.002s
+sys	0m0.007s
+</code></pre>
+
+<p>proxyMode 是 ipvs ，用 ipvsadm 看下超时的时候的状态，一直是<code>SYN_RECV</code>，也就是发送了 SYN ，没收到回包。</p>
+
+<pre><code class="language-shell">$ ipvsadm -lnc |&amp; grep 9153
+TCP 00:59  SYN_RECV    10.96.0.10:41282   10.96.0.10:9153    10.244.2.73:9153
+</code></pre>
+
+<h3 id="抓包">抓包</h3>
+
+<p>因为 CNI 使用的 flannel ，用的 VXLAN 模式。master 上抓9153和<code>flannel.1</code>的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的:</p>
+
+<pre><code class="language-txt">[root@master /root]# tcpdump -nn -i flannel.1 port 9153
+tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+listening on flannel.1, link-type EN10MB (Ethernet), capture size 262144 bytes
+16:30:56.705696 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17148909 ecr 0,nop,wscale 7], length 0
+16:30:57.708489 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17149912 ecr 0,nop,wscale 7], length 0
+16:30:59.712458 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17151916 ecr 0,nop,wscale 7], length 0
+16:31:03.716441 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17155920 ecr 0,nop,wscale 7], length 0
+16:31:11.732562 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17163936 ecr 0,nop,wscale 7], length 0
+16:31:27.764498 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17179968 ecr 0,nop,wscale 7], length 0
+16:31:59.828493 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+16:31:59.829565 IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+16:31:59.829611 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+16:31:59.829714 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+16:31:59.829897 IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+16:31:59.831300 IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+16:31:59.831322 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+16:31:59.831435 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+16:31:59.831633 IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+16:31:59.831660 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+</code></pre>
+
+<pre><code class="language-txt">[root@master /root]# tcpdump -nn -i eth0 port 8472
+tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes
+16:30:56.705718 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17148909 ecr 0,nop,wscale 7], length 0
+16:30:57.708523 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17149912 ecr 0,nop,wscale 7], length 0
+16:30:59.712478 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17151916 ecr 0,nop,wscale 7], length 0
+16:31:03.716452 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17155920 ecr 0,nop,wscale 7], length 0
+16:31:11.732590 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17163936 ecr 0,nop,wscale 7], length 0
+16:31:27.764513 IP 10.0.100.3.48683 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17179968 ecr 0,nop,wscale 7], length 0
+16:31:59.828541 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+16:31:59.829521 IP 10.0.100.15.56771 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+16:31:59.829617 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+16:31:59.829729 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+16:31:59.829883 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+16:31:59.831292 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+16:31:59.831327 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+16:31:59.831448 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+16:31:59.831612 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+16:31:59.831665 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+</code></pre>
+
+<pre><code class="language-txt">[root@node2 /root]# tcpdump -nn  -i eth0 port 8472
+tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes
+16:31:59.836137 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+16:31:59.836328 IP 10.0.100.15.56771 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+16:31:59.836811 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+16:31:59.836910 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+16:31:59.836951 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+16:31:59.838385 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+16:31:59.838522 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+16:31:59.838621 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+16:31:59.838703 IP 10.0.100.15.34571 &gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+16:31:59.838836 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+</code></pre>
+
+<p>先看上面的第一部分，搜了下资料，得知 TCP 默认 SYN 报文最大 retry 5次，每次超时了翻倍，<code>1s -&gt; 3s -&gt; 7s -&gt; 15s -&gt; 31s -&gt; 63s</code>。只有63秒的时候 node 的机器上才收到了 VXLAN 的报文。说明 POD 所在 node 压根没收到63秒之前的。</p>
+
+<p>一般 LVS 的 dr 模式下 TCP 的时间戳混乱或者其他几个 ARP 的内核参数不对下 <code>SYN</code> 是一直收不到的而不是63秒后有结果，所以和内核相关参数无关。于是同样上面的步骤 tcpdump 抓包，加上<code>-w filename.pcap</code>选项把抓的包导出下来导入到 wireshark 里准备看看。</p>
+
+<h3 id="报文分析">报文分析</h3>
+
+<p>9153的包 wireshark 里看63秒前面都是 TCP 的 SYN 重传，看到了 master 上向外发送的 VXLAN 报文的时候有了发现。</p>
+
+<p>可以看到 UDP 的 checksum 是<code>0xffff</code>，我对 UDP 报文不太熟悉， UDP 的 header 的 Checksum 没记错的话<code>CRC32</code>校验的，不可能是这种两个字节都置1的 <code>0xffff</code> ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。</p>
+
+<p><img src="vxlan-udp-csum1.png" alt="vxlan1" /></p>
+
+<p>wireshark 的<code>编辑</code>-&gt;<code>首选项</code>-&gt;<code>Protocols</code>-&gt;<code>UDP</code>-&gt;<code>Validate the UDP checksum if possible</code> 勾上更直观看。</p>
+
+<p><img src="vxlan-udp-csum2.png" alt="vxlan1" /></p>
+
+<h3 id="不是根本的解决方法">不是根本的解决方法</h3>
+
+<p>搜了下<code>wireshark linux udp checksum incorrect</code>，都是推荐把 <code>Checksum Offload</code> disable 掉就行了，例如我这里是 flannel ，则是：</p>
+
+<pre><code class="language-shell">$ /sbin/ethtool -K flannel.1 tx-checksum-ip-generic off
+Actual changes:
+tx-checksumming: off
+	tx-checksum-ip-generic: off
+tcp-segmentation-offload: off
+	tx-tcp-segmentation: off [requested on]
+	tx-tcp-ecn-segmentation: off [requested on]
+	tx-tcp6-segmentation: off [requested on]
+	tx-tcp-mangleid-segmentation: off [requested on]
+udp-fragmentation-offload: off [requested on]
+</code></pre>
+
+<p>再测下正常，而 WEAVE 他们也用的 VXLAN 模式，但是他们在创建网卡的时候把这个已经 off 掉了，所以 WEAVE 的 VXLAN 模式在<code>v1.17+</code>集群没出现这个问题。</p>
+
+<pre><code class="language-shell">$ time curl -I 10.96.0.10:9153
+HTTP/1.1 404 Not Found
+Content-Type: text/plain; charset=utf-8
+X-Content-Type-Options: nosniff
+Date: Wed, 27 May 2020 02:14:04 GMT
+Content-Length: 19
+
+
+real	0m0.009s
+user	0m0.005s
+sys	0m0.003s
+</code></pre>
+
+<p>你以为这样就完了？其实并没有，因为我自己维护了一套 <a href="https://github.com/zhangguanzhang/Kubernetes-ansible">ansible 部署 kubernetes</a> 的方案，每次新版本发布我都会实际测下。并且同事反映了他同样云主机开出来用我 ansible 部署<code>v1.17.5</code>没有这个问题。这就很奇怪了，原因后面说，请接着继续看。</p>
+
+<h3 id="什么是checksum-offload">什么是checksum offload</h3>
+
+<p>Checksum Offload 是网卡的一个功能选项。如果该选项开启，则网卡层面会计算需要发送或者接收到的消息的校验和，从而节省 CPU 的计算开销。此时，在需要发送的消息到达网卡前，系统会在报头的校验和字段填充一个随机值。但是，尽管校验和卸载能够降低 CPU 的计算开销，但受到计算能力的限制，某些环境下的一些网络卡计算速度不如主频超过 400MHz 的 CPU 快。</p>
+
+<h2 id="正文">正文</h2>
+
+<h3 id="对照组">对照组</h3>
+
+<p>很奇怪的就是为啥就是我的 ansible 部署的二进制就正常没这个问题，而 kubeadm 部署的就不正常，后面我花时间整了以下几个对照组(期间同事也帮我做了几个条件下的测试，但是不是系统用错了就是版本整错了。。。)，终于找到了问题的范围，下面是我自己统计的对照组信息， kubeadm 和 ansible 版本均为<code>1.17.5</code>测试。os 不重要，因为最终排查出和 os 无关：</p>
+
+<table>
+<thead>
+<tr>
+<th align="left">os</th>
+<th align="center">type(kubeadm or ansible)</th>
+<th align="center">flannel version</th>
+<th align="center">flannel is running in pod?</th>
+<th align="center">will 63 sec delay?</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v0.11.0</td>
+<td align="center">yes</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v0.12.0</td>
+<td align="center">yes</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v0.11.0</td>
+<td align="center">no</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v0.12.0</td>
+<td align="center">no</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v0.11.0</td>
+<td align="center">yes</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v0.12.0</td>
+<td align="center">yes</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v0.11.0</td>
+<td align="center">no</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v0.12.0</td>
+<td align="center">no</td>
+<td align="center">no</td>
+</tr>
+</tbody>
+</table>
+
+<p>这就看起来很迷了。但是排查出和 flannel 无关，感觉 kube-proxy 有关系，然后今天<code>05/28</code>针对 kube-proxy 做了个对照组：</p>
+
+<table>
+<thead>
+<tr>
+<th align="left">os</th>
+<th align="center">type(kubeadm or ansible)</th>
+<th align="center">kube-proxy version</th>
+<th align="center">kube-proxy is running in pod?</th>
+<th align="center">will 63 sec delay?</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v1.17.5</td>
+<td align="center">yes</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v1.17.5</td>
+<td align="center">no</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v1.16.9</td>
+<td align="center">yes</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">kubeadm</td>
+<td align="center">v1.16.9</td>
+<td align="center">no</td>
+<td align="center">no</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v1.17.5</td>
+<td align="center">yes</td>
+<td align="center">yes</td>
+</tr>
+
+<tr>
+<td align="left">7.6</td>
+<td align="center">ansible</td>
+<td align="center">v1.17.5</td>
+<td align="center">no</td>
+<td align="center">no</td>
+</tr>
+</tbody>
+</table>
+
+<p>可以看出就是1.17以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会， 在github 上 <a href="https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0">compare 了下v1.17.0和v1.16.3</a>。</p>
+
+<p>发现了 <a href="https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30">Dockerfile的改动</a> ， <code>1.17.0</code>里的 Dockerfile 的BASEIMAGE是用  <a href="https://github.com/coreos/flannel/pull/1282#issuecomment-635273081">指定了一个源安装了最新的iptables</a>，然后利用<code>update-alternatives</code>把脚本<code>/usr/sbin/iptables-wrapper</code>去替代<code>iptables</code> 来检测应该使用<code>nft</code>还是<code>legacy</code>， hack 下镜像回自带源里的 iptables 验证下。</p>
+
+<pre><code class="language-Dockerfile">FROM registry.aliyuncs.com/google_containers/kube-proxy:v1.17.5
+RUN rm -f /usr/sbin/iptables &amp;&amp; 
+    clean-install iptables
+</code></pre>
+
+<p>构建的镜像推送到了 dockerhub 上<code>zhangguanzhang/hack-kube-proxy:v1.17.5</code>，更改下集群 kube-proxy ds 的镜像。</p>
+
+<pre><code class="language-shell">$ kubectl -n kube-system get ds kube-proxy -o yaml | grep image:
+        image: zhangguanzhang/hack-kube-proxy:v1.17.5
+</code></pre>
+
+<p>测试访问成功。</p>
+
+<pre><code class="language-shell">$ time curl -I 10.96.0.10:9153
+HTTP/1.1 404 Not Found
+Content-Type: text/plain; charset=utf-8
+X-Content-Type-Options: nosniff
+Date: Thu, 28 May 2020 04:47:21 GMT
+Content-Length: 19
+
+
+real	0m0.008s
+user	0m0.003s
+sys	0m0.003s
+</code></pre>
+
+<p>对于这个问题我在 <a href="https://github.com/coreos/flannel/pull/1282">flannel 的 pr</a> 下面也参与了回复，同时在官方 github 上提了一个 <a href="https://github.com/kubernetes/kubernetes/issues/91519">issue</a>。</p>
+
+<p>这个问题的触发是由于<code>v1.17+</code>的 kube-proxy 的 docker 镜像里安装了最新的 iptables ， <code>--random-fully</code>选项<a href="https://github.com/kubernetes/kubernetes/issues/88986#issuecomment-635640143">会触发内核vxlan的bug</a>。</p>
+
+<h2 id="总结">总结</h2>
+
+<p>目前解决问题三种办法:</p>
+
+<ul>
+<li>关闭 CNI 的 VXLAN 网卡的 <code>checksum offload</code></li>
+<li>更改 Docker 镜像</li>
+<li>升级到新内核，具体版本就不知道了，只要在这个 <a href="https://github.com/torvalds/linux/commit/ea64d8d6c675c0bb712689b13810301de9d8f77a">内核pr</a> 合并后出的内核版本都行，有人说这些可以 <code>Stable kernels 5.6.13, 5.4.41, 4.19.123, 4.14.181 and later have the checksum patch included.</code></li>
+</ul>
+
+<h2 id="参考链接">参考链接</h2>
+
+<ul>
+<li><a href="https://blog.csdn.net/u010039418/article/details/78234570">TCP超时重传定时器梳理</a></li>
+<li><a href="https://wiki.wireshark.org/CaptureSetup/Offloading">wireshark文档</a></li>
+<li><a href="https://zh.wikipedia.org/wiki/TCP%E6%A0%A1%E9%AA%8C%E5%92%8C%E5%8D%B8%E8%BD%BD">offloading</a></li>
+</ul>
+
+        </div>
+        <!-- tags -->
+        <div class="mb-3">
+          <h5 class="d-inline-block mr-3">Tags:</h5>
+          <ul class="list-inline d-inline-block">
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/tcpdump"> 
+            Tcpdump</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/vxlan"> , 
+            Vxlan</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/wireshark"> , 
+            Wireshark</a>
+            
+          </ul>
+        </div>
+        
+        
+      </div>
+      <!-- sidebar -->
+<aside class="col-lg-4 order-1 order-lg-2">
+  <!-- latest post -->
+  <div class="bg-white px-4 py-5 box-shadow mb-5">
+    <h4 class="mb-4">最新文章</h4>
+    <!-- post-item -->
+    
+    <div class="media border-bottom border-color pb-3 mb-3">
+      <a href="/blog/v1.17&#43;k8s-vxlan-63s-delay/"><img class="mr-3 post-thumb-sm" src="/images/blog/flannel-vxlan.png"></a>
+      <div class="media-body">
+        <a href="/blog/v1.17&#43;k8s-vxlan-63s-delay/">
+          <h5 class="mt-0">Kubernetes v1.17&#43; 集群下 CNI 使用 VXLAN 模式 SVC 有 63 秒延迟的触发原因定位</h5>
+        </a>
+        2020年5月28日
+      </div>
+    </div>
+    
+    <div class="media border-bottom border-color pb-3 mb-3">
+      <a href="/blog/how-tekton-works/"><img class="mr-3 post-thumb-sm" src="https://gw.alipayobjects.com/mdn/rms_95b965/afts/img/A*eUqkTKk66gkAAAAAAAAAAABkARQnAQ"></a>
+      <div class="media-body">
+        <a href="/blog/how-tekton-works/">
+          <h5 class="mt-0">Tekton 的工作原理</h5>
+        </a>
+        2020年5月23日
+      </div>
+    </div>
+    
+    <div class="media border-bottom border-color pb-3 mb-3">
+      <a href="/blog/k8s-certificate/"><img class="mr-3 post-thumb-sm" src="https://zhaohuabing.com/img/2020-05-19-k8s-certificate/background-cloudnativeto.jpg"></a>
+      <div class="media-body">
+        <a href="/blog/k8s-certificate/">
+          <h5 class="mt-0">一文带你彻底厘清 Kubernetes 中的证书工作机制</h5>
+        </a>
+        2020年5月21日
+      </div>
+    </div>
+    
+  </div>
+  <!-- categories -->
+  <div class="bg-white px-4 py-5 box-shadow mb-5">
+    <h4 class="mb-4">类别</h4>
+    <ul class="list-styled style-circle">
+      <li class="border-bottom border-color"><a href="/categories/devops" class="text-color d-block pb-3 mt-3 text-decoration-none">Devops</a></li>
+      <li class="border-bottom border-color"><a href="/categories/kubernetes" class="text-color d-block pb-3 mt-3 text-decoration-none">Kubernetes</a></li>
+      <li class="border-bottom border-color"><a href="/categories/service-mesh" class="text-color d-block pb-3 mt-3 text-decoration-none">Service mesh</a></li>
+      <li class="border-bottom border-color"><a href="/categories/%e5%85%b6%e4%bb%96" class="text-color d-block pb-3 mt-3 text-decoration-none">其他</a></li>
+    </ul>
+  </div>
+  <!-- tags -->
+  <div class="bg-white px-4 py-5 box-shadow mb-5">
+    <h4 class="mb-4">标签</h4>
+    <ul class="list-inline tag-list">
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/cicd">Cicd</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/kubernetes">Kubernetes</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/microservices">Microservices</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/service-mesh">Service mesh</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/spring-cloud">Spring cloud</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/tcpdump">Tcpdump</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/tekton">Tekton</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/vxlan">Vxlan</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/wireshark">Wireshark</a></li>
+      <li class="list-inline-item"><a class="hover-ripple" href="/tags/%e7%a4%be%e5%8c%ba">社区</a></li>
+    </ul>
+  </div>
+</aside>
+<!-- /sidebar -->
+
+    </div>
+  </div>
+</section>
+<!-- /blog details -->
+
+
+
+<footer>
+  
+  <div class="section bg-secondary">
+    <div class="container">
+      <div class="row justify-content-between">
+        
+        <div class="col-lg-5 mb-5 mb-lg-0">
+          
+          <a class="mb-4 d-inline-block" href="/"><img class="img-fluid"
+              src="/images/logo-alt.png" alt="Cloud Native Community" width="60%"></a>
+          <p class="text-light mb-5">云原生社区是一个有技术、有温度、有情怀的开源社区。它由一群热爱开源的行业精英自发成立，秉持“共识、共治、共建、共享”的原则服务于全球华人。</p>
+          <h4 class="text-white mb-4">关注我们</h4>
+          
+          <ul class="list-inline social-icon-alt">
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://twitter.com/cloudnativeto"><i class="fa fa-twitter"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://github.com/cloudnativeto"><i class="fa fa-github"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="/contact"><i class="fa fa-wechat"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="mailto:contact@cloudnative.to"><i class="fa fa-envelope"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://cloudnative.to/blog/index.xml"><i class="fa fa-rss"></i></a>
+            </li>
+            
+          </ul>
+        </div>
+        <div class="col-lg-5 mb-5 mb-lg-0">
+            
+            
+            
+            
+            
+            <div class="mb-5">
+              <h4 class="text-white mb-4">联系信息</h4>
+              <p class="text-light mb-3">北京 · 上海 · 成都 · 伦敦 · 旧金山</p>
+              <p class="text-light mb-3"></p>
+              <p class="text-light mb-3">关注云原生社区微信公众号，加入社区并获取最新资讯。</p>
+              <p class="text-light mb-3"><img src="/images/wechat-qrcode.png" width="356px"></p>
+            </div>
+            
+            
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="bg-secondary-darken py-4">
+    <div class="container">
+      <div class="row">
+        <div class="col-md-6 text-center text-md-left mb-3 mb-md-0">
+          <p class="mb-0 text-white">Copyright &copy; 2020 云原生社区</p>
+        </div>
+        <div class="col-md-6 text-center text-md-right">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item mx-0"><a class="d-inline-block px-3 text-white" href="/code-of-conduct"
+                class="text-white">社区守则</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+
+<script>
+  var indexURL = "/index.json"
+</script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/jQuery/jquery.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/google-map/gmap.js"></script>
+
+<script src="/plugins/venobox/venobox.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/search/search.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.js"></script>
+
+<!-- google analitycs -->
+
+<script>
+  (function (i, s, o, g, r, a, m) {
+    i['GoogleAnalyticsObject'] = r;
+    i[r] = i[r] || function () {
+      (i[r].q = i[r].q || []).push(arguments)
+    }, i[r].l = 1 * new Date();
+    a = s.createElement(o),
+      m = s.getElementsByTagName(o)[0];
+    a.async = 1;
+    a.src = g;
+    m.parentNode.insertBefore(a, m)
+  })(window, document, 'script', '//www.google-analytics.com/analytics.js', 'ga');
+  ga('create', 'UA-93485976-4', 'auto');
+  ga('send', 'pageview');
+</script>
+
+</body>
+
+</html>
