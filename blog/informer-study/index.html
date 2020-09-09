@@ -234,18 +234,18 @@
 <h3 id="打脸">打脸</h3>
 <p>所以，我自己之前写代码的时候，一直以为是<code>ShareInformer</code>去主动watch API Server, 而现在正正打脸了，是<code>Reflector</code>做的List&amp;Watch。</p>
 <h3 id="listandwatch-思考">ListAndWatch 思考</h3>
-<p>为什么Kubernetes里面是使用ListAndWathc呢？我们所知道的其他分布式系统常常使用RPC来触发行为。</p>
+<p>为什么Kubernetes里面是使用ListAndWatch呢？我们所知道的其他分布式系统常常使用RPC来触发行为。</p>
 <p>我们来分析下如果不这样做，而是采用API Server轮询推送消息给各个组件，或者各个组件轮询去访问API Server的话，那么<strong>实时性</strong>就得不到保证，并且对API Server造成很大的负载，很有可能需要开启大量的端口造成端口浪费。</p>
 <p>从实时性出发的话：</p>
 <p>我们希望是有任何资源的新增/改动/删除，都需要马上获取并且放入消息队列。可以对应我们Informer中的<code>Reflector</code>组件，去主动获取消息，并且放入<code>DeltaFIFO</code>队列被消费。</p>
 <p>从减轻负载出发的话：</p>
 <p>需要上缓存，这里可以对应我们的<code>Store</code>组件。</p>
 <p>从设计扩展性出发的话：</p>
-<p>作为一个“资源管理系统”的Kubernetes，我们的对象数量可能会无线扩大，那么我们需要设计一个高效扩展的组件，去应对对象的种类无线扩大，并且同一种对象可能会被用户实例化非常多次的行为。 这里可以对应我们的<code>Share Informer</code>。</p>
+<p>作为一个“资源管理系统”的Kubernetes，我们的对象数量可能会无限扩大，那么我们需要设计一个高效扩展的组件，去应对对象的种类无限扩大，并且同一种对象可能会被用户实例化非常多次的行为。 这里可以对应我们的<code>Share Informer</code>。</p>
 <p>从消息的可靠性出发的话：</p>
 <p>刚刚说了这么多，都是进行长连接去Watch的，万一网络出错怎么办？这个时候我们的List机制就很明显发挥作用，一旦感知跟API Server中断，或者第一次启动，都是使用List机制的， List作为一个短连接去获取资源信息，Watch 作为长连接去持续接收资源的变更并且处理。（用List&amp;Watch可以保证不会漏掉任何事件）</p>
 <h4 id="watch的实现">Watch的实现</h4>
-<p><code>Watch</code>是通过HTTP 长连接接收API Server发送的资源变更事件，使用的<code>Chunkerd transfer coding</code>， 代码位置<code>./staging/src/k8s.io/apiserver/pkg/endpoints/handlers/watch.go</code>，源码如下</p>
+<p><code>Watch</code>是通过HTTP 长连接接收API Server发送的资源变更事件，使用的<code>Chunked transfer coding</code>， 代码位置<code>./staging/src/k8s.io/apiserver/pkg/endpoints/handlers/watch.go</code>，源码如下</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go">    <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">streaming</span>.<span style="color:#a6e22e">NewEncoder</span>(<span style="color:#a6e22e">framer</span>, <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">Encoder</span>)
 
 	<span style="color:#75715e">// ensure the connection times out
@@ -257,7 +257,7 @@
 	<span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">Header</span>().<span style="color:#a6e22e">Set</span>(<span style="color:#e6db74">&#34;Transfer-Encoding&#34;</span>, <span style="color:#e6db74">&#34;chunked&#34;</span>)
 	<span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">WriteHeader</span>(<span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">StatusOK</span>)
 	<span style="color:#a6e22e">flusher</span>.<span style="color:#a6e22e">Flush</span>()
-</code></pre></div><p>我们使用通过<code>curl</code>来看看, 在<code>response</code>的<code>Header</code>中设置<code>Transfer-Encoding</code>的值是<code>chunkerd</code></p>
+</code></pre></div><p>我们使用通过<code>curl</code>来看看, 在<code>response</code>的<code>Header</code>中设置<code>Transfer-Encoding</code>的值是<code>chunked</code></p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># curl -i http://127.0.0.1:8001/api/v1/watch/namespaces?watch=yes</span>
 HTTP/1.1 <span style="color:#ae81ff">200</span> OK
 Cache-Control: no-cache, private
