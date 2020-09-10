@@ -220,14 +220,14 @@
           <h2 id="overview">Overview</h2>
 <p>这篇文章主要是学习Informer机制并且理解Informer各个组件的设计。</p>
 <h2 id="背景">背景</h2>
-<p>为什么Kubernetes需要Informer机制？我们知道Kubernetes各个组件都是通过REST API跟API Server交互通信的，而如果每次每一个组件都直接跟API Server交互去读取/写入到后端的etcd的话，会对API Server以及etcd造成非常大的负担。 而Informer机制是为了保证各个组件之间通信的实时性、可靠，并且减缓对API Server和etcd的负担。</p>
+<p>为什么Kubernetes需要Informer机制？我们知道Kubernetes各个组件都是通过REST API跟API Server交互通信的，而如果每次每一个组件都直接跟API Server交互去读取/写入到后端的etcd的话，会对API Server以及etcd造成非常大的负担。 而Informer机制是为了保证各个组件之间通信的实时性、可靠性，并且减缓对API Server和etcd的负担。</p>
 <h2 id="informer-流程">Informer 流程</h2>
 <p>这个流程，建议先看看<a href="https://github.com/JaneLiuL/study-client-go/blob/master/fromcontrollerstudyinformer.md">《From Controller Study Informer》</a></p>
 <p>这里我们以CoreV1. Pod资源为例子：</p>
 <ol>
 <li>第一次启动Informer的时候，Reflector 会使用<code>List</code>从API Server主动获取CoreV1. Pod的所有资源对象信息，通过<code>resync</code>将资源存放在<code>Store</code>中</li>
 <li>持续使用<code>Reflector</code>建立长连接，去<code>Watch</code> API Server发来的资源变更事件</li>
-<li>当2 监控到CoreV1.Pod的资源对象有增加删除修改之后，就把资源对象存放在<code>DeltaFIFO</code>中，</li>
+<li>当2 监控到CoreV1.Pod的资源对象有增加/删除/修改之后，就把资源对象存放在<code>DeltaFIFO</code>中</li>
 <li><code>DeltaFIFO</code>是一个先进先出队列，只要这个队列有数据，就被Pop到Controller中, 将这个资源对象存储至<code>Indexer</code>中，并且将该资源对象分发至<code>ShareInformer</code></li>
 <li>Controller会触发<code>Process</code>回调函数</li>
 </ol>
@@ -241,7 +241,7 @@
 <p>从减轻负载出发的话：</p>
 <p>需要上缓存，这里可以对应我们的<code>Store</code>组件。</p>
 <p>从设计扩展性出发的话：</p>
-<p>作为一个“资源管理系统”的Kubernetes，我们的对象数量可能会无限扩大，那么我们需要设计一个高效扩展的组件，去应对对象的种类无限扩大，并且同一种对象可能会被用户实例化非常多次的行为。 这里可以对应我们的<code>Share Informer</code>。</p>
+<p>作为一个“资源管理系统”的Kubernetes，我们的对象数量可能会无限扩大，那么我们需要设计一个高效扩展的组件，去应对对象的种类无限扩大，并且同一种对象可能会被用户实例化非常多次的行为。 这里可以对应我们的<code>ShareInformer</code>。</p>
 <p>从消息的可靠性出发的话：</p>
 <p>刚刚说了这么多，都是进行长连接去Watch的，万一网络出错怎么办？这个时候我们的List机制就很明显发挥作用，一旦感知跟API Server中断，或者第一次启动，都是使用List机制的， List作为一个短连接去获取资源信息，Watch 作为长连接去持续接收资源的变更并且处理。（用List&amp;Watch可以保证不会漏掉任何事件）</p>
 <h4 id="watch的实现">Watch的实现</h4>
@@ -257,7 +257,7 @@
 	<span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">Header</span>().<span style="color:#a6e22e">Set</span>(<span style="color:#e6db74">&#34;Transfer-Encoding&#34;</span>, <span style="color:#e6db74">&#34;chunked&#34;</span>)
 	<span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">WriteHeader</span>(<span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">StatusOK</span>)
 	<span style="color:#a6e22e">flusher</span>.<span style="color:#a6e22e">Flush</span>()
-</code></pre></div><p>我们使用通过<code>curl</code>来看看, 在<code>response</code>的<code>Header</code>中设置<code>Transfer-Encoding</code>的值是<code>chunked</code></p>
+</code></pre></div><p>我们通过<code>curl</code>来看看, 在<code>response</code>的<code>Header</code>中设置<code>Transfer-Encoding</code>的值是<code>chunked</code></p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># curl -i http://127.0.0.1:8001/api/v1/watch/namespaces?watch=yes</span>
 HTTP/1.1 <span style="color:#ae81ff">200</span> OK
 Cache-Control: no-cache, private
@@ -435,7 +435,7 @@ Transfer-Encoding: chunked
 }
 
 </code></pre></div><h4 id="kubernetes并发">Kubernetes并发</h4>
-<p>从ListAndWatch的代码，有一段关于<code>syncWith</code>的方法，比较重要，原来Kubernetes的并发是通过<code>ResourceVersion</code>来实现的，每次对这个对象的改动，都会把改对象的<code>ResourceVersion</code>加一。</p>
+<p>从ListAndWatch的代码，有一段关于<code>syncWith</code>的方法，比较重要，原来Kubernetes的并发是通过<code>ResourceVersion</code>来实现的，每次对这个对象的改动，都会把该对象的<code>ResourceVersion</code>加一。</p>
 <h2 id="二级缓存deltafifo-和-store">二级缓存DeltaFIFO 和 Store</h2>
 <h3 id="deltafifo">DeltaFIFO</h3>
 <p>我们通过数据结构来理解DeltaFIFO，我们先来理解一下Delta。</p>
@@ -513,7 +513,7 @@ Transfer-Encoding: chunked
 	<span style="color:#75715e">// TODO: Detect other duplicate situations? Are there any?
 </span><span style="color:#75715e"></span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
 }
-</code></pre></div><p>之前群里有人问为什么dedupDeltas只是去这个列表的倒数一个跟倒数第二个去进行合并去重的操作，这里说明一下，dedupDeltas是被queueActionLocked函数调用的，而queueActionLocked为什么我们拿出来讲，是因为在Delete/Update/Add里面去调用了queueActionLocked，合并是对某一个obj的一系列操作，而去重是只针对delete。</p>
+</code></pre></div><p>之前群里有人问为什么dedupDeltas只是去这个列表的倒数第一个跟倒数第二个去进行合并去重的操作，这里说明一下，dedupDeltas是被queueActionLocked函数调用的，而queueActionLocked为什么我们拿出来讲，是因为在Delete/Update/Add里面去调用了queueActionLocked，合并是对某一个obj的一系列操作，而去重是只针对delete。</p>
 <p>我们可以拿一个例子来看看，假设是[obj1]: [add: delta1, update: delta2, delete: delta3,  delete: delta3] 在经过queueActionLocked之后会变成[obj1]: [add: delta1, update: delta2, delete: delta3]</p>
 <h4 id="消费者方法">消费者方法</h4>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">f</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DeltaFIFO</span>) <span style="color:#a6e22e">Pop</span>(<span style="color:#a6e22e">process</span> <span style="color:#a6e22e">PopProcessFunc</span>) (<span style="color:#66d9ef">interface</span>{}, <span style="color:#66d9ef">error</span>) {
@@ -555,7 +555,7 @@ Transfer-Encoding: chunked
 </code></pre></div><h4 id="localstore">LocalStore</h4>
 <p>缓存机制，但LocalStore是被<code>Lister</code>的<code>List/Get</code>方法访问</p>
 <h2 id="share-informer-共享机制">Share Informer 共享机制</h2>
-<p>从流程上我们说了，因为是<code>DeltaFIFO</code>把消息分发至<code>Share Informer</code>中，因此我们可以用<code>Inforomer</code>添加自定义的回调函数，也就是我们经常看到的<code>OnAdd</code>  <code>OnUpdaate</code>和<code>OnDelete</code></p>
+<p>从流程上我们说了，因为是<code>DeltaFIFO</code>把消息分发至<code>ShareInformer</code>中，因此我们可以用<code>Informer</code>添加自定义的回调函数，也就是我们经常看到的<code>OnAdd</code>  <code>OnUpdate</code>和<code>OnDelete</code></p>
 <p>Kubernetes内部的每一个资源都实现了Informer机制，如下是一个Namespace的Informer的例子</p>
 <p>代码块<code>staging/src/k8s.io/client-go/informers/core/v1/namespace.go</code></p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">NamespaceInformer</span> <span style="color:#66d9ef">interface</span> {
@@ -583,7 +583,7 @@ Transfer-Encoding: chunked
 </span><span style="color:#75715e"></span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Index</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#a6e22e">sets</span>.<span style="color:#a6e22e">String</span>
 </code></pre></div><p>总结一下：</p>
 <p>Indexers: 索引函数name &ndash;&gt; 索引实现函数&ndash;&gt;索引key值
-Indics: 索引函数name &ndash;&gt; 对应多个索引key值 &ndash;&gt; 每个索引key值对应不同的资源</p>
+Indices: 索引函数name &ndash;&gt; 对应多个索引key值 &ndash;&gt; 每个索引key值对应不同的资源</p>
 <p>举个例子来说明的话：对象Pod有一个标签app=version1，这里标签就是索引键，Indexer会把相同标签的所有Pod放在一个集合里面，然后我们实现对标签分类就是我们Indexer的核心内容。</p>
 <h2 id="reference">Reference</h2>
 <p>《Kubernetes 源码剖析》第五章</p>
