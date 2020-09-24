@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+
+<html lang="zh-cn"><head>
+  <meta charset="utf-8">
+  <title>Istio Pilot 源码分析（三） | 云原生社区</title>
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="本篇主要介绍 Pilot 源码中的 EnvoyXdsServer 的工作流程，重点探讨了防抖、SidecarScope 等逻辑。">
+  
+  <meta name="author" content="Cloud Native Community">
+  <meta name="generator" content="Hugo 0.65.3" />
+
+  <!-- plugins -->
+  
+  <link rel="stylesheet" href="/plugins/bootstrap/bootstrap.min.css">
+  
+  <link rel="stylesheet" href="/plugins/slick/slick.css">
+  
+  <link rel="stylesheet" href="/plugins/fontawesome/font-awesome.min.css">
+  
+  <link rel="stylesheet" href="/plugins/animate/animate.css">
+  
+  <link rel="stylesheet" href="/plugins/venobox/venobox.css">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="stylesheet" href="/scss/style.min.css" media="screen">
+
+  <!--Favicon-->
+  <link rel="shortcut icon" href="/images/favicon.png " type="image/x-icon">
+  <link rel="icon" href="/images/favicon.png " type="image/x-icon">
+
+  <!--Algolia-->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.css">
+</head>
+<body>
+<!-- header -->
+<header>
+  
+
+  <!-- navigation -->
+  <div class="navigation bg-white position-relative">
+    <div class="container">
+      <nav class="navbar navbar-expand-lg navbar-light bg-white">
+        <a class="navbar-brand" href="/"><img class="img-fluid pb-lg-3" src="/images/logo.png" width="189px" alt="Cloud Native Community"></a>
+        <button class="navbar-toggler border-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            <li class="nav-item">
+              <a class="nav-link" href="/"></a>
+            </li>
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                社区
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/team">管理委员会</a>
+                
+                <a class="dropdown-item" href="https://github.com/cloudnativeto/community/issues/50">城市站</a>
+                
+                <a class="dropdown-item" href="https://github.com/cloudnativeto/community">参与进来</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                学院
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="https://github.com/cloudnativeto/sig-k8s-source-code">Kubernetes 源码研习社</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                博客
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/categories/kubernetes">Kubernetes</a>
+                
+                <a class="dropdown-item" href="/categories/service-mesh">Service Mesh</a>
+                
+                <a class="dropdown-item" href="/categories/envoy">Envoy</a>
+                
+                <a class="dropdown-item" href="/categories/oam">OAM</a>
+                
+                <a class="dropdown-item" href="/categories/%E5%BC%80%E6%BA%90%E7%A4%BE%E5%8C%BA">开源社区</a>
+                
+                <a class="dropdown-item" href="/blog">所有</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                资料
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/kubebuilder">Kubebuilder 文档</a>
+                
+                <a class="dropdown-item" href="https://github.com/cloudnativeto/slides">幻灯片</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                关于
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/about">介绍</a>
+                
+                <a class="dropdown-item" href="/contact">联系</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/contribute">投稿</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/job">招聘</a>
+            </li>
+            
+            
+          </ul>
+
+          
+          
+
+          
+          <!-- search -->
+          <div class="search px-4">
+            <button id="searchOpen" class="search-btn"><i class="fa fa-search text-dark"></i></button>
+            <div class="search-wrapper">
+              <form action="/search">
+                <input class="search-box form-control" id="js-algolia-btn" name="s" type="search" placeholder="输入搜索词">
+              </form>
+              <button id="searchClose" class="search-close"><i class="fa fa-close text-dark"></i></button>
+            </div>
+          </div>
+          
+          
+          <!-- get start btn -->
+          <a href="/contact" class="btn btn-primary hover-ripple">加入我们</a>
+          
+        </div>
+      </nav>
+    </div>
+  </div>
+  <!-- /navigation -->
+</header>
+<!-- /header -->
+
+	<!-- page title -->
+<section class="section bg-cover overlay" style="background-image: url('/'),url('/'),url('/images/backgrounds/page-title.jpg');">
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <h2 class="text-white mb-3">Istio Pilot 源码分析（三）</h2>
+        <!-- breadcrumb -->
+        
+        <p class="text-white">本篇主要介绍 Pilot 源码中的 EnvoyXdsServer 的工作流程，重点探讨了防抖、SidecarScope 等逻辑。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /page title -->
+
+	
+
+<!-- blog details -->
+<section class="section">
+  <div class="container blog">
+    <div class="row">
+      <div class="col-lg-8">
+        <!-- post thumb -->
+        <div class="position-relative mb-5">
+          <img src="/"  onerror="this.src='\/images\/blog\/istio-pilot-banner.jpeg'" alt="post thumb" class="img-fluid w-100">
+           <div class="card-type">Istio</div>
+        </div>
+        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="http://haidong.dev/">张海东</a></strong>
+          
+            发表于 <strong class="text-dark">2020年9月24日</strong></div>
+        <hr>
+        <div class="content">
+          <p>本篇主要探讨上一篇源码分析中留下的问题，如 <code>EnvoyXdsServer</code> 是如何工作的，以及 <code>xDS</code> 的下发流程。对推送事件的防抖、<code>SidecarScope</code> 的运用做一些细致的分析。</p>
+<h2 id="envoyxdsserver">EnvoyXdsServer</h2>
+<p><code>EnvoyXdsServer</code> 主要负责 <code>Pilot</code> 中 <code>xDS</code> 协议的生成和下发，接收并处理 <code>configController</code> 和 <code>serviceController</code> 推送的 <code>PushRequest</code> ，与集群中所有的数据面代理进行 <code>gRPC</code> 通信，并处理它们的请求。在 <code>Pilot Server</code> 中的定义如下：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// Server contains the runtime configuration for the Pilot discovery service.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Server</span> <span style="color:#66d9ef">struct</span> {
+  <span style="color:#a6e22e">EnvoyXdsServer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">xds</span>.<span style="color:#a6e22e">DiscoveryServer</span>
+}
+</code></pre></div><p><code>EnvoyXdsServer</code> 只是 <code>Server</code> 中的别名，真正的 <code>xds.DiscoveryServer</code> 结构在 <code>istio/pilot/pkg/xds/discovery.go:71</code> 中，这里只保留关键的字段进行说明：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// DiscoveryServer is Pilot&#39;s gRPC implementation for Envoy&#39;s v2 xds APIs
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">DiscoveryServer</span> <span style="color:#66d9ef">struct</span> {
+  <span style="color:#a6e22e">Env</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Environment</span> <span style="color:#75715e">// 与 pilot Server 中的 Environment 一样
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ConfigGenerator</span> <span style="color:#a6e22e">core</span>.<span style="color:#a6e22e">ConfigGenerator</span> <span style="color:#75715e">// xDS 数据的生成器接口
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">// Endpoint 的缓存，以服务名和 namespace 作为索引，主要用于 EDS 更新
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">EndpointShardsByService</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">EndpointShards</span>
+
+  <span style="color:#75715e">// 统一接收其他组件发来的 PushRequest 的 channel
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">pushChannel</span> <span style="color:#66d9ef">chan</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>
+
+  <span style="color:#75715e">// pushQueue 主要是在真正 xDS 推送前做防抖缓存
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">pushQueue</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushQueue</span>
+
+  <span style="color:#75715e">// 保存了所有生效的 gRPC 连接
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">adsClients</span>      <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>
+
+  <span style="color:#f92672">...</span>
+}
+</code></pre></div><h3 id="initialization">Initialization</h3>
+<p>回忆一下 <code>pilot-discovery</code> 的启动流程：</p>
+<p><img src="./images/pilot-discovery-sequence-init.png" alt="img"></p>
+<p>在初始化 <code>grpcServer</code> 的时候，调用了 <code>DiscoveryServer.Register()</code> 方法，向 <code>grpcServer</code> 注册了以下几个服务（以 v2 版本为例）：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-protobuf" data-lang="protobuf"><span style="color:#66d9ef">service</span> AggregatedDiscoveryService {<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>  <span style="color:#75715e">// 全量 ADS Stream 接口
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">rpc</span> StreamAggregatedResources(stream api.v2.DiscoveryRequest)<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>      <span style="color:#66d9ef">returns</span> (stream api.v2.DiscoveryResponse) {<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>  }<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>  <span style="color:#75715e">// 增量 ADS Stream 接口
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">rpc</span> DeltaAggregatedResources(stream api.v2.DeltaDiscoveryRequest)<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>      <span style="color:#66d9ef">returns</span> (stream api.v2.DeltaDiscoveryResponse) {<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>  }<span style="color:#960050;background-color:#1e0010">
+</span><span style="color:#960050;background-color:#1e0010"></span>}<span style="color:#960050;background-color:#1e0010">
+</span></code></pre></div><p>上面的 <code>protobuf</code> 可以在 <a href="https://github.com/envoyproxy/envoy/blob/master/api/envoy/service/discovery/v2/ads.proto">ads.proto</a> 找到。熟悉 <code>gRPC</code> 的读者可以看到这个服务定义了两个 RPC 接口：</p>
+<ol>
+<li><code>StreamAggregatedResources</code> 接收 <code>DiscoveryRequest</code> ，返回 <code>DiscoveryResponse</code> 流，包含全量的 <code>xDS</code> 数据</li>
+<li><code>DeltaAggregatedResources</code> 接收 <code>DeltaDiscoveryRequest</code> ，返回 <code>DeltaDiscoveryResponse</code> 流，包含增量的 <code>xDS</code> 数据</li>
+</ol>
+<p><code>xDS</code> 相关的介绍可以参考 <code>Envoy</code> 的文档：<a href="https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol">xDS REST and gRPC protocol</a> ，写的很详细。</p>
+<p><code>EnvoyXdsServer</code> 在启动方法 <code>Start()</code> 中开启了两个比较重要的协程 <code>handleUpdates</code> 和 <code>sendPushes</code> 。 <code>handleUpdates</code> 主要用来处理 <code>pushChannel</code> 中收到的推送请求以及防抖。 <code>sendPushes</code> 则负责具体的推送。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">Start</span>(<span style="color:#a6e22e">stopCh</span> <span style="color:#f92672">&lt;-</span><span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}) {
+  <span style="color:#a6e22e">adsLog</span>.<span style="color:#a6e22e">Infof</span>(<span style="color:#e6db74">&#34;Starting ADS server&#34;</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleUpdates</span>(<span style="color:#a6e22e">stopCh</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">periodicRefreshMetrics</span>(<span style="color:#a6e22e">stopCh</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">sendPushes</span>(<span style="color:#a6e22e">stopCh</span>)
+}
+</code></pre></div><h3 id="receive-connection">Receive Connection</h3>
+<p>当服务实例的代理（ Sidecar 模式） 启动的时候，会和 <code>grpcServer</code> 建立连接并调用 <code>StreamAggregatedResources</code> 方法：</p>
+<p><img src="./images/envoyxdsserver-reveive-conn.png" alt="img"></p>
+<p><code>StreamAggregatedResources</code> 会和当前的 <code>Proxy</code> 创建一个连接，并创建一个接受请求的 <code>reqChannel</code> 。同时开启一个新的协程 <code>receiveThread</code> 处理客户端主动发起的请求：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">StreamAggregatedResources</span>(<span style="color:#a6e22e">stream</span> <span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">AggregatedDiscoveryService_StreamAggregatedResourcesServer</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">con</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newConnection</span>(<span style="color:#a6e22e">peerAddr</span>, <span style="color:#a6e22e">stream</span>)
+  <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">receiveError</span> <span style="color:#66d9ef">error</span>
+  <span style="color:#a6e22e">reqChannel</span> <span style="color:#f92672">:=</span> make(<span style="color:#66d9ef">chan</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryRequest</span>, <span style="color:#ae81ff">1</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">receiveThread</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">reqChannel</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">receiveError</span>)
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+</code></pre></div><h3 id="receive-change">Receive Change</h3>
+<p>一切准备就绪之后， <code>EnvoyXdsServer</code> 开始接收来自 <code>configController</code> 和 <code>serviceController</code> 的配置变化事件，包括服务数据的变化和配置数据的变化，都会创建 <code>PushRequest</code> 发送至 <code>EnvoyXdsServer</code> 的 <code>pushChannel</code> :</p>
+<p><img src="./images/envoyxdsserver-receive-change.png" alt="img"></p>
+<p><code>PushRequest</code> 包含是否全量推送的标识以及主要更改的资源类型。全部统一推送到 <code>pushChannel</code> 之后，就由 <code>EnvoyXdsServer</code> 启动时创建的协程 <code>handleUpdates</code> 来处理了。</p>
+<h3 id="handle-updates">Handle Updates</h3>
+<p><code>handleUpdates</code> 最重要的功能就是防抖，避免因过快的推送带来的问题和压力。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// Debouncing and push request happens in a separate thread, it uses locks
+</span><span style="color:#75715e">// and we want to avoid complications, ConfigUpdate may already hold other locks.
+</span><span style="color:#75715e">// handleUpdates processes events from pushChannel
+</span><span style="color:#75715e">// It ensures that at minimum minQuiet time has elapsed since the last event before processing it.
+</span><span style="color:#75715e">// It also ensures that at most maxDelay is elapsed between receiving an event and processing it.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">handleUpdates</span>(<span style="color:#a6e22e">stopCh</span> <span style="color:#f92672">&lt;-</span><span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}) {
+  <span style="color:#a6e22e">debounce</span>(<span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushChannel</span>, <span style="color:#a6e22e">stopCh</span>, <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">Push</span>)
+}
+</code></pre></div><p><img src="./images/envoyxdsserver-handleudpate.png" alt="img"></p>
+<p>什么是防抖（ <code>Debounce</code> ）呢？举一个简单的例子，我们每天上班都要坐电梯，当你第一个进电梯后，想上 5 楼，按下了 5 楼并关闭了电梯门，门还没关上的时候，突然碰到一个同事，电梯门又打开，同事进来后你们一起去了 5 楼。这样两个人两次去 5 楼的事件，电梯跑了一趟就解决了。试想如果电梯的门都是秒关不等人，每次只装一个人，第二个人必须等电梯把上一个人送到之后才能重新乘坐，就算写字楼有很多电梯也会在早高峰的时候产生拥挤。</p>
+<p>假设电梯容量无限大，你有无数个同事，今天好巧不巧每次电梯快关上的时候都有个同事要进来，门永远关不上，电梯也一直不走，那好了大家今天谁也别想上班，也是个很大的问题。那我们做一个规定，每趟电梯在 1 楼的时候最多等待 3 分钟，到时间了电梯就走，这样电梯的利用率就提升了，大家也不用等太久就可以上班打卡。</p>
+<p>如果优化的更好一点，把所有电梯分成奇偶两组，奇组只在奇数层停，偶组只在偶数层停。这样就可以最大化的提升资源利用率。但还有一种情况，如果我们进电梯后，后面没有人进电梯了，白白等待了 3 分钟电梯才走，浪费了时间，这也不行。</p>
+<p>那我们就再给电梯系统加一个时间，让电梯在有人进电梯后等待 10 秒，如果过了 10 秒还没有下一个人进来，电梯就不等了。 如有有人进来就重新计时 10 秒钟。</p>
+<p>从上面这个例子可以引申出几个概念，一个是最小静默时间，一个是最大延迟时间。最小静默时间就是上面的 10 秒钟，从上一个进电梯的人开始计时，10 秒内有新的人进来就接着等，否则就不等，每进一个人就重新计算这个时间。最大延迟时间就是上面电梯等待的 3 分钟，到了这个时间就算还有很多人没有进电梯，电梯也必须走。另外一个防抖中的重要概念就是分组合并，比如把都去偶数层的人统一在一趟电梯上。</p>
+<p><code>EnvoyXdsServer</code> 的防抖函数也一样，把要推送的请求根据资源类型、事件类型分组或者合并，并在 <code>minQuite</code> 时间内等待下一个请求，超过 <code>maxDelay</code> 时间就进行下一步处理。</p>
+<p>在 <code>Pilot</code> 中最小静默时间可以通过 <code>PILOT_DEBOUNCE_AFTER</code> 这个环境变量设置，默认为 100 毫秒，最大延迟时间可以通过 <code>PILOT_DEBOUNCE_MAX</code> 设置，默认为 10 秒。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// isti/pilot/pkg/features/pilot.go
+</span><span style="color:#75715e"></span>
+<span style="color:#a6e22e">DebounceAfter</span> = <span style="color:#a6e22e">env</span>.<span style="color:#a6e22e">RegisterDurationVar</span>(
+  <span style="color:#e6db74">&#34;PILOT_DEBOUNCE_AFTER&#34;</span>,
+  <span style="color:#ae81ff">100</span><span style="color:#f92672">*</span><span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Millisecond</span>,
+  <span style="color:#e6db74">&#34;The delay added to config/registry events for debouncing. This will delay the push by &#34;</span><span style="color:#f92672">+</span>
+    <span style="color:#e6db74">&#34;at least this internal. If no change is detected within this period, the push will happen, &#34;</span><span style="color:#f92672">+</span>
+    <span style="color:#e6db74">&#34; otherwise we&#39;ll keep delaying until things settle, up to a max of PILOT_DEBOUNCE_MAX.&#34;</span>,
+).<span style="color:#a6e22e">Get</span>()
+
+<span style="color:#a6e22e">DebounceMax</span> = <span style="color:#a6e22e">env</span>.<span style="color:#a6e22e">RegisterDurationVar</span>(
+  <span style="color:#e6db74">&#34;PILOT_DEBOUNCE_MAX&#34;</span>,
+  <span style="color:#ae81ff">10</span><span style="color:#f92672">*</span><span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Second</span>,
+  <span style="color:#e6db74">&#34;The maximum amount of time to wait for events while debouncing. If events keep showing up with no breaks &#34;</span><span style="color:#f92672">+</span>
+    <span style="color:#e6db74">&#34;for this time, we&#39;ll trigger a push.&#34;</span>,
+).<span style="color:#a6e22e">Get</span>()
+</code></pre></div><p>来看一下 <code>debounce</code> 方法中定义的 <code>pushWorker</code> ，主要的判断逻辑就定义在这里：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#a6e22e">pushWorker</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">func</span>() {
+  <span style="color:#a6e22e">eventDelay</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Since</span>(<span style="color:#a6e22e">startDebounce</span>)
+  <span style="color:#a6e22e">quietTime</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Since</span>(<span style="color:#a6e22e">lastConfigUpdateTime</span>)
+  <span style="color:#75715e">// it has been too long or quiet enough
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">eventDelay</span> <span style="color:#f92672">&gt;=</span> <span style="color:#a6e22e">debounceMax</span> <span style="color:#f92672">||</span> <span style="color:#a6e22e">quietTime</span> <span style="color:#f92672">&gt;=</span> <span style="color:#a6e22e">debounceAfter</span> {
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">req</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#a6e22e">pushCounter</span><span style="color:#f92672">++</span>
+      <span style="color:#a6e22e">adsLog</span>.<span style="color:#a6e22e">Infof</span>(<span style="color:#e6db74">&#34;Push debounce stable[%d] %d: %v since last change, %v since last push, full=%v&#34;</span>,
+        <span style="color:#a6e22e">pushCounter</span>, <span style="color:#a6e22e">debouncedEvents</span>,
+        <span style="color:#a6e22e">quietTime</span>, <span style="color:#a6e22e">eventDelay</span>, <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Full</span>)
+
+      <span style="color:#a6e22e">free</span> = <span style="color:#66d9ef">false</span>
+      <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">push</span>(<span style="color:#a6e22e">req</span>)
+      <span style="color:#a6e22e">req</span> = <span style="color:#66d9ef">nil</span>
+      <span style="color:#a6e22e">debouncedEvents</span> = <span style="color:#ae81ff">0</span>
+    }
+  } <span style="color:#66d9ef">else</span> {
+    <span style="color:#a6e22e">timeChan</span> = <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">After</span>(<span style="color:#a6e22e">debounceAfter</span> <span style="color:#f92672">-</span> <span style="color:#a6e22e">quietTime</span>)
+  }
+}
+</code></pre></div><p>可以看到当事件的延迟时间大于等于最大延迟时间或静默时间大于等于最小静默时间，才会执行真正的 <code>push()</code> 方法。 <code>push()</code> 方法也是 <code>debounce</code> 方法中包装的一个过程函数，它会在怎正的 <code>pushFn()</code> 完成后向 <code>freeCh</code> 发送消息表示这次防抖处理完成了，可以开始下一次防抖。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#a6e22e">push</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>) {
+  <span style="color:#a6e22e">pushFn</span>(<span style="color:#a6e22e">req</span>)
+  <span style="color:#a6e22e">freeCh</span> <span style="color:#f92672">&lt;-</span> <span style="color:#66d9ef">struct</span>{}{}
+}
+</code></pre></div><p><code>debounce()</code> 方法等待各个 <code>channel</code> 的逻辑如下：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">for</span> {
+  <span style="color:#66d9ef">select</span> {
+  <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">freeCh</span>:
+    <span style="color:#a6e22e">free</span> = <span style="color:#66d9ef">true</span>
+    <span style="color:#a6e22e">pushWorker</span>()
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">r</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">ch</span>:
+    <span style="color:#75715e">// If reason is not set, record it as an unknown reason
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">Reason</span>) <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+      <span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">Reason</span> = []<span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">TriggerReason</span>{<span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">UnknownTrigger</span>}
+    }
+    <span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">enableEDSDebounce</span> <span style="color:#f92672">&amp;&amp;</span> !<span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">Full</span> {
+      <span style="color:#75715e">// trigger push now, just for EDS
+</span><span style="color:#75715e"></span>      <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">pushFn</span>(<span style="color:#a6e22e">r</span>)
+      <span style="color:#66d9ef">continue</span>
+    }
+
+    <span style="color:#a6e22e">lastConfigUpdateTime</span> = <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Now</span>()
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">debouncedEvents</span> <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+      <span style="color:#a6e22e">timeChan</span> = <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">After</span>(<span style="color:#a6e22e">debounceAfter</span>)
+      <span style="color:#a6e22e">startDebounce</span> = <span style="color:#a6e22e">lastConfigUpdateTime</span>
+    }
+    <span style="color:#a6e22e">debouncedEvents</span><span style="color:#f92672">++</span>
+
+    <span style="color:#a6e22e">req</span> = <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Merge</span>(<span style="color:#a6e22e">r</span>)
+  <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">timeChan</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">free</span> {
+      <span style="color:#a6e22e">pushWorker</span>()
+    }
+  <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">stopCh</span>:
+    <span style="color:#66d9ef">return</span>
+  }
+}
+</code></pre></div><p>先看 <code>case r:= &lt;-ch</code> 这个分支，当收到第一个 <code>PushRequest</code> 的时候，通过一个延时器 <code>timeChan</code> 先延迟一个最小静默时间（100 毫秒），期间接收新的请求直接进行 <code>Merge</code> ，同时累加已防抖的事件个数。当第一个 100 毫秒计时结束就会进入 <code>case &lt;-timeChan</code> 分支，会判断是否有正在执行的防抖过程，没有的话就执行 <code>pushWorker()</code> 做一次防抖判断看是否需要推送。如果第一个请求的延迟时间还没有超过最大延迟时间（10 秒钟）并且距离处理上一次 <code>PushRequest</code> 的时间不足最小静默时间（100 毫秒），则继续延时，等待 <code>debouncedAfter - quietTime</code> 也就是不足最小静默时间的部分，再进行下一次 <code>pushWorker()</code> 操作。</p>
+<p>在看真正的 <code>pushFn</code> 函数之前，我们先了解下防抖函数是怎么合并 <code>PushRequest</code> 的。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// istio/pilot/pkg/model/push_context.go:250
+</span><span style="color:#75715e">// Merge two update requests together
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">first</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushRequest</span>) <span style="color:#a6e22e">Merge</span>(<span style="color:#a6e22e">other</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushRequest</span>) <span style="color:#f92672">*</span><span style="color:#a6e22e">PushRequest</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">merged</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">PushRequest</span>{
+    <span style="color:#75715e">// Keep the first (older) start time
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Start</span>: <span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">Start</span>,
+
+    <span style="color:#75715e">// If either is full we need a full push
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Full</span>: <span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">Full</span> <span style="color:#f92672">||</span> <span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">Full</span>,
+
+    <span style="color:#75715e">// The other push context is presumed to be later and more up to date
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Push</span>: <span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">Push</span>,
+
+    <span style="color:#75715e">// Merge the two reasons. Note that we shouldn&#39;t deduplicate here, or we would under count
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Reason</span>: append(<span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">Reason</span>, <span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">Reason</span><span style="color:#f92672">...</span>),
+  }
+
+  <span style="color:#75715e">// Do not merge when any one is empty
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">ConfigsUpdated</span>) &gt; <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> len(<span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">ConfigsUpdated</span>) &gt; <span style="color:#ae81ff">0</span> {
+    <span style="color:#a6e22e">merged</span>.<span style="color:#a6e22e">ConfigsUpdated</span> = make(<span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">ConfigKey</span>]<span style="color:#66d9ef">struct</span>{}, len(<span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">ConfigsUpdated</span>)<span style="color:#f92672">+</span>len(<span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">ConfigsUpdated</span>))
+    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">conf</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">first</span>.<span style="color:#a6e22e">ConfigsUpdated</span> {
+      <span style="color:#a6e22e">merged</span>.<span style="color:#a6e22e">ConfigsUpdated</span>[<span style="color:#a6e22e">conf</span>] = <span style="color:#66d9ef">struct</span>{}{}
+    }
+    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">conf</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">other</span>.<span style="color:#a6e22e">ConfigsUpdated</span> {
+      <span style="color:#a6e22e">merged</span>.<span style="color:#a6e22e">ConfigsUpdated</span>[<span style="color:#a6e22e">conf</span>] = <span style="color:#66d9ef">struct</span>{}{}
+    }
+  }
+
+  <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">merged</span>
+}
+</code></pre></div><p>合并后的 <code>PushRequest</code> 会保存第一个 <code>PushRequest</code> 的时间以及最新一个 <code>PushRequest</code> 的 <code>PushContext</code> ，如果合并的请求中有一个需要全量推送那合并后的请求也必须是全量， <code>Reason</code> 描述的是触发这次推送请求的原因，有以下几种：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">TriggerReason</span> <span style="color:#66d9ef">string</span>
+
+<span style="color:#66d9ef">const</span> (
+  <span style="color:#75715e">// Describes a push triggered by an Endpoint change
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">EndpointUpdate</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;endpoint&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered by a config (generally and Istio CRD) change.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ConfigUpdate</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;config&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered by a Service change
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ServiceUpdate</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;service&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered by a change to an individual proxy (such as label change)
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ProxyUpdate</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;proxy&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered by a change to global config, such as mesh config
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">GlobalUpdate</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;global&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered by an unknown reason
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">UnknownTrigger</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;unknown&#34;</span>
+  <span style="color:#75715e">// Describes a push triggered for debugging
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">DebugTrigger</span> <span style="color:#a6e22e">TriggerReason</span> = <span style="color:#e6db74">&#34;debug&#34;</span>
+)
+</code></pre></div><p>这里做一个小的拓展：追踪上面所有的原因，可以查询到所有可能发送到 <code>pushChannel</code> 的来源：</p>
+<p><img src="./images/push-channel-source.png" alt="img"></p>
+<p>而 <code>ConfigsUpdated</code> 跟踪了所有已经发生变化的配置，这个 <code>map</code> 主要被用于那些被 <a href="https://istio.io/latest/docs/reference/config/networking/sidecar/">Sidecar</a> 限定了服务可见性的数据面代理，来过滤不必接收的 <code>xDS</code> 推送。只有与这些代理相关的服务（如 <code>Sidecar</code> 中定义的 <code>Egress</code> 和 <code>Ingress</code> 服务）发生变化时，才推送带特定的客户端。当 <code>ConfigsUpdated</code> 为空时，则表示所有的数据面代理都会收到这次推送。</p>
+<p>所以才有上面代码中 <code>if len(first.ConfigsUpdated) &gt; 0 &amp;&amp; len(other.ConfigsUpdated) &gt; 0</code> 这个判断，只要有一个请求需要推送至所有代理，就不会合并 <code>ConfigUpdated</code> 。</p>
+<p>对 <code>PushRequest</code> 做完防抖之后，再来看真正的 <code>pushFn</code> :</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// Push is called to push changes on config updates using ADS. This is set in DiscoveryService.Push,
+</span><span style="color:#75715e">// to avoid direct dependencies.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">Push</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>) {
+  <span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Full</span> {
+    <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Push</span> = <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">globalPushContext</span>()
+    <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">AdsPushAll</span>(<span style="color:#a6e22e">versionInfo</span>(), <span style="color:#a6e22e">req</span>)
+    <span style="color:#66d9ef">return</span>
+  }
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+  <span style="color:#a6e22e">oldPushContext</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">globalPushContext</span>()
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">oldPushContext</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#a6e22e">oldPushContext</span>.<span style="color:#a6e22e">OnConfigChange</span>()
+  }
+
+  <span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">initPushContext</span>(<span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">oldPushContext</span>)
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>
+  <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Push</span> = <span style="color:#a6e22e">push</span>
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">AdsPushAll</span>(<span style="color:#a6e22e">versionLocal</span>, <span style="color:#a6e22e">req</span>)
+}
+</code></pre></div><p>可以看到先处理了不是全量推送的请求 <code>if !req.Full</code> ，结合之前分析所有 <code>PushRequest</code> 的来源可知， <code>Full=false</code> 只在 <code>EDSUpdate</code> 的时候才会判断是否做全量推送，还记得之前分析 <code>ServiceEntryStore</code> 里的 <code>workloadEntryHandler</code> 吗？ <code>EDS</code> 的变化不需要更新 <code>PushContext</code> ，所以这里获取了全局的 <code>globalPushContext</code> 后就直接处理了。说到这里读者可能会对 <code>PushContext</code> 感到疑惑，这个是用来做什么的呢，为什么 <code>EDS</code> 的增量更新就不用更新它呢？我们先来看看 <code>PushContext</code> 的定义：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">PushContext</span> <span style="color:#66d9ef">struct</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// privateServices are reachable within the same namespace, with exportTo &#34;.&#34;
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">privateServicesByNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#f92672">*</span><span style="color:#a6e22e">Service</span>
+  <span style="color:#75715e">// publicServices are services reachable within the mesh with exportTo &#34;*&#34;
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">publicServices</span> []<span style="color:#f92672">*</span><span style="color:#a6e22e">Service</span>
+  <span style="color:#75715e">// servicesExportedToNamespace are services that were made visible to this namespace
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// by an exportTo explicitly specifying this namespace.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">servicesExportedToNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#f92672">*</span><span style="color:#a6e22e">Service</span>
+
+  <span style="color:#75715e">// ServiceByHostnameAndNamespace has all services, indexed by hostname then namespace.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ServiceByHostnameAndNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">host</span>.<span style="color:#a6e22e">Name</span>]<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">Service</span> <span style="color:#e6db74">`json:&#34;-&#34;`</span>
+  <span style="color:#a6e22e">ServiceByHostname</span>             <span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">host</span>.<span style="color:#a6e22e">Name</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">Service</span>            <span style="color:#e6db74">`json:&#34;-&#34;`</span>
+  <span style="color:#75715e">// ServiceAccounts contains a map of hostname and port to service accounts.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">ServiceAccounts</span> <span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">host</span>.<span style="color:#a6e22e">Name</span>]<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">int</span>][]<span style="color:#66d9ef">string</span> <span style="color:#e6db74">`json:&#34;-&#34;`</span>
+
+  <span style="color:#75715e">// VirtualService related
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// This contains all virtual services visible to this namespace extracted from
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// exportTos that explicitly contained this namespace. The keys are namespace,gateway.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">virtualServicesExportedToNamespaceByGateway</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#a6e22e">Config</span>
+  <span style="color:#75715e">// this contains all the virtual services with exportTo &#34;.&#34; and current namespace. The keys are namespace,gateway.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">privateVirtualServicesByNamespaceAndGateway</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#a6e22e">Config</span>
+  <span style="color:#75715e">// This contains all virtual services whose exportTo is &#34;*&#34;, keyed by gateway
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">publicVirtualServicesByGateway</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#a6e22e">Config</span>
+
+  <span style="color:#75715e">// destination rules are of three types:
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">//  namespaceLocalDestRules: all public/private dest rules pertaining to a service defined in a given namespace
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">//  exportedDestRulesByNamespace: all dest rules pertaining to a service exported by a namespace
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">namespaceLocalDestRules</span>      <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">processedDestRules</span>
+  <span style="color:#a6e22e">exportedDestRulesByNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">processedDestRules</span>
+
+  <span style="color:#75715e">// sidecars for each namespace
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">sidecarsByNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#f92672">*</span><span style="color:#a6e22e">SidecarScope</span>
+  <span style="color:#75715e">// envoy filters for each namespace including global config namespace
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">envoyFiltersByNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#f92672">*</span><span style="color:#a6e22e">EnvoyFilterWrapper</span>
+  <span style="color:#75715e">// gateways for each namespace
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">gatewaysByNamespace</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>][]<span style="color:#a6e22e">Config</span>
+  <span style="color:#a6e22e">allGateways</span>         []<span style="color:#a6e22e">Config</span>
+</code></pre></div><p><code>PushContext</code> 里定义了大量对 <code>Service</code> 、 <code>VirtualService</code> 等的缓存，当服务发生变化时，必须要更新，而 <code>EDS</code> 的增量推送则不用。</p>
+<p>在 <code>Push()</code> 更新了 <code>PushContext</code> 之后便调用 <code>AdsPushAll()</code> 和 <code>startPush(req)</code> 将 <code>PushRequest</code> 重新入队到了 <code>DiscoveryServer.pushQueue</code> :</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// Send a signal to all connections, with a push event.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">startPush</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>) {
+  <span style="color:#a6e22e">pending</span> <span style="color:#f92672">:=</span> []<span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>{}
+  <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">v</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">adsClients</span> {
+    <span style="color:#a6e22e">pending</span> = append(<span style="color:#a6e22e">pending</span>, <span style="color:#a6e22e">v</span>)
+  }
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Start</span> = <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Now</span>()
+  <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">p</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">pending</span> {
+    <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushQueue</span>.<span style="color:#a6e22e">Enqueue</span>(<span style="color:#a6e22e">p</span>, <span style="color:#a6e22e">req</span>)
+  }
+}
+</code></pre></div><p><code>PushQueue</code> 的结构是什么样的呢？</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">PushQueue</span> <span style="color:#66d9ef">struct</span> {
+  <span style="color:#a6e22e">mu</span>   <span style="color:#f92672">*</span><span style="color:#a6e22e">sync</span>.<span style="color:#a6e22e">RWMutex</span>
+  <span style="color:#a6e22e">cond</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">sync</span>.<span style="color:#a6e22e">Cond</span>
+
+  <span style="color:#75715e">// eventsMap stores all connections in the queue. If the same connection is enqueued again, the
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// PushEvents will be merged.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">eventsMap</span> <span style="color:#66d9ef">map</span>[<span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>
+
+  <span style="color:#75715e">// connections maintains ordering of the queue
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">connections</span> []<span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>
+
+  <span style="color:#75715e">// inProgress stores all connections that have been Dequeue(), but not MarkDone().
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// The value stored will be initially be nil, but may be populated if the connection is Enqueue().
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// If model.PushRequest is not nil, it will be Enqueued again once MarkDone has been called.
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">inProgress</span> <span style="color:#66d9ef">map</span>[<span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>]<span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushRequest</span>
+}
+</code></pre></div><p>其中 <code>eventsMap</code> 保存了所有代理 <code>gRPC</code> 连接的 <code>PushRequest</code> ，如果相同连接的 <code>PushRequest</code> 再次入队，将会被合并。 <code>inProgress</code> 保存了所有连接正在处理的 <code>PushRequest</code> 。这里合并的操作和上面 <code>debounce</code> 一样，调用的是同一个函数。</p>
+<h3 id="send-pushes">Send Pushes</h3>
+<p>当所有的 <code>PushRequest</code> 经过防抖等一系列处理后，重新入队到 <code>pushQueue</code> ，这时在 <code>EnvoyXdsServer</code> 启动时创建的协程 <code>sendPushes</code> 就开始工作了。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">Start</span>(<span style="color:#a6e22e">stopCh</span> <span style="color:#f92672">&lt;-</span><span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}) {
+  <span style="color:#a6e22e">adsLog</span>.<span style="color:#a6e22e">Infof</span>(<span style="color:#e6db74">&#34;Starting ADS server&#34;</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleUpdates</span>(<span style="color:#a6e22e">stopCh</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">periodicRefreshMetrics</span>(<span style="color:#a6e22e">stopCh</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">sendPushes</span>(<span style="color:#a6e22e">stopCh</span>)
+}
+
+<span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">sendPushes</span>(<span style="color:#a6e22e">stopCh</span> <span style="color:#f92672">&lt;-</span><span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}) {
+  <span style="color:#a6e22e">doSendPushes</span>(<span style="color:#a6e22e">stopCh</span>, <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">concurrentPushLimit</span>, <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushQueue</span>)
+}
+</code></pre></div><p>这里传入了节流的参数 <code>s.concurrentPushLimit</code> ，它是由环境变量 <code>PILOT_PUSH_THROTTLE</code> 控制的，默认为 100 。 <code>doSendPushes</code> 的逻辑如图：</p>
+<p><img src="./images/envoyxdsserver-sendpushes.png" alt="img"></p>
+<p>首先从 <code>pushQueue</code> 中通过 <code>Dequeue()</code> 方法获取需要处理的代理客户端和对应的 <code>PushRequest</code> ，再根据 <code>PushRequest</code> 生成 <code>Event</code> 传入客户端的 <code>pushChannel</code> 中，注意和 <code>EnvoyXdsServer</code> 的 <code>pushChannel</code> 不同，这里的是针对当前客户端连接的 <code>pushChannel</code> 。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">doSendPushes</span>(<span style="color:#a6e22e">stopCh</span> <span style="color:#f92672">&lt;-</span><span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}, <span style="color:#a6e22e">semaphore</span> <span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}, <span style="color:#a6e22e">queue</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushQueue</span>) {
+  <span style="color:#66d9ef">for</span> {
+    <span style="color:#66d9ef">select</span> {
+    <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">stopCh</span>:
+      <span style="color:#66d9ef">return</span>
+    <span style="color:#66d9ef">default</span>:
+      <span style="color:#a6e22e">semaphore</span> <span style="color:#f92672">&lt;-</span> <span style="color:#66d9ef">struct</span>{}{}
+
+      <span style="color:#a6e22e">client</span>, <span style="color:#a6e22e">info</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">queue</span>.<span style="color:#a6e22e">Dequeue</span>()
+
+      <span style="color:#a6e22e">doneFunc</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">func</span>() {
+        <span style="color:#a6e22e">queue</span>.<span style="color:#a6e22e">MarkDone</span>(<span style="color:#a6e22e">client</span>)
+        <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">semaphore</span>
+      }
+
+      <span style="color:#66d9ef">go</span> <span style="color:#66d9ef">func</span>() {
+        <span style="color:#a6e22e">pushEv</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">Event</span>{
+          <span style="color:#a6e22e">full</span>:           <span style="color:#a6e22e">info</span>.<span style="color:#a6e22e">Full</span>,
+          <span style="color:#a6e22e">push</span>:           <span style="color:#a6e22e">info</span>.<span style="color:#a6e22e">Push</span>,
+          <span style="color:#a6e22e">done</span>:           <span style="color:#a6e22e">doneFunc</span>,
+          <span style="color:#a6e22e">start</span>:          <span style="color:#a6e22e">info</span>.<span style="color:#a6e22e">Start</span>,
+          <span style="color:#a6e22e">configsUpdated</span>: <span style="color:#a6e22e">info</span>.<span style="color:#a6e22e">ConfigsUpdated</span>,
+          <span style="color:#a6e22e">noncePrefix</span>:    <span style="color:#a6e22e">info</span>.<span style="color:#a6e22e">Push</span>.<span style="color:#a6e22e">Version</span>,
+        }
+
+        <span style="color:#66d9ef">select</span> {
+        <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">client</span>.<span style="color:#a6e22e">pushChannel</span> <span style="color:#f92672">&lt;-</span> <span style="color:#a6e22e">pushEv</span>:
+          <span style="color:#66d9ef">return</span>
+        <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">client</span>.<span style="color:#a6e22e">stream</span>.<span style="color:#a6e22e">Context</span>().<span style="color:#a6e22e">Done</span>(): <span style="color:#75715e">// grpc stream was closed
+</span><span style="color:#75715e"></span>          <span style="color:#a6e22e">doneFunc</span>()
+          <span style="color:#a6e22e">adsLog</span>.<span style="color:#a6e22e">Infof</span>(<span style="color:#e6db74">&#34;Client closed connection %v&#34;</span>, <span style="color:#a6e22e">client</span>.<span style="color:#a6e22e">ConID</span>)
+        }
+      }()
+    }
+  }
+}
+</code></pre></div><p>当 <code>client.stream</code> 返回 <code>gRPC</code> 完成的消息后，标记此次 <code>PushRequest</code> 完成。那么这里传入的 <code>pushEv</code> 事件最后在哪里处理了呢？回想最初客户端创建 <code>gRPC</code> 连接的地方，即调用 <code>StreamAggregatedResources()</code> 方法时：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// istio/pilot/pkg/xds/ads.go
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">StreamAggregatedResources</span>(<span style="color:#a6e22e">stream</span> <span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">AggregatedDiscoveryService_StreamAggregatedResourcesServer</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">con</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newConnection</span>(<span style="color:#a6e22e">peerAddr</span>, <span style="color:#a6e22e">stream</span>)
+
+  <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">receiveError</span> <span style="color:#66d9ef">error</span>
+  <span style="color:#a6e22e">reqChannel</span> <span style="color:#f92672">:=</span> make(<span style="color:#66d9ef">chan</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryRequest</span>, <span style="color:#ae81ff">1</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">receiveThread</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">reqChannel</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">receiveError</span>)
+
+  <span style="color:#66d9ef">for</span> {
+    <span style="color:#66d9ef">select</span> {
+
+    <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">ok</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">reqChannel</span>:
+      <span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">ok</span> {
+        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">receiveError</span>
+      }
+      <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">processRequest</span>(<span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">con</span>)
+      <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+      }
+
+    <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">pushEv</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">pushChannel</span>:
+      <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushConnection</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">pushEv</span>)
+      <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">done</span>()
+      <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+        <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+      }
+    }
+  }
+}
+</code></pre></div><p>这里处理了两个 <code>channel</code> 的消息，一个是 <code>reqChannel</code> ，另一个就是我们刚提到的 <code>con.pushChannel</code> 了。 <code>reqChannel</code> 之后再讨论，它主要是处理来自客户端的 <code>gRPC</code> 请求的。</p>
+<p>从 <code>con.pushConnection</code> 中获取到 <code>pushEv</code> 事件后，调用 <code>s.pushConnection()</code> 进行处理。首先会处理增量推送 <code>EDS</code> 的情况：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">full</span> {
+  <span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">ProxyNeedsPush</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>, <span style="color:#a6e22e">pushEv</span>) {
+    <span style="color:#a6e22e">adsLog</span>.<span style="color:#a6e22e">Debugf</span>(<span style="color:#e6db74">&#34;Skipping EDS push to %v, no updates required&#34;</span>, <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">ConID</span>)
+    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+  }
+  <span style="color:#a6e22e">edsUpdatedServices</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">ConfigNamesOfKind</span>(<span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">configsUpdated</span>, <span style="color:#a6e22e">gvk</span>.<span style="color:#a6e22e">ServiceEntry</span>)
+  <span style="color:#75715e">// Push only EDS. This is indexed already - push immediately
+</span><span style="color:#75715e"></span>  <span style="color:#75715e">// (may need a throttle)
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Clusters</span>()) &gt; <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> len(<span style="color:#a6e22e">edsUpdatedServices</span>) &gt; <span style="color:#ae81ff">0</span> {
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushEds</span>(<span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">versionInfo</span>(), <span style="color:#a6e22e">edsUpdatedServices</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  }
+  <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+}
+</code></pre></div><p>通过 <code>ProxyNeedsPush</code> 判断代理是否需要推送，判断的逻辑主要是检查推送事件 <code>pushEv</code> 的 <code>configsUpdated</code> 是否和代理相关。之前提到的在大规模下发场景下起很大作用的 <a href="https://istio.io/latest/docs/reference/config/networking/sidecar/">Sidecar</a> 就在这里生效。注意这里说的是 <code>Istio</code> 的一种流控配置，不是数据面的边车模式。</p>
+<ol>
+<li>
+<p>SidecarScope</p>
+<p>书接上文，我们着重分析下 <code>SidecarScope</code> 的处理流程。这里接着看是怎么检测代理依赖的配置文件的：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">checkProxyDependencies</span>(<span style="color:#a6e22e">proxy</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Proxy</span>, <span style="color:#a6e22e">config</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">ConfigKey</span>) <span style="color:#66d9ef">bool</span> {
+  <span style="color:#75715e">// Detailed config dependencies check.
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">switch</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">Type</span> {
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">SidecarProxy</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">SidecarScope</span>.<span style="color:#a6e22e">DependsOnConfig</span>(<span style="color:#a6e22e">config</span>) {
+      <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">true</span>
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">PrevSidecarScope</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">PrevSidecarScope</span>.<span style="color:#a6e22e">DependsOnConfig</span>(<span style="color:#a6e22e">config</span>) {
+      <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">true</span>
+    }
+  <span style="color:#66d9ef">default</span>:
+    <span style="color:#75715e">// TODO We&#39;ll add the check for other proxy types later.
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">true</span>
+  }
+  <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">false</span>
+}
+</code></pre></div><p><code>SidecarScope.DependsOnConfig()</code> 方法内容如下：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// DependsOnConfig determines if the proxy depends on the given config.
+</span><span style="color:#75715e">// Returns whether depends on this config or this kind of config is not scoped(unknown to be depended) here.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">sc</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SidecarScope</span>) <span style="color:#a6e22e">DependsOnConfig</span>(<span style="color:#a6e22e">config</span> <span style="color:#a6e22e">ConfigKey</span>) <span style="color:#66d9ef">bool</span> {
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">sc</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">true</span>
+  }
+    
+  <span style="color:#75715e">// This kind of config will trigger a change if made in the root namespace or the same namespace
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">f</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">sidecarScopeNamespaceConfigTypes</span>[<span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">Kind</span>]; <span style="color:#a6e22e">f</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">Namespace</span> <span style="color:#f92672">==</span> <span style="color:#a6e22e">sc</span>.<span style="color:#a6e22e">RootNamespace</span> <span style="color:#f92672">||</span> <span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">Namespace</span> <span style="color:#f92672">==</span> <span style="color:#a6e22e">sc</span>.<span style="color:#a6e22e">Config</span>.<span style="color:#a6e22e">Namespace</span>
+  }
+    
+  <span style="color:#75715e">// This kind of config is unknown to sidecarScope.
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">f</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">sidecarScopeKnownConfigTypes</span>[<span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">Kind</span>]; !<span style="color:#a6e22e">f</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">true</span>
+  }
+    
+  <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">exists</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">sc</span>.<span style="color:#a6e22e">configDependencies</span>[<span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">HashCode</span>()]
+  <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">exists</span>
+}
+</code></pre></div><p>它先是判断了变化的配置是否和 <code>SidecarScope</code> 是同个命名空间，不过这只针对 <code>Sidecar</code> 和 <code>EnvoyFilter</code> 等特殊配置。再处理一些不常见的配置，如果这些配置不在 <code>SidecarScope</code> 管理范围内的话，作为 <code>unknown</code> 类型也返回 <code>true</code> 。 <code>SidecarScope</code> 管理的流控配置主要是以下三种：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#a6e22e">sidecarScopeKnownConfigTypes</span> = <span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">resource</span>.<span style="color:#a6e22e">GroupVersionKind</span>]<span style="color:#66d9ef">struct</span>{}{
+  <span style="color:#a6e22e">gvk</span>.<span style="color:#a6e22e">ServiceEntry</span>:    {},
+  <span style="color:#a6e22e">gvk</span>.<span style="color:#a6e22e">VirtualService</span>:  {},
+  <span style="color:#a6e22e">gvk</span>.<span style="color:#a6e22e">DestinationRule</span>: {},
+}
+</code></pre></div><p>处理完了特殊情况，就会检测上面三种流控配置是否与当前的代理有关联：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">exists</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">sc</span>.<span style="color:#a6e22e">configDependencies</span>[<span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">HashCode</span>()]
+<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">exists</span>
+</code></pre></div><p><code>configDependencies</code> 里保存的就是跟当前代理相关的所有流控配置，它是在初始化代理时创建的。还记得当数据面代理第一次连接至控制面时 <code>StreamAggregatedResources()</code> 方法里创建的 <code>receiveThread</code> 协程吗？</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">StreamAggregatedResources</span>(<span style="color:#a6e22e">stream</span> <span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">AggregatedDiscoveryService_StreamAggregatedResourcesServer</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">con</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newConnection</span>(<span style="color:#a6e22e">peerAddr</span>, <span style="color:#a6e22e">stream</span>)
+    
+  <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">receiveError</span> <span style="color:#66d9ef">error</span>
+  <span style="color:#a6e22e">reqChannel</span> <span style="color:#f92672">:=</span> make(<span style="color:#66d9ef">chan</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryRequest</span>, <span style="color:#ae81ff">1</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">receiveThread</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">reqChannel</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">receiveError</span>)
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p><code>receiveThread</code> 里有个 <code>initConnection</code> 方法：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">receiveThread</span>(<span style="color:#a6e22e">con</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>, <span style="color:#a6e22e">reqChannel</span> <span style="color:#66d9ef">chan</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryRequest</span>, <span style="color:#a6e22e">errP</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">error</span>) {
+  <span style="color:#a6e22e">firstReq</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">true</span>
+  <span style="color:#66d9ef">for</span> {
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">firstReq</span> {
+      <span style="color:#a6e22e">firstReq</span> = <span style="color:#66d9ef">false</span>
+      <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">initConnection</span>(<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Node</span>, <span style="color:#a6e22e">con</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+        <span style="color:#f92672">*</span><span style="color:#a6e22e">errP</span> = <span style="color:#a6e22e">err</span>
+        <span style="color:#66d9ef">return</span>
+      }
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>    }
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  }
+}
+</code></pre></div><p><code>initConnection</code> 刚开始就会做 <code>initProxy</code> 的操作初始化代理，中间会设置代理的状态：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// initProxy initializes the Proxy from node.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">initProxy</span>(<span style="color:#a6e22e">node</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">core</span>.<span style="color:#a6e22e">Node</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Proxy</span>, <span style="color:#66d9ef">error</span>) {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">setProxyState</span>(<span style="color:#a6e22e">proxy</span>, <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">globalPushContext</span>()); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>, <span style="color:#a6e22e">err</span>
+  }
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">proxy</span>, <span style="color:#66d9ef">nil</span>
+}
+</code></pre></div><p>到这里就能看到它在设置 <code>SidecarScope</code> 了：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">setProxyState</span>(<span style="color:#a6e22e">proxy</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Proxy</span>, <span style="color:#a6e22e">push</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushContext</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">SetWorkloadLabels</span>(<span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">Env</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+    
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">SetServiceInstances</span>(<span style="color:#a6e22e">push</span>.<span style="color:#a6e22e">ServiceDiscovery</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+    
+  <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">SetSidecarScope</span>(<span style="color:#a6e22e">push</span>)
+  <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">SetGatewaysForProxy</span>(<span style="color:#a6e22e">push</span>)
+  <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+}
+</code></pre></div><p>如果代理是 <code>SidecarProxy</code> 的话（其他还有诸如 <code>Gateway</code> 等）,调用 <code>PushContext.getSidecarScope</code> 初始化 <code>SidecarScope</code> :</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">node</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Proxy</span>) <span style="color:#a6e22e">SetSidecarScope</span>(<span style="color:#a6e22e">ps</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushContext</span>) {
+  <span style="color:#a6e22e">sidecarScope</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">SidecarScope</span>
+    
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">Type</span> <span style="color:#f92672">==</span> <span style="color:#a6e22e">SidecarProxy</span> {
+    <span style="color:#a6e22e">workloadLabels</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">labels</span>.<span style="color:#a6e22e">Collection</span>{<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">Metadata</span>.<span style="color:#a6e22e">Labels</span>}
+    <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">SidecarScope</span> = <span style="color:#a6e22e">ps</span>.<span style="color:#a6e22e">getSidecarScope</span>(<span style="color:#a6e22e">node</span>, <span style="color:#a6e22e">workloadLabels</span>)
+  } <span style="color:#66d9ef">else</span> {
+    <span style="color:#75715e">// Gateways should just have a default scope with egress: */*
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">SidecarScope</span> = <span style="color:#a6e22e">DefaultSidecarScopeForNamespace</span>(<span style="color:#a6e22e">ps</span>, <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">ConfigNamespace</span>)
+  }
+  <span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">PrevSidecarScope</span> = <span style="color:#a6e22e">sidecarScope</span>
+}
+</code></pre></div><p>因为 <code>PushContext</code> 里保存了当前这次推送所用到的所有上下文，通过 <code>PushContext.sidecarsByNamespace</code> 就能拿到当前代理所在命名空间的所有 <code>Sidecar</code> 配置。再检查当前代理所依附的实例的 <code>Labels</code> 是否符合 <code>Sidecar</code> 定义的 <code>workloadSelector</code> :</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">ps</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">PushContext</span>) <span style="color:#a6e22e">getSidecarScope</span>(<span style="color:#a6e22e">proxy</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Proxy</span>, <span style="color:#a6e22e">workloadLabels</span> <span style="color:#a6e22e">labels</span>.<span style="color:#a6e22e">Collection</span>) <span style="color:#f92672">*</span><span style="color:#a6e22e">SidecarScope</span> {
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">sidecars</span>, <span style="color:#a6e22e">ok</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">ps</span>.<span style="color:#a6e22e">sidecarsByNamespace</span>[<span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">ConfigNamespace</span>]; <span style="color:#a6e22e">ok</span> {
+    <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">defaultSidecar</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SidecarScope</span>
+    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">wrapper</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">sidecars</span> {
+      <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">wrapper</span>.<span style="color:#a6e22e">Config</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">wrapper</span>.<span style="color:#a6e22e">Config</span>.<span style="color:#a6e22e">Spec</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+        <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">sidecar</span>.<span style="color:#a6e22e">GetWorkloadSelector</span>() <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+          <span style="color:#a6e22e">workloadSelector</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">labels</span>.<span style="color:#a6e22e">Instance</span>(<span style="color:#a6e22e">sidecar</span>.<span style="color:#a6e22e">GetWorkloadSelector</span>().<span style="color:#a6e22e">GetLabels</span>())
+          <span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">workloadLabels</span>.<span style="color:#a6e22e">IsSupersetOf</span>(<span style="color:#a6e22e">workloadSelector</span>) {
+            <span style="color:#66d9ef">continue</span>
+          }
+          <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">wrapper</span>
+        }
+        <span style="color:#a6e22e">defaultSidecar</span> = <span style="color:#a6e22e">wrapper</span>
+        <span style="color:#66d9ef">continue</span>
+      }
+      <span style="color:#75715e">// Not sure when this can happen (Config = nil ?)
+</span><span style="color:#75715e"></span>      <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">defaultSidecar</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">defaultSidecar</span> <span style="color:#75715e">// still return the valid one
+</span><span style="color:#75715e"></span>      }
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">wrapper</span>
+    }
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">defaultSidecar</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">defaultSidecar</span> <span style="color:#75715e">// still return the valid one
+</span><span style="color:#75715e"></span>    }
+  }
+    
+  <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">DefaultSidecarScopeForNamespace</span>(<span style="color:#a6e22e">ps</span>, <span style="color:#a6e22e">proxy</span>.<span style="color:#a6e22e">ConfigNamespace</span>)
+}
+</code></pre></div><p>这时就把 <code>SidecarScope</code> 和 <code>Proxy</code> 关联起来了，这里的 <code>SidecarScope</code> 已经是 <code>PushContext</code> 处理过的了，里面 <code>configDependencies</code> 都是有值的。这个值是在哪里设置的呢？在 <code>InitContext</code> 的时候，有个 <code>PushContext.initSidecarScope()</code> 方法，这个方法就是解析 <code>Sidecar</code> 里的具体内容，调用 <code>ConvertToSidecarScope</code> 将 <code>Engress</code> 和 <code>Ingress</code> 里的定义的服务找出来后，逐个调用 <code>AddConfigDependencies</code> 写入 <code>configuDependencies</code> 中。</p>
+<p><code>ConvertToSidecarScope</code> 函数的代码位于 <code>istio/pilot/pkg/model/sidecar.go:226</code> 中，限于篇幅，感兴趣的读者可以自行研读。</p>
+<p>到这里 <code>SidecarScope</code> 的整个处理流程就处理完了，在生产环境中运用好 <code>SidecarScope</code> 能极大的减小数据面收到的 <code>xDS</code> 的数量，希望这段代码分析能帮助各位读者更好的理解，在实际运用过程中可以更好的定位问题。</p>
+</li>
+<li>
+<p>PushConnection</p>
+<p>回到 <code>pushConnection</code> 的主流程，在 <code>Full=false</code> 下判断 <code>ProxyNeedsPush</code> ，确定需要推送后调用 <code>pushEds</code> 增量推送 <code>EDS</code> 。</p>
+<p>详细分析下 <code>pushEds</code> 的过程，首先遍历所有的 <code>Clusters</code> ，构建生成器生成 <code>EDS</code> ，然后调用 <code>con.send()</code> 进行推送：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">pushEds</span>(<span style="color:#a6e22e">push</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">PushContext</span>, <span style="color:#a6e22e">con</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>, <span style="color:#a6e22e">version</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">edsUpdatedServices</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#66d9ef">struct</span>{}) <span style="color:#66d9ef">error</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">clusterName</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Clusters</span>() {
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">builder</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">createEndpointBuilder</span>(<span style="color:#a6e22e">clusterName</span>, <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>, <span style="color:#a6e22e">push</span>)
+    <span style="color:#a6e22e">l</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">generateEndpoints</span>(<span style="color:#a6e22e">builder</span>)
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">l</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">continue</span>
+    }
+    
+    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">l</span>.<span style="color:#a6e22e">Endpoints</span> {
+      <span style="color:#a6e22e">endpoints</span> <span style="color:#f92672">+=</span> len(<span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">LbEndpoints</span>)
+    }
+    
+    <span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">l</span>.<span style="color:#a6e22e">Endpoints</span>) <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+      <span style="color:#a6e22e">empty</span><span style="color:#f92672">++</span>
+    }
+    <span style="color:#a6e22e">loadAssignments</span> = append(<span style="color:#a6e22e">loadAssignments</span>, <span style="color:#a6e22e">l</span>)
+  }
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#a6e22e">response</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">endpointDiscoveryResponse</span>(<span style="color:#a6e22e">loadAssignments</span>, <span style="color:#a6e22e">version</span>, <span style="color:#a6e22e">push</span>.<span style="color:#a6e22e">Version</span>, <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">RequestedTypes</span>.<span style="color:#a6e22e">EDS</span>)
+  <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">send</span>(<span style="color:#a6e22e">response</span>)
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>最后调用 <code>conn.steam.Send()</code> 就将 <code>EDS</code> 发送至数据面的客户端了。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// Send with timeout
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">conn</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>) <span style="color:#a6e22e">send</span>(<span style="color:#a6e22e">res</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryResponse</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#a6e22e">done</span> <span style="color:#f92672">:=</span> make(<span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">error</span>, <span style="color:#ae81ff">1</span>)
+  <span style="color:#a6e22e">t</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">NewTimer</span>(<span style="color:#a6e22e">SendTimeout</span>)
+  <span style="color:#66d9ef">go</span> <span style="color:#66d9ef">func</span>() {
+    <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">conn</span>.<span style="color:#a6e22e">stream</span>.<span style="color:#a6e22e">Send</span>(<span style="color:#a6e22e">res</span>)
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>    <span style="color:#a6e22e">done</span> <span style="color:#f92672">&lt;-</span> <span style="color:#a6e22e">err</span>
+  }()
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>如果是增量推送的话这里就退出了，全量推送和只推送 <code>EDS</code> 一样，也会先判断下 <code>ProxyNeedsPush</code> ，确定需要后开始全量推送，根据 <code>pushTypes</code> 的不同分别推送 <code>CDS</code> 、 <code>EDS</code> 、 <code>LDS</code> 和 <code>RDS</code> :</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#a6e22e">pushTypes</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">PushTypeFor</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>, <span style="color:#a6e22e">pushEv</span>)
+    
+<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Watching</span>(<span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">ClusterShortType</span>) <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">pushTypes</span>[<span style="color:#a6e22e">CDS</span>] {
+  <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushCds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">currentVersion</span>)
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+} <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+  <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span>.<span style="color:#a6e22e">RegisterEvent</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">ConID</span>, <span style="color:#a6e22e">ClusterEventType</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">noncePrefix</span>)
+}
+    
+<span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Clusters</span>()) &gt; <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">pushTypes</span>[<span style="color:#a6e22e">EDS</span>] {
+  <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushEds</span>(<span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">currentVersion</span>, <span style="color:#66d9ef">nil</span>)
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+} <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+  <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span>.<span style="color:#a6e22e">RegisterEvent</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">ConID</span>, <span style="color:#a6e22e">EndpointEventType</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">noncePrefix</span>)
+}
+<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Watching</span>(<span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">ListenerShortType</span>) <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">pushTypes</span>[<span style="color:#a6e22e">LDS</span>] {
+  <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushLds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">currentVersion</span>)
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+} <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+  <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span>.<span style="color:#a6e22e">RegisterEvent</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">ConID</span>, <span style="color:#a6e22e">ListenerEventType</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">noncePrefix</span>)
+}
+<span style="color:#66d9ef">if</span> len(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">Routes</span>()) &gt; <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">pushTypes</span>[<span style="color:#a6e22e">RDS</span>] {
+  <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">pushRoute</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">push</span>, <span style="color:#a6e22e">currentVersion</span>)
+  <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+  }
+} <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+  <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">StatusReporter</span>.<span style="color:#a6e22e">RegisterEvent</span>(<span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">ConID</span>, <span style="color:#a6e22e">RouteEventType</span>, <span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">noncePrefix</span>)
+}
+<span style="color:#a6e22e">proxiesConvergeDelay</span>.<span style="color:#a6e22e">Record</span>(<span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Since</span>(<span style="color:#a6e22e">pushEv</span>.<span style="color:#a6e22e">start</span>).<span style="color:#a6e22e">Seconds</span>())
+<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+</code></pre></div><p>推送的逻辑和 <code>EDS</code> 一样，这里就不再赘述。至此，所有 <code>xDS</code> 的下发就完成了。</p>
+</li>
+</ol>
+<h3 id="client-request">Client Request</h3>
+<p>这部分的内容比较简单，核心推送和上面的 <code>sendPushes</code> 一样，流程先是从 <code>reqChannel</code> 中获取 <code>DiscoveryRequest</code> 看客户端订阅了哪些 <code>xDS</code> ，组装推送即可。</p>
+<p><img src="./images/envoyxdsserver-client-requests.png" alt="img"></p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">DiscoveryServer</span>) <span style="color:#a6e22e">processRequest</span>(<span style="color:#a6e22e">discReq</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">discovery</span>.<span style="color:#a6e22e">DiscoveryRequest</span>, <span style="color:#a6e22e">con</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Connection</span>) <span style="color:#66d9ef">error</span> {
+  <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">switch</span> <span style="color:#a6e22e">discReq</span>.<span style="color:#a6e22e">TypeUrl</span> {
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">v2</span>.<span style="color:#a6e22e">ClusterType</span>, <span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">ClusterType</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleTypeURL</span>(<span style="color:#a6e22e">discReq</span>.<span style="color:#a6e22e">TypeUrl</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">RequestedTypes</span>.<span style="color:#a6e22e">CDS</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleCds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">discReq</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">v2</span>.<span style="color:#a6e22e">ListenerType</span>, <span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">ListenerType</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleTypeURL</span>(<span style="color:#a6e22e">discReq</span>.<span style="color:#a6e22e">TypeUrl</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">RequestedTypes</span>.<span style="color:#a6e22e">LDS</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleLds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">discReq</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">v2</span>.<span style="color:#a6e22e">RouteType</span>, <span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">RouteType</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleTypeURL</span>(<span style="color:#a6e22e">discReq</span>.<span style="color:#a6e22e">TypeUrl</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">RequestedTypes</span>.<span style="color:#a6e22e">RDS</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleRds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">discReq</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">v2</span>.<span style="color:#a6e22e">EndpointType</span>, <span style="color:#a6e22e">v3</span>.<span style="color:#a6e22e">EndpointType</span>:
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleTypeURL</span>(<span style="color:#a6e22e">discReq</span>.<span style="color:#a6e22e">TypeUrl</span>, <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">con</span>.<span style="color:#a6e22e">node</span>.<span style="color:#a6e22e">RequestedTypes</span>.<span style="color:#a6e22e">EDS</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleEds</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">discReq</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  <span style="color:#66d9ef">default</span>:
+    <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">s</span>.<span style="color:#a6e22e">handleCustomGenerator</span>(<span style="color:#a6e22e">con</span>, <span style="color:#a6e22e">discReq</span>)
+    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+      <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
+    }
+  }
+  <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+</code></pre></div><h3 id="总结">总结</h3>
+<p>限于篇幅， <code>xDS</code> 的生成逻辑我们将在下一篇源码分析中讲解，也就是生成器中构建 <code>xDS</code> 的地方，这部分涉及到很多数据的转化，内容繁杂，需要整篇分析才能讲解的清楚。</p>
+<p><code>xDS</code> 的推送流程到这里就讲完了。我们从 <code>EnvoyXdsServer</code> 的结构开始，对其启动流程、怎么与客户端建立连接、怎么感知配置和服务变化、怎么防抖、怎么推送、<code>SidecarScope</code> 如何工作等都做了比较细致的分析，虽然已经阅读了源码，但是距离服务网格化的实际落地、实践中的各种性能问题、针对业务的优化，我们还有很长一段路要走。希望今天的文章只是开始，请关注本系列后续的分析，与君共勉。</p>
+
+        </div>
+        <!-- tags -->
+        <div class="mb-3">
+          <h5 class="d-inline-block mr-3">Tags:</h5>
+          <ul class="list-inline d-inline-block">
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/istio"> 
+            Istio</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/pilot"> , 
+            Pilot</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/cloudnative"> , 
+            Cloudnative</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/servermesh"> , 
+            Servermesh</a>
+            
+          </ul>
+        </div>
+        <!-- previous -->
+        <div class="mb-3 link-article">
+  <div class="pre-article">
+    
+    <div><i class="fa fa-arrow-left"></i> 上一篇</div>
+    <a href="https://cloudnative.to/blog/istio-pilot-2/">Istio Pilot 源码分析（二）</a>
+    
+  </div>
+  <div class="next-article">
+    
+  </div>
+</div>
+
+
+        <!-- previous -->
+
+        <!-- recommend -->
+        
+
+<div class="mb-3">
+  <h2>文章推荐</h2>
+  <ul class="related">
+  
+    <li><a href="/blog/istio-pilot-2/">Istio Pilot 源码分析（二）</a></li>
+  
+    <li><a href="/blog/istio-pilot/">Istio Pilot 源码分析（一）</a></li>
+  
+  </ul>
+</div>
+
+
+        <!-- comments -->
+
+        
+        <div id="gitalk-container"></div>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+        <script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+        <script>
+          window.onload = function() {
+              const gitalk = new Gitalk({
+              clientID: '0f001988910adcfadfb7',
+              clientSecret: '14f7d06ee5e6575c295d18fc11616e8cb60fb84e',
+              repo: 'cloudnativeto.github.io',
+              owner: 'cloudnativeto',
+              admin: ['rootsongjc'],
+              id: hex_md5(hex_md5(window.location.pathname + window.location.hash)), 
+              distractionFreeMode: false 
+            });
+            (function() {
+              if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+                document.getElementById('gitalk-container').innerHTML = 'Gitalk comments not available by default when the website is previewed locally.';
+                return;
+              }
+              gitalk.render('gitalk-container');
+            })();
+          }
+        </script>
+        
+      </div>
+      <!-- sidebar -->
+<aside class="col-lg-4 order-1 order-lg-2">
+  <!-- tags -->
+  <div class="bg-white px-4 py-5 box-shadow mb-5 word-cloud">
+    <h4 class="mb-4">标签</h4>
+    
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      <div id="tag-cloud" style="padding: 5px 15px">
+      
+        
+          
+          
+          
+          <a href="/tags/bpf" style="font-size:1rem">bpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cicd" style="font-size:1.1666666666666667rem">cicd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/client-go" style="font-size:1.3333333333333333rem">client-go</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloud-native" style="font-size:1.1666666666666667rem">cloud-native</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloudnative" style="font-size:1.3333333333333333rem">cloudnative</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/crossplane" style="font-size:1rem">crossplane</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/devops" style="font-size:1rem">devops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/envoy" style="font-size:1.1666666666666667rem">envoy</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/etcd" style="font-size:1rem">etcd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/flamegraph" style="font-size:1rem">flamegraph</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/informer" style="font-size:1.5rem">informer</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/istio" style="font-size:1.8333333333333333rem">istio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubebuilder" style="font-size:1rem">kubebuilder</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubernetes" style="font-size:1.5rem">kubernetes</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/linux%e5%86%85%e6%a0%b8" style="font-size:1rem">linux内核</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservices" style="font-size:1.1666666666666667rem">microservices</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/mosn" style="font-size:1rem">mosn</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/oam" style="font-size:1.1666666666666667rem">oam</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/operator" style="font-size:1rem">operator</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/pilot" style="font-size:1.3333333333333333rem">pilot</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/profile" style="font-size:1rem">profile</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/servermesh" style="font-size:1.3333333333333333rem">servermesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/service-mesh" style="font-size:1rem">service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/spring-cloud" style="font-size:1rem">spring-cloud</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tcpdump" style="font-size:1rem">tcpdump</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tekton" style="font-size:1rem">tekton</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vxlan" style="font-size:1rem">vxlan</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wasm" style="font-size:1rem">wasm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wireshark" style="font-size:1rem">wireshark</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/zookeeper" style="font-size:1rem">zookeeper</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e5%ad%a6%e4%b9%a0%e5%b0%8f%e7%bb%84" style="font-size:1rem">学习小组</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e5%bc%80%e6%ba%90" style="font-size:1rem">开源</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e6%ba%90%e7%a0%81%e5%88%86%e6%9e%90" style="font-size:1rem">源码分析</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e6%ba%90%e7%a0%81%e7%90%86%e8%a7%a3" style="font-size:1.1666666666666667rem">源码理解</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e7%a4%be%e5%8c%ba" style="font-size:1.1666666666666667rem">社区</a>
+        
+      
+      </div>
+    
+  </div>
+
+  <!-- profile -->
+  <div class="bg-pink px-4 py-5 box-shadow mb-5 avatar-content">
+    <div class="avatar">
+      <div class="mx-auto avatar-wrp">
+        <img class="rounded-circle avatar-img" src="/images/profile/haidong.jpeg">
+      </div>
+      <p class="avatar-name">
+        <strong class="text-dark "><a href="http://haidong.dev/">张海东</a></strong> 
+      </p>
+      <p>多点生活（成都）云原生开发工程师。</p>
+    </div>
+  </div>
+  <!-- toc -->
+  
+  <div class="bg-white px-4 py-5 box-shadow mb-5 sticky-top">
+    <h4 class="mb-4">目录</h4>
+    <nav id="TableOfContents">
+  <ul>
+    <li><a href="#envoyxdsserver">EnvoyXdsServer</a>
+      <ul>
+        <li><a href="#initialization">Initialization</a></li>
+        <li><a href="#receive-connection">Receive Connection</a></li>
+        <li><a href="#receive-change">Receive Change</a></li>
+        <li><a href="#handle-updates">Handle Updates</a></li>
+        <li><a href="#send-pushes">Send Pushes</a></li>
+        <li><a href="#client-request">Client Request</a></li>
+        <li><a href="#总结">总结</a></li>
+      </ul>
+    </li>
+  </ul>
+</nav>
+  </div>
+
+</aside>
+<!-- /sidebar -->
+
+    </div>
+  </div>
+</section>
+<!-- /blog details -->
+
+
+
+<footer>
+  
+  <div class="section bg-secondary">
+    <div class="container">
+      <div class="row justify-content-between">
+        
+        <div class="col-lg-5 mb-5 mb-lg-0">
+          
+          <a class="mb-4 d-inline-block" href="/"><img class="img-fluid"
+              src="/images/logo-alt.png" alt="Cloud Native Community" width="60%"></a>
+          <p class="text-light mb-5">云原生社区始于 2016 年成立的 Kubernetes &amp; CloudNative 实战群，覆盖了上千名早期云原生拥护者。在此基础上于 2020 年 5 月，由 CNCF 大使、开源领域意见领袖共同发起将原社群升级为云原生社区，旨在构建一个开放、包容的沟通环境，促进云原生技术的传播和普及。</p>
+          <h4 class="text-white mb-4">关注我们</h4>
+          
+          <ul class="list-inline social-icon-alt">
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://twitter.com/cloudnativeto"><i class="fa fa-twitter"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://github.com/cloudnativeto"><i class="fa fa-github"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://cloudnativecommunity.slack.com"><i class="fa fa-slack"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="/contact"><i class="fa fa-wechat"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="mailto:contact@cloudnative.to"><i class="fa fa-envelope"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://cloudnative.to/blog/index.xml"><i class="fa fa-rss"></i></a>
+            </li>
+            
+          </ul>
+        </div>
+        <div class="col-lg-5 mb-5 mb-lg-0">
+            
+            
+            
+            
+            
+            <div class="mb-5 address">
+              <h4 class="text-white mb-4">联系信息</h4>
+              <p class="text-light mb-3"><a href="https://github.com/cloudnativeto/community/issues/56">北京</a>|<a href="https://github.com/cloudnativeto/community/issues/51">上海</a>|<a href="https://github.com/cloudnativeto/community/issues/58">成都</a>|<a href="https://github.com/cloudnativeto/community/issues/60">深圳</a>|<a href="https://github.com/cloudnativeto/community/issues/53">杭州</a>|<a href="https://github.com/cloudnativeto/community/issues/59">广州</a>|<a href="https://github.com/cloudnativeto/community/issues/55">武汉</a>|<a href="https://github.com/cloudnativeto/community/issues/57">南京</a>|<a href="https://github.com/cloudnativeto/community/issues/61">西安</a>|<a href="https://github.com/cloudnativeto/community/issues/62">大连</a>|<a href="https://github.com/cloudnativeto/community/issues/52">长沙</a>|<a href="https://github.com/cloudnativeto/community/issues/66">苏州</a>|<a href="https://github.com/cloudnativeto/community/issues/67">珠海</a>|<a href="https://github.com/cloudnativeto/community/issues/78">重庆</a>|<a href="https://github.com/cloudnativeto/community/issues/82">济南</a>|<a href="https://github.com/cloudnativeto/community/issues/83">厦门</a>|<a href="https://github.com/cloudnativeto/community/issues/86">无锡</a></p>
+              <p class="text-light mb-3"></p>
+              <p class="text-light mb-3">关注云原生社区微信公众号，加入社区并获取最新资讯。</p>
+              <p class="text-light mb-3"><img src="/images/wechat-qrcode.png" width="356px"></p>
+            </div>
+            
+            
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="bg-secondary-darken py-4">
+    <div class="container">
+      <div class="row">
+        <div class="col-md-6 text-center text-md-left mb-3 mb-md-0">
+          <p class="mb-0 text-white">Copyright © 2020 云原生社区</p>
+        </div>
+        <div class="col-md-6 text-center text-md-right">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item mx-0"><a class="d-inline-block px-3 text-white" href="/code-of-conduct"
+                class="text-white">社区守则</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+
+<script>
+  var indexURL = "/index.json"
+</script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/jQuery/jquery.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/google-map/gmap.js"></script>
+
+<script src="/plugins/venobox/venobox.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/search/search.js"></script>
+
+<script src="/plugins/bigPicture/bigPicture.js"></script>
+
+<script src="/plugins/hex_md5/hex_md5.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.js"></script>
+
+<!-- Algolia -->
+<script src="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.js"></script>
+<script>
+  docsearch({
+    apiKey: '870a8addaf7a712ecc6e33ce9def93b1',
+    indexName: 'DocSearch',
+    appId: '2506Q6I4IV',
+    inputSelector: '#js-algolia-btn',
+    debug: false,
+  });
+</script>
+
+<!-- google analitycs -->
+
+<script>
+  (function (i, s, o, g, r, a, m) {
+    i['GoogleAnalyticsObject'] = r;
+    i[r] = i[r] || function () {
+      (i[r].q = i[r].q || []).push(arguments)
+    }, i[r].l = 1 * new Date();
+    a = s.createElement(o),
+      m = s.getElementsByTagName(o)[0];
+    a.async = 1;
+    a.src = g;
+    m.parentNode.insertBefore(a, m)
+  })(window, document, 'script', '//www.google-analytics.com/analytics.js', 'ga');
+  ga('create', 'UA-93485976-4', 'auto');
+  ga('send', 'pageview');
+</script>
+
+</body>
+
+</html>
