@@ -218,20 +218,21 @@
           <img src="/"  onerror="this.src='\/images\/blog\/flannel-vxlan.png'" alt="post thumb" class="img-fluid w-100">
            <div class="card-type">Kubernetes</div>
         </div>
-        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://zhangguanzhang.github.io/">张馆长</a></strong>
+        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://zhangguanzhang.github.io/">张浩</a></strong>
           
             发表于 <strong class="text-dark">2020年5月28日</strong></div>
         <hr>
         <div class="content">
           <h2 id="前言">前言</h2>
-<p>这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的A记录 UDP 下查询可能有问题。原因是 <code>v1.17+</code> 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面， WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是<code>05/28</code>，最开始发现是上周五也就是<code>05/23</code>号，文章从时间线写起，因为很多时候想发文章但是没空。</p>
+<p>这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的 A 记录 UDP 下查询可能有问题。原因是 <code>v1.17+</code> 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面， WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是 <code>05/28</code>，最开始发现是上周五也就是 <code>05/23</code> 号，文章从时间线写起，因为很多时候想发文章但是没空。</p>
+<p>2020-07-19 官方版本 v1.18.6, v1.16.13, v1.17.9+ 已经修复这个问题，可以同版本内升级，或者只切 kube-proxy 版本。</p>
 <h2 id="由来">由来</h2>
-<p>上周五我经过同事的工位看到同事的桌面是 <code>kubectl get po</code> 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套<code>1.18.2</code>的集群。1.18的 kube-proxy 的 ipvs 包的 parseIP 有 bug ，我推荐他换<code>v1.17.5</code>。他当时在部署一个入门的 SVC 实验，无法解析域名。使用dig命令排查了下，下面是对照:</p>
+<p>上周五我经过同事的工位看到同事的桌面是 <code>kubectl get po</code> 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套 <code>1.18.2</code> 的集群。1.18 的 kube-proxy 的 ipvs 包的 parseIP 有 bug ，我推荐他换 <code>v1.17.5</code>。他当时在部署一个入门的 SVC 实验，无法解析域名。使用 dig 命令排查了下，下面是对照：</p>
 <ul>
 <li><code>dig @&lt;podIP&gt; +short kubernetes.default.svc.cluster.local</code> 能解析</li>
 <li><code>dig @10.96.0.10 +short kubernetes.default.svc.cluster.local</code> 超时</li>
 </ul>
-<p>很多市面上的kubeadm部署教程都是直接命令 <code>kubeadm init</code> 的，所以我推荐同事去按照我文章的 <a href="https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/">kubeadm部署</a> 一套后再试试，叫他用<code>v1.17</code>的最新版本<code>v1.17.5</code>，结果还是上面一样。 coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：</p>
+<p>很多市面上的 kubeadm 部署教程都是直接命令 <code>kubeadm init</code> 的，所以我推荐同事去按照我文章的 <a href="https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/">kubeadm 部署</a> 一套后再试试，叫他用<code>v1.17</code>的最新版本<code>v1.17.5</code>，结果还是上面一样。 coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：</p>
 <ul>
 <li><code>curl -I 10.96.0.10:9153/metrics</code> 超时，很久之后才有返回</li>
 <li><code>curl -I &lt;podIP&gt;:9153/metrics</code> 能直接返回</li>
@@ -246,7 +247,7 @@ node2    Ready    &lt;none&gt;   7d7h   v1.18.2   10.0.100.15   &lt;none&gt;    
 $ kubectl get po -o wide -n kube-system -l k8s-app<span style="color:#f92672">=</span>kube-dns
 NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE    NOMINATED NODE   READINESS GATES
 coredns-546565776c-v5wwg   1/1     Running   <span style="color:#ae81ff">2</span>          25h   10.244.2.73   node2   &lt;none&gt;           &lt;none&gt;
-</code></pre></div><p>多次尝试发现很久的时间都是一样，用 time 命令观察了下一直是63秒返回。包括其他任何 SVC 都是这样。</p>
+</code></pre></div><p>多次尝试发现很久的时间都是一样，用 time 命令观察了下一直是 63 秒返回。包括其他任何 SVC 都是这样。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-shell" data-lang="shell">$ time    curl -I 10.96.0.10:9153/metrics
 HTTP/1.1 <span style="color:#ae81ff">200</span> OK
 Content-Type: text/plain; version<span style="color:#f92672">=</span>0.0.4; charset<span style="color:#f92672">=</span>utf-8
@@ -256,11 +257,11 @@ Date: Wed, <span style="color:#ae81ff">25</span> May <span style="color:#ae81ff"
 real	1m3.091s
 user	0m0.002s
 sys	0m0.007s
-</code></pre></div><p>proxyMode 是 ipvs ，用 ipvsadm 看下超时的时候的状态，一直是<code>SYN_RECV</code>，也就是发送了 SYN ，没收到回包。</p>
+</code></pre></div><p>proxyMode 是 ipvs ，用 ipvsadm 看下超时的时候的状态，一直是 <code>SYN_RECV</code>，也就是发送了 SYN ，没收到回包。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-shell" data-lang="shell">$ ipvsadm -lnc |&amp; grep <span style="color:#ae81ff">9153</span>
 TCP 00:59  SYN_RECV    10.96.0.10:41282   10.96.0.10:9153    10.244.2.73:9153
 </code></pre></div><h3 id="抓包">抓包</h3>
-<p>因为 CNI 使用的 flannel ，用的 VXLAN 模式。master 上抓9153和<code>flannel.1</code>的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的:</p>
+<p>因为 CNI 使用的 flannel ，用的 VXLAN 模式。master 上抓 9153 和 <code>flannel.1</code> 的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-txt" data-lang="txt">[root@master /root]# tcpdump -nn -i flannel.1 port 9153
 tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
 listening on flannel.1, link-type EN10MB (Ethernet), capture size 262144 bytes
@@ -338,16 +339,16 @@ IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, 
 IP 10.244.2.73.9153 &gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
 16:31:59.838836 IP 10.0.100.3.56618 &gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
 IP 10.244.0.0.2201 &gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
-</code></pre></div><p>先看上面的第一部分，搜了下资料，得知 TCP 默认 SYN 报文最大 retry 5次，每次超时了翻倍，<code>1s -&gt; 3s -&gt; 7s -&gt; 15s -&gt; 31s -&gt; 63s</code>。只有63秒的时候 node 的机器上才收到了 VXLAN 的报文。说明 POD 所在 node 压根没收到63秒之前的。</p>
+</code></pre></div><p>先看上面的第一部分，搜了下资料，得知 TCP 默认 SYN 报文最大 retry 5 次，每次超时了翻倍，<code>1s -&gt; 3s -&gt; 7s -&gt; 15s -&gt; 31s -&gt; 63s</code>。只有 63 秒的时候 node 的机器上才收到了 VXLAN 的报文。说明 POD 所在  node 压根没收到 63 秒之前的。</p>
 <p>一般 LVS 的 dr 模式下 TCP 的时间戳混乱或者其他几个 ARP 的内核参数不对下 <code>SYN</code> 是一直收不到的而不是63秒后有结果，所以和内核相关参数无关。于是同样上面的步骤 tcpdump 抓包，加上<code>-w filename.pcap</code>选项把抓的包导出下来导入到 wireshark 里准备看看。</p>
 <h3 id="报文分析">报文分析</h3>
-<p>9153的包 wireshark 里看63秒前面都是 TCP 的 SYN 重传，看到了 master 上向外发送的 VXLAN 报文的时候有了发现。</p>
-<p>可以看到 UDP 的 checksum 是<code>0xffff</code>，我对 UDP 报文不太熟悉， UDP 的 header 的 Checksum 没记错的话<code>CRC32</code>校验的，不可能是这种两个字节都置1的 <code>0xffff</code> ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。</p>
+<p>9153 的包 wireshark 里看 63 秒前面都是 TCP 的 SYN 重传，看到了 master 上向外发送的 VXLAN 报文的时候有了发现。</p>
+<p>可以看到 UDP 的 checksum 是<code>0xffff</code>，我对 UDP 报文不太熟悉， UDP 的 header 的 Checksum 没记错的话 <code>CRC32</code> 校验的，不可能是这种两个字节都置 1 的 <code>0xffff</code> ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。</p>
 <p><img src="vxlan-udp-csum1.png" alt="vxlan1"></p>
 <p>wireshark 的<code>编辑</code>-&gt;<code>首选项</code>-&gt;<code>Protocols</code>-&gt;<code>UDP</code>-&gt;<code>Validate the UDP checksum if possible</code> 勾上更直观看。</p>
 <p><img src="vxlan-udp-csum2.png" alt="vxlan1"></p>
 <h3 id="不是根本的解决方法">不是根本的解决方法</h3>
-<p>搜了下<code>wireshark linux udp checksum incorrect</code>，都是推荐把 <code>Checksum Offload</code> disable 掉就行了，例如我这里是 flannel ，则是：</p>
+<p>搜了下 <code>wireshark linux udp checksum incorrect</code>，都是推荐把 <code>Checksum Offload</code> disable 掉就行了，例如我这里是 flannel ，则是：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-shell" data-lang="shell">$ /sbin/ethtool -K flannel.1 tx-checksum-ip-generic off
 Actual changes:
 tx-checksumming: off
@@ -358,7 +359,7 @@ tcp-segmentation-offload: off
 	tx-tcp6-segmentation: off <span style="color:#f92672">[</span>requested on<span style="color:#f92672">]</span>
 	tx-tcp-mangleid-segmentation: off <span style="color:#f92672">[</span>requested on<span style="color:#f92672">]</span>
 udp-fragmentation-offload: off <span style="color:#f92672">[</span>requested on<span style="color:#f92672">]</span>
-</code></pre></div><p>再测下正常，而 WEAVE 他们也用的 VXLAN 模式，但是他们在创建网卡的时候把这个已经 off 掉了，所以 WEAVE 的 VXLAN 模式在<code>v1.17+</code>集群没出现这个问题。</p>
+</code></pre></div><p>再测下正常，而 WEAVE 他们也用的 VXLAN 模式，但是他们在创建网卡的时候把这个已经 off 掉了，所以 WEAVE 的 VXLAN 模式在 <code>v1.17+</code> 集群没出现这个问题。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-shell" data-lang="shell">$ time curl -I 10.96.0.10:9153
 HTTP/1.1 <span style="color:#ae81ff">404</span> Not Found
 Content-Type: text/plain; charset<span style="color:#f92672">=</span>utf-8
@@ -370,8 +371,8 @@ Content-Length: <span style="color:#ae81ff">19</span>
 real	0m0.009s
 user	0m0.005s
 sys	0m0.003s
-</code></pre></div><p>你以为这样就完了？其实并没有，因为我自己维护了一套 <a href="https://github.com/zhangguanzhang/Kubernetes-ansible">ansible 部署 kubernetes</a> 的方案，每次新版本发布我都会实际测下。并且同事反映了他同样云主机开出来用我 ansible 部署<code>v1.17.5</code>没有这个问题。这就很奇怪了，原因后面说，请接着继续看。</p>
-<h3 id="什么是checksum-offload">什么是checksum offload</h3>
+</code></pre></div><p>你以为这样就完了？其实并没有，因为我自己维护了一套 <a href="https://github.com/zhangguanzhang/Kubernetes-ansible">ansible 部署 kubernetes</a> 的方案，每次新版本发布我都会实际测下。并且同事反映了他同样云主机开出来用我 ansible 部署 <code>v1.17.5</code> 没有这个问题。这就很奇怪了，原因后面说，请接着继续看。</p>
+<h3 id="什么是-checksum-offload">什么是 checksum offload</h3>
 <p>Checksum Offload 是网卡的一个功能选项。如果该选项开启，则网卡层面会计算需要发送或者接收到的消息的校验和，从而节省 CPU 的计算开销。此时，在需要发送的消息到达网卡前，系统会在报头的校验和字段填充一个随机值。但是，尽管校验和卸载能够降低 CPU 的计算开销，但受到计算能力的限制，某些环境下的一些网络卡计算速度不如主频超过 400MHz 的 CPU 快。</p>
 <h2 id="正文">正文</h2>
 <h3 id="对照组">对照组</h3>
@@ -445,7 +446,7 @@ sys	0m0.003s
 </tr>
 </tbody>
 </table>
-<p>这就看起来很迷了。但是排查出和 flannel 无关，感觉 kube-proxy 有关系，然后今天<code>05/28</code>针对 kube-proxy 做了个对照组：</p>
+<p>这就看起来很迷了。但是排查出和 flannel 无关，感觉 kube-proxy 有关系，然后今天 <code>05/28</code> 针对 kube-proxy 做了个对照组：</p>
 <table>
 <thead>
 <tr>
@@ -501,12 +502,12 @@ sys	0m0.003s
 </tr>
 </tbody>
 </table>
-<p>可以看出就是1.17以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会， 在github 上 <a href="https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0">compare 了下v1.17.0和v1.16.3</a>。</p>
-<p>发现了 <a href="https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30">Dockerfile的改动</a> ， <code>1.17.0</code>里的 Dockerfile 的BASEIMAGE是用  <a href="https://github.com/coreos/flannel/pull/1282#issuecomment-635273081">指定了一个源安装了最新的iptables</a>，然后利用<code>update-alternatives</code>把脚本<code>/usr/sbin/iptables-wrapper</code>去替代<code>iptables</code> 来检测应该使用<code>nft</code>还是<code>legacy</code>， hack 下镜像回自带源里的 iptables 验证下。</p>
+<p>可以看出就是 1.17 以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会， 在 github 上 <a href="https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0">compare 了下 v1.17.0 和 v1.16.3 </a>。</p>
+<p>发现了 <a href="https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30">Dockerfile 的改动</a>，<code>1.17.0</code> 里的 Dockerfile 的 BASEIMAGE 是用  <a href="https://github.com/coreos/flannel/pull/1282#issuecomment-635273081">指定了一个源安装了最新的 iptables</a>，然后利用 <code>update-alternatives</code> 把脚本 <code>/usr/sbin/iptables-wrapper</code> 去替代 <code>iptables</code> 来检测应该使用 <code>nft</code> 还是 <code>legacy</code>， hack 下镜像回自带源里的 iptables 验证下。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-Dockerfile" data-lang="Dockerfile"><span style="color:#66d9ef">FROM</span><span style="color:#e6db74"> registry.aliyuncs.com/google_containers/kube-proxy:v1.17.5</span><span style="color:#960050;background-color:#1e0010">
 </span><span style="color:#960050;background-color:#1e0010"></span><span style="color:#66d9ef">RUN</span> rm -f /usr/sbin/iptables <span style="color:#f92672">&amp;&amp;</span> <span style="color:#960050;background-color:#1e0010">
 </span><span style="color:#960050;background-color:#1e0010"></span>    clean-install iptables<span style="color:#960050;background-color:#1e0010">
-</span></code></pre></div><p>构建的镜像推送到了 dockerhub 上<code>zhangguanzhang/hack-kube-proxy:v1.17.5</code>，更改下集群 kube-proxy ds 的镜像。</p>
+</span></code></pre></div><p>构建的镜像推送到了 dockerhub 上 <code>zhangguanzhang/hack-kube-proxy:v1.17.5</code>，更改下集群 kube-proxy ds 的镜像。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-shell" data-lang="shell">$ kubectl -n kube-system get ds kube-proxy -o yaml | grep image:
         image: zhangguanzhang/hack-kube-proxy:v1.17.5
 </code></pre></div><p>测试访问成功。</p>
@@ -522,18 +523,18 @@ real	0m0.008s
 user	0m0.003s
 sys	0m0.003s
 </code></pre></div><p>对于这个问题我在 <a href="https://github.com/coreos/flannel/pull/1282">flannel 的 pr</a> 下面也参与了回复，同时在官方 github 上提了一个 <a href="https://github.com/kubernetes/kubernetes/issues/91519">issue</a>。</p>
-<p>这个问题的触发是由于<code>v1.17+</code>的 kube-proxy 的 docker 镜像里安装了最新的 iptables ， <code>--random-fully</code>选项<a href="https://github.com/kubernetes/kubernetes/issues/88986#issuecomment-635640143">会触发内核vxlan的bug</a>。</p>
+<p>这个问题的触发是由于<code>v1.17+</code>的 kube-proxy 的 docker 镜像里安装了最新的 iptables， <code>--random-fully</code> 选项<a href="https://github.com/kubernetes/kubernetes/issues/88986#issuecomment-635640143">会触发内核 vxlan 的 bug</a>。</p>
 <h2 id="总结">总结</h2>
-<p>目前解决问题三种办法:</p>
+<p>目前解决问题三种办法：</p>
 <ul>
 <li>关闭 CNI 的 VXLAN 网卡的 <code>checksum offload</code></li>
 <li>更改 Docker 镜像</li>
-<li>升级到新内核，具体版本就不知道了，只要在这个 <a href="https://github.com/torvalds/linux/commit/ea64d8d6c675c0bb712689b13810301de9d8f77a">内核pr</a> 合并后出的内核版本都行，有人说这些可以 <code>Stable kernels 5.6.13, 5.4.41, 4.19.123, 4.14.181 and later have the checksum patch included.</code></li>
+<li>升级到新内核，具体版本就不知道了，只要在这个 <a href="https://github.com/torvalds/linux/commit/ea64d8d6c675c0bb712689b13810301de9d8f77a">内核 pr</a> 合并后出的内核版本都行，有人说这些可以 <code>Stable kernels 5.6.13, 5.4.41, 4.19.123, 4.14.181 and later have the checksum patch included.</code></li>
 </ul>
 <h2 id="参考链接">参考链接</h2>
 <ul>
-<li><a href="https://blog.csdn.net/u010039418/article/details/78234570">TCP超时重传定时器梳理</a></li>
-<li><a href="https://wiki.wireshark.org/CaptureSetup/Offloading">wireshark文档</a></li>
+<li><a href="https://blog.csdn.net/u010039418/article/details/78234570">TCP 超时重传定时器梳理</a></li>
+<li><a href="https://wiki.wireshark.org/CaptureSetup/Offloading">wireshark 文档</a></li>
 <li><a href="https://zh.wikipedia.org/wiki/TCP%E6%A0%A1%E9%AA%8C%E5%92%8C%E5%8D%B8%E8%BD%BD">offloading</a></li>
 </ul>
 
@@ -628,6 +629,13 @@ sys	0m0.003s
           
           
           
+          <a href="/tags/arm" style="font-size:1rem">arm</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/bpf" style="font-size:1.1rem">bpf</a>
         
       
@@ -754,6 +762,13 @@ sys	0m0.003s
           
           
           &middot;
+          <a href="/tags/kylin" style="font-size:1rem">kylin</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/linux%e5%86%85%e6%a0%b8" style="font-size:1rem">linux内核</a>
         
       
@@ -845,7 +860,7 @@ sys	0m0.003s
           
           
           &middot;
-          <a href="/tags/vxlan" style="font-size:1rem">vxlan</a>
+          <a href="/tags/vxlan" style="font-size:1.1rem">vxlan</a>
         
       
         
@@ -937,6 +952,17 @@ sys	0m0.003s
   </div>
 
   <!-- profile -->
+  <div class="bg-pink px-4 py-5 box-shadow mb-5 avatar-content">
+    <div class="avatar">
+      <div class="mx-auto avatar-wrp">
+        <img class="rounded-circle avatar-img" src="/images/profile/zhangguanzhang.png">
+      </div>
+      <p class="avatar-name">
+        <strong class="text-dark "><a href="https://zhangguanzhang.github.io/">张浩</a></strong> 
+      </p>
+      <p>金山办公软件运维开发工程师，containers/podman 的 Collaborator。目前主要从事运维和 K8S 相关的工作。</p>
+    </div>
+  </div>
   <!-- toc -->
   
   <div class="bg-white px-4 py-5 box-shadow mb-5 sticky-top">
@@ -949,7 +975,7 @@ sys	0m0.003s
         <li><a href="#抓包">抓包</a></li>
         <li><a href="#报文分析">报文分析</a></li>
         <li><a href="#不是根本的解决方法">不是根本的解决方法</a></li>
-        <li><a href="#什么是checksum-offload">什么是checksum offload</a></li>
+        <li><a href="#什么是-checksum-offload">什么是 checksum offload</a></li>
       </ul>
     </li>
     <li><a href="#正文">正文</a>
