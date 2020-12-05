@@ -284,18 +284,18 @@
 <li>其它方式</li>
 </ul>
 <h2 id="节点代理模型">节点代理模型</h2>
-<p>在 kubernetes 中，你可以将应用程序定义为 <code>Service</code>。<code>Service</code> 是一种抽象，它定义了一组 Pods 的逻辑集和访问它们的策略。</p>
+<p>在 kubernetes 中，你可以将应用程序定义为 <code>Service</code>。<code>Service</code> 是一种抽象，它定义了一组 pod 的逻辑集和访问它们的策略。</p>
 <h3 id="service-类型">Service 类型</h3>
 <p>K8S 中定义了 4 种 <code>Service</code> 类型：</p>
 <ul>
 <li><code>ClusterIP</code>：通过 VIP 访问 Service，但该 VIP 只能在此集群内访问</li>
-<li><code>NodePort</code>：通过 NodeIP:NodePort 访问 Service，这意味着该端口将保留在集群内的所有节点上</li>
+<li><code>NodePort</code>：通过 NodeIP:NodePort 访问 Service，这意味着该端口将暴露在集群内的所有节点上</li>
 <li><code>ExternalIP</code>：与 <code>ClusterIP</code> 相同，但是这个 VIP 可以从这个集群之外访问</li>
 <li><code>LoadBalancer</code></li>
 </ul>
 <p>这篇文章将关注 <code>ClusterIP</code>，但是其他三种类型在流量拦截和转发方面的底层实现非常相似。</p>
 <h3 id="节点代理">节点代理</h3>
-<p>一个 Service 有一个 VIP（本文中的 <code>ClusterIP</code>）和多个端点（后端 pods）。每个 pod 或节点都可以通过 VIP 直接访问应用程序。要做到这一点，节点代理程序需要在每个节点上运行，它应该能够透明地拦截到任何 <code>ClusterIP:Port</code>[注解 1] 的流量，并将它们重定向到一个或多个后端 pods。</p>
+<p>一个 Service 有一个 VIP（本文中的 <code>ClusterIP</code>）和多个端点（后端 pod）。每个 pod 或节点都可以通过 VIP 直接访问应用程序。要做到这一点，节点代理程序需要在每个节点上运行，它应该能够透明地拦截到任何 <code>ClusterIP:Port</code>[注解 1] 的流量，并将它们重定向到一个或多个后端 pod。</p>
 <p><img src="./images/proxy_k8s-proxier-model.png" alt="Kubernetes proxier model"></p>
 <blockquote>
 <p>注解 1：</p>
@@ -306,7 +306,7 @@
 <h3 id="节点代理的角色反向代理">节点代理的角色：反向代理</h3>
 <p>想想节点代理的作用，在 K8S 网络模型中，它实际上是一个反向代理，也就是说，在每个节点上，它将：</p>
 <ul>
-<li>将所有后端 Pods 隐藏到客户端</li>
+<li>将所有后端 pod 隐藏到客户端</li>
 <li>过滤所有出口流量（对后端的请求）</li>
 </ul>
 <p>对于 ingress traffic，它什么也不做。</p>
@@ -329,9 +329,9 @@
 <li>一个非 k8s 节点，但是它可以到达工作节点和 Pod（得益于直接路由网络方案）</li>
 </ul>
 <p><img src="./images/proxy_test-env.png" alt="test env"></p>
-<p>我们将在工作节点上部署 Pods，并从 test 节点通过 <code>ClusterIP</code> 访问 Pods 中的应用程序。</p>
+<p>我们将在工作节点上部署 pod，并从 test 节点通过 <code>ClusterIP</code> 访问 pod 中的应用程序。</p>
 <h3 id="创建一个-service">创建一个 Service</h3>
-<p>创建一个简单的 <code>Statefulset</code>，其中包括一个 <code>Service</code>，该 <code>Service</code> 将有一个或多个后端 Pods:</p>
+<p>创建一个简单的 <code>Statefulset</code>，其中包括一个 <code>Service</code>，该 <code>Service</code> 将有一个或多个后端 pod:</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># see appendix for webapp.yaml</span>
 $ kubectl create -f webapp.yaml
 
@@ -358,7 +358,7 @@ webapp-0    2/2     Running   <span style="color:#ae81ff">0</span>    2m12s 10.5
 <p>最容易理解的实现是在此主机上的通信路径中插入我们的 <code>toy-proxy</code> 作为中间人：对于从本地客户端到 ClusterIP:Port 的每个连接，<strong>我们拦截该连接并将其分割为两个单独的连接</strong>:</p>
 <ul>
 <li>本地客户端和 <code>toy-proxy</code> 之间的连接</li>
-<li>连接 <code>toy-proxy</code> 和后端 pods</li>
+<li>连接 <code>toy-proxy</code> 和后端 pod</li>
 </ul>
 <p>实现此目的的最简单方法是在用户空间中实现它：</p>
 <ul>
@@ -467,7 +467,7 @@ $ iptables -t nat -D OUTPUT <span style="color:#ae81ff">2</span>
 $ iptables -t nat -X <span style="color:#75715e"># delete all custom chains</span>
 </code></pre></div><h4 id="改进">改进</h4>
 <p>在这个 <code>toy-proxy</code> 实现中，我们拦截了 <code>ClusterIP:80</code> 到 <code>localhost:80</code>，但是如果该主机上的本机应用程序也想使用 <code>localhost:80</code> 怎么办？此外，如果多个服务都公开 80 端口会怎样？显然，我们需要区分这些应用程序或服务。解决这个问题的正确方法是：为每个代理分配一个未使用的临时端口 TmpPort，拦截 <code>ClusterIP:Port</code> 到 <code>local:TmpPort</code>。例如，app1 使用 10001, app2 使用 10002。</p>
-<p>其次，上面的代码只处理一个后端，如果有多个后端 pods 怎么办？因此，我们需要通过负载均衡算法将请求分发到不同的后端 pods。</p>
+<p>其次，上面的代码只处理一个后端，如果有多个后端 pod 怎么办？因此，我们需要通过负载均衡算法将请求分发到不同的后端 pod。</p>
 <p><img src="./images/proxy_userspace-proxier-2.png" alt="userspace-proxier-2"></p>
 <h4 id="优缺点">优缺点</h4>
 <p>这种方法非常容易理解和实现，但是，它的性能会很差，因为它必须在两端以及内核和用户空间内存之间复制字节。</p>
@@ -558,7 +558,7 @@ $ iptables -t nat -D OUTPUT <span style="color:#ae81ff">2</span>
 <p>注意：在继续之前，请确保删除了在上一节中添加的所有规则。</p>
 </blockquote>
 <h4 id="伸缩-webapp">伸缩 webapp</h4>
-<p>首先扩大我们的服务到 2 个后端 pods:</p>
+<p>首先扩大我们的服务到 2 个后端 pod:</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ kubectl scale sts webapp --replicas<span style="color:#f92672">=</span><span style="color:#ae81ff">2</span>
 statefulset.apps/webapp scaled
 
@@ -566,7 +566,7 @@ $ kubectl get pod -o wide | grep webapp
 webapp-0   2/2     Running   <span style="color:#ae81ff">0</span>   1h24m   10.5.41.204    node1    &lt;none&gt; &lt;none&gt;
 webapp-1   2/2     Running   <span style="color:#ae81ff">0</span>   11s     10.5.41.5      node1    &lt;none&gt; &lt;none&gt;
 </code></pre></div><h4 id="通过负载平衡添加-dnat-规则">通过负载平衡添加 DNAT 规则</h4>
-<p>我们需要 <code>iptables</code> 中的 <code>statistic</code> 模块以概率的方式将请求分发到后端 Pods，这样才能达到负载均衡的效果：</p>
+<p>我们需要 <code>iptables</code> 中的 <code>statistic</code> 模块以概率的方式将请求分发到后端 pod，这样才能达到负载均衡的效果：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># -m &lt;module&gt;</span>
 $ iptables -t nat -A OUTPUT -p $PROTO --dport $PORT -d $CLUSTER_IP <span style="color:#ae81ff">\
 </span><span style="color:#ae81ff"></span>    -m statistic --mode random --probability 0.5  <span style="color:#ae81ff">\
@@ -574,7 +574,7 @@ $ iptables -t nat -A OUTPUT -p $PROTO --dport $PORT -d $CLUSTER_IP <span style="
 $ iptables -t nat -A OUTPUT -p $PROTO --dport $PORT -d $CLUSTER_IP <span style="color:#ae81ff">\
 </span><span style="color:#ae81ff"></span>    -m statistic --mode random --probability 1.0  <span style="color:#ae81ff">\
 </span><span style="color:#ae81ff"></span>    -j DNAT --to-destination $POD2_IP:$PORT
-</code></pre></div><p>上面的命令指定在两个 Pods 之间随机分配请求，每个都有 50% 的概率。</p>
+</code></pre></div><p>上面的命令指定在两个 pod 之间随机分配请求，每个都有 50% 的概率。</p>
 <p>现在检查这些规则：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ iptables -t nat -L -n
 ...
