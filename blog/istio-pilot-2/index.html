@@ -2,7 +2,9 @@
 
 <html lang="zh-cn"><head>
   <meta charset="utf-8">
+  
   <title>Istio Pilot 源码分析（二） | 云原生社区</title>
+  
 
   <!-- mobile responsive meta -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -236,7 +238,7 @@
         <!-- post thumb -->
         <div class="position-relative mb-5">
           <img src="/"  onerror="this.src='\/images\/blog\/istio-pilot-banner.jpeg'" alt="post thumb" class="img-fluid w-100">
-           <div class="card-type">Istio</div>
+           <div class="card-type">Service Mesh</div>
         </div>
         <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="http://haidong.dev/">张海东</a></strong>
           
@@ -270,7 +272,7 @@
 <span style="color:#75715e">// ServiceEntry 变化时的处理逻辑
 </span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServiceEntryStore</span>) <span style="color:#a6e22e">serviceEntryHandler</span>(<span style="color:#a6e22e">old</span>, <span style="color:#a6e22e">curr</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Config</span>, <span style="color:#a6e22e">event</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Event</span>) {}
 </code></pre></div><p>这两个 <code>handler</code> 的业务逻辑后文中再详细讨论，先来回忆下 <code>ServiceEntryStore</code> 的初始化流程：</p>
-<p><img src="./images/serviceentrystore-init.png" alt="img"></p>
+<p><img src="serviceentrystore-init.png" alt="img"></p>
 <p>在 <code>Server</code> 初始化 <code>ServiceController</code> 的时候，通过调用 <code>NewServiceDiscovery()</code> 方法初始化 <code>ServiceEntryStore</code> ，这里除了将 <code>EnvoyXdsServer</code> 和 <code>IstioConfigStore</code> 与 <code>ServiceEntryStore</code> 关联起来外，最重要的就是向 <code>ConfigController</code> 注册了 <code>ServiceEntry</code> 和 <code>WorkloadEntry</code> 的事件 <code>Handler</code>:</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">NewServiceDiscovery</span>(<span style="color:#a6e22e">configController</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">ConfigStoreCache</span>, <span style="color:#a6e22e">store</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">IstioConfigStore</span>, <span style="color:#a6e22e">xdsUpdater</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">XDSUpdater</span>) <span style="color:#f92672">*</span><span style="color:#a6e22e">ServiceEntryStore</span> {
   <span style="color:#a6e22e">s</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">ServiceEntryStore</span>{
@@ -290,7 +292,7 @@
 </code></pre></div><p>这样在 <code>ConfigController</code> 监听到资源变化的时候，就会调用 <code>serviceEntryHandler</code> 和 <code>workloadEntryHandler</code> 来处理事件了。这两个 <code>handler</code> 的目的都是向 <code>EnvoyXdsServer</code> 推送相应的 <code>xDS</code> 资源变化。</p>
 <h3 id="workloadentryhandler">workloadEntryHandler</h3>
 <p>首先来分析服务实例 <code>WorkloadEntry</code> 的更新是如何下发 <code>xDS</code> 的：</p>
-<p><img src="./images/workloadentry-update-sequence.png" alt="img"></p>
+<p><img src="workloadentry-update-sequence.png" alt="img"></p>
 <p><code>seWithSelectorByNamespace</code> 和 <code>instances</code> 如上述 <code>ServiceEntryStore</code> 结构介绍中的注释，前者缓存了各个 <code>namespace</code> 中所有的 <code>ServiceEntry</code> ，后者则是所有服务节点 <code>WorkloadEntry</code> 的缓存。</p>
 <p>当有新的 <code>WorkloadEntry</code> 变化时，先从 <code>seWithSelectorByNamespace</code> 中读取同一 <code>namespace</code> 中的 <code>ServiceEntry</code> ，遍历它们并与 <code>WorkloadEntry</code> 的 <code>Label</code> 进行比对，确定是关联的服务后，依据获取的服务创建 <code>ServiceInstance</code> 。 <code>ServiceInstance</code> 是 <code>Pilot</code> 抽象出的描述具体服务对应实例的结构:</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">ServiceInstance</span> <span style="color:#66d9ef">struct</span> {
@@ -422,7 +424,7 @@
 </code></pre></div><p><code>pushChannel</code> 后续的处理流程和 <code>EDS</code> 是否增量更新将在下文讨论 <code>EnvoyXdsServer</code> 的时候再分析，这里不再赘述。</p>
 <h3 id="serviceentryhandler">serviceEntryHandler</h3>
 <p>了解了 <code>WorkloadEntry</code> 的更新是如何处理之后，我们再来看下 <code>serviceEntryHandler</code> 是如何处理 <code>ServiceEntry</code> 的：</p>
-<p><img src="./images/serviceentryhandler-sequence.png" alt="img"></p>
+<p><img src="serviceentryhandler-sequence.png" alt="img"></p>
 <p><code>serviceEntryHandler</code> 会将 <code>ServiceEntry</code> 转化为一组 <code>Pilot</code> 内部抽象的服务，每个不同的 <code>Hosts</code> 、 <code>Address</code> 都会对应一个 <code>Service</code> ，并且初始化一个名为 <code>configsUpdated</code> 的 <code>map</code> 来保存是否有 <code>ServiceEntry</code> 需要更新，以及创建了多个 <code>slice</code> 分别保存该新增、删除、更新和没有变化的服务：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">s</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServiceEntryStore</span>) <span style="color:#a6e22e">serviceEntryHandler</span>(<span style="color:#a6e22e">old</span>, <span style="color:#a6e22e">curr</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Config</span>, <span style="color:#a6e22e">event</span> <span style="color:#a6e22e">model</span>.<span style="color:#a6e22e">Event</span>) {
   <span style="color:#a6e22e">cs</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">convertServices</span>(<span style="color:#a6e22e">curr</span>)
@@ -588,13 +590,13 @@ mcp: pilot/pkg/serviceregistry/mcp
   
     <li><a href="/blog/istio-pilot/">Istio Pilot 源码分析（一）</a></li>
   
-    <li><a href="/blog/20200818-google-cloud-mesh/">Google Cloud 服务网格：Traffic Director 与 Anthos Service Mesh 的左右互搏</a></li>
+    <li><a href="/blog/netease-yeation-service-mesh/">网易严选ServiceMesh实践</a></li>
   
-    <li><a href="/blog/microservices-ha-practice/">混合微服务高可用在企业级生产中的实践</a></li>
+    <li><a href="/blog/reading-istio-service-mesh-book/">《深入浅出 Istio》读后感</a></li>
   
-    <li><a href="/blog/202003-gitops-progressive-delivery-with-asm/">使用托管服务网格实现应用在多集群中的 GitOps 全自动化渐进式发布</a></li>
+    <li><a href="/blog/using-istio-mixer-adapter-to-check-jwt/">通过自定义Istio Mixer Adapter在JWT场景下实现用户封禁</a></li>
   
-    <li><a href="/blog/202002-network-service-mesh/">NFV走向云原生时代：Network Service Mesh项目介绍</a></li>
+    <li><a href="/blog/istio-the-king-of-service-mesh/">腾讯云容器团队内部Istio专题分享</a></li>
   
   </ul>
 </div>
@@ -651,7 +653,56 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           
+          <a href="/tags/ab-test" style="font-size:1rem">ab-test</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ambassador" style="font-size:1.0129032258064516rem">ambassador</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/anthos" style="font-size:1rem">anthos</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/anthos-service-mesh" style="font-size:1rem">anthos-service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-gateway" style="font-size:1.0193548387096774rem">api-gateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-management" style="font-size:1rem">api-management</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/app-mesh" style="font-size:1rem">app-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/appmesh" style="font-size:1rem">appmesh</a>
         
       
         
@@ -665,28 +716,91 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/bpf" style="font-size:1.0454545454545454rem">bpf</a>
+          <a href="/tags/aspen-mesh" style="font-size:1rem">aspen-mesh</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/cicd" style="font-size:1.0454545454545454rem">cicd</a>
+          <a href="/tags/autoscaler" style="font-size:1rem">autoscaler</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/client-go" style="font-size:1.0909090909090908rem">client-go</a>
+          <a href="/tags/baggage" style="font-size:1rem">baggage</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/cloud-native" style="font-size:1.0909090909090908rem">cloud-native</a>
+          <a href="/tags/bgp" style="font-size:1rem">bgp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/bpf" style="font-size:1.0129032258064516rem">bpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chart" style="font-size:1rem">chart</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chatops" style="font-size:1.0064516129032257rem">chatops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ci-cd" style="font-size:1rem">ci-cd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cicd" style="font-size:1.0064516129032257rem">cicd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cilium" style="font-size:1.038709677419355rem">cilium</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/circuit-breaking" style="font-size:1rem">circuit-breaking</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/client-go" style="font-size:1.0129032258064516rem">client-go</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloud-native" style="font-size:1.0516129032258064rem">cloud-native</a>
         
       
         
@@ -700,7 +814,42 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
+          <a href="/tags/cncf" style="font-size:1rem">cncf</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/community" style="font-size:1rem">community</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/conduit" style="font-size:1rem">conduit</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/consul" style="font-size:1.0129032258064516rem">consul</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/container" style="font-size:1.0064516129032257rem">container</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/crd" style="font-size:1.0064516129032257rem">crd</a>
         
       
         
@@ -714,21 +863,42 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/devops" style="font-size:1rem">devops</a>
+          <a href="/tags/dashboard" style="font-size:1rem">dashboard</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/docker" style="font-size:1rem">docker</a>
+          <a href="/tags/devops" style="font-size:1.0258064516129033rem">devops</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/envoy" style="font-size:1.4090909090909092rem">envoy</a>
+          <a href="/tags/docker" style="font-size:1.0064516129032257rem">docker</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/dubbo" style="font-size:1.0064516129032257rem">dubbo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ebpf" style="font-size:1rem">ebpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/envoy" style="font-size:1.303225806451613rem">envoy</a>
         
       
         
@@ -742,6 +912,34 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
+          <a href="/tags/f5" style="font-size:1rem">f5</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/faas" style="font-size:1.0064516129032257rem">faas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/fission" style="font-size:1rem">fission</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/flagger" style="font-size:1rem">flagger</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/flamegraph" style="font-size:1rem">flamegraph</a>
         
       
@@ -749,14 +947,42 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/gateway" style="font-size:1rem">gateway</a>
+          <a href="/tags/gateway" style="font-size:1.0258064516129033rem">gateway</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/gitops" style="font-size:1rem">gitops</a>
+          <a href="/tags/gitops" style="font-size:1.0129032258064516rem">gitops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/glasnostic" style="font-size:1rem">glasnostic</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/gloo" style="font-size:1.0193548387096774rem">gloo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/golang" style="font-size:1rem">golang</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/google" style="font-size:1rem">google</a>
         
       
         
@@ -770,21 +996,70 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/helm" style="font-size:1rem">helm</a>
+          <a href="/tags/grafana" style="font-size:1rem">grafana</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/informer" style="font-size:1.1363636363636362rem">informer</a>
+          <a href="/tags/grpc" style="font-size:1.032258064516129rem">grpc</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/iptables" style="font-size:1rem">iptables</a>
+          <a href="/tags/grpc-web" style="font-size:1rem">grpc-web</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/helm" style="font-size:1.0064516129032257rem">helm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hpa" style="font-size:1rem">hpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hystrix" style="font-size:1.0064516129032257rem">hystrix</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/informer" style="font-size:1.0064516129032257rem">informer</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingress" style="font-size:1.0193548387096774rem">ingress</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingresss" style="font-size:1rem">ingresss</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/iptables" style="font-size:1.0064516129032257rem">iptables</a>
         
       
         
@@ -798,7 +1073,56 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/istio" style="font-size:1.9545454545454546rem">istio</a>
+          <a href="/tags/istio" style="font-size:1.9935483870967743rem">istio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jaeger" style="font-size:1.0129032258064516rem">jaeger</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins" style="font-size:1.0064516129032257rem">jenkins</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins-x" style="font-size:1rem">jenkins-x</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kafka" style="font-size:1rem">kafka</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kiali" style="font-size:1rem">kiali</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/knative" style="font-size:1.064516129032258rem">knative</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kong" style="font-size:1.0064516129032257rem">kong</a>
         
       
         
@@ -812,6 +1136,13 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
+          <a href="/tags/kube-router" style="font-size:1rem">kube-router</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/kubebuilder" style="font-size:1rem">kubebuilder</a>
         
       
@@ -819,7 +1150,28 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/kubernetes" style="font-size:1.5454545454545454rem">kubernetes</a>
+          <a href="/tags/kubecon" style="font-size:1rem">kubecon</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubeless" style="font-size:1rem">kubeless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubernetes" style="font-size:1.303225806451613rem">kubernetes</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kublr" style="font-size:1.0064516129032257rem">kublr</a>
         
       
         
@@ -833,21 +1185,63 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/linux%e5%86%85%e6%a0%b8" style="font-size:1rem">linux内核</a>
+          <a href="/tags/linkerd" style="font-size:1.0451612903225806rem">linkerd</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/microservices" style="font-size:1.0454545454545454rem">microservices</a>
+          <a href="/tags/linux" style="font-size:1rem">linux</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/mosn" style="font-size:1rem">mosn</a>
+          <a href="/tags/meetup" style="font-size:1.0580645161290323rem">meetup</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microgateway" style="font-size:1rem">microgateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microprofile" style="font-size:1rem">microprofile</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservice" style="font-size:1.0129032258064516rem">microservice</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservices" style="font-size:1.096774193548387rem">microservices</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/monitoring" style="font-size:1rem">monitoring</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/mosn" style="font-size:1.0516129032258064rem">mosn</a>
         
       
         
@@ -861,21 +1255,77 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/oam" style="font-size:1.0454545454545454rem">oam</a>
+          <a href="/tags/nfv" style="font-size:1rem">nfv</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/observability" style="font-size:1rem">observability</a>
+          <a href="/tags/nginx" style="font-size:1rem">nginx</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/operator" style="font-size:1rem">operator</a>
+          <a href="/tags/oam" style="font-size:1.0064516129032257rem">oam</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/observability" style="font-size:1.0064516129032257rem">observability</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-shift" style="font-size:1rem">open-shift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-source" style="font-size:1.0258064516129033rem">open-source</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openfaas" style="font-size:1rem">openfaas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openshift" style="font-size:1rem">openshift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/opentracing" style="font-size:1.0129032258064516rem">opentracing</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/operator" style="font-size:1.0064516129032257rem">operator</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/pilot" style="font-size:1rem">pilot</a>
         
       
         
@@ -889,7 +1339,21 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/rbac" style="font-size:1.0454545454545454rem">rbac</a>
+          <a href="/tags/prometheus" style="font-size:1.032258064516129rem">prometheus</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/prow" style="font-size:1.0064516129032257rem">prow</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/rbac" style="font-size:1.0064516129032257rem">rbac</a>
         
       
         
@@ -903,14 +1367,56 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/security" style="font-size:1.2272727272727273rem">security</a>
+          <a href="/tags/security" style="font-size:1.0580645161290323rem">security</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/service-mesh" style="font-size:1.7272727272727273rem">service-mesh</a>
+          <a href="/tags/servcie-mesh" style="font-size:1rem">servcie-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/serverless" style="font-size:1.0903225806451613rem">serverless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/service-mesh" style="font-size:1.5225806451612902rem">service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sidecar" style="font-size:1.0193548387096774rem">sidecar</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/smi" style="font-size:1rem">smi</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sofamesh" style="font-size:1.0580645161290323rem">sofamesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/source-code" style="font-size:1.0193548387096774rem">source-code</a>
         
       
         
@@ -931,6 +1437,13 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
+          <a href="/tags/supergloo" style="font-size:1rem">supergloo</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/tcpdump" style="font-size:1rem">tcpdump</a>
         
       
@@ -945,6 +1458,20 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
+          <a href="/tags/tls" style="font-size:1rem">tls</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tracing" style="font-size:1rem">tracing</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/traffic-director" style="font-size:1rem">traffic-director</a>
         
       
@@ -952,14 +1479,49 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/vxlan" style="font-size:1.0454545454545454rem">vxlan</a>
+          <a href="/tags/tutorial" style="font-size:1.038709677419355rem">tutorial</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/wasm" style="font-size:1.0454545454545454rem">wasm</a>
+          <a href="/tags/vamp" style="font-size:1rem">vamp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vistio" style="font-size:1rem">vistio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vizceral" style="font-size:1rem">vizceral</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vpa" style="font-size:1rem">vpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vxlan" style="font-size:1.0064516129032257rem">vxlan</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wasm" style="font-size:1.0129032258064516rem">wasm</a>
         
       
         
@@ -973,7 +1535,21 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/zero-trust-cybersecurity" style="font-size:1rem">zero-trust-cybersecurity</a>
+          <a href="/tags/x-protocol" style="font-size:1.0193548387096774rem">x-protocol</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/xds" style="font-size:1.0193548387096774rem">xds</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/zero-trust" style="font-size:1rem">zero-trust</a>
         
       
         
@@ -987,70 +1563,7 @@ mcp: pilot/pkg/serviceregistry/mcp
           
           
           &middot;
-          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f" style="font-size:1rem">云原生</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f%e5%ad%a6%e9%99%a2" style="font-size:1.0454545454545454rem">云原生学院</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%ad%a6%e4%b9%a0%e5%b0%8f%e7%bb%84" style="font-size:1rem">学习小组</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%bc%80%e6%ba%90" style="font-size:1rem">开源</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%bc%80%e6%ba%90%e7%a4%be%e5%8c%ba" style="font-size:1rem">开源社区</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e6%ba%90%e7%a0%81%e5%88%86%e6%9e%90" style="font-size:1rem">源码分析</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e6%ba%90%e7%a0%81%e7%90%86%e8%a7%a3" style="font-size:1.0454545454545454rem">源码理解</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e7%a4%be%e5%8c%ba" style="font-size:1.0454545454545454rem">社区</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e7%bf%bb%e8%af%91" style="font-size:1.0909090909090908rem">翻译</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e8%b4%a1%e7%8c%ae%e5%bc%80%e6%ba%90" style="font-size:1rem">贡献开源</a>
+          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f%e5%ad%a6%e9%99%a2" style="font-size:1.0064516129032257rem">云原生学院</a>
         
       
       </div>
@@ -1119,7 +1632,7 @@ mcp: pilot/pkg/serviceregistry/mcp
             </li>
             
             <li class="list-inline-item">
-              <a class="hover-ripple" href="/contact"><i class="fa fa-wechat"></i></a>
+              <a class="hover-ripple" href="https://mp.weixin.qq.com/s/vWlSdzz2MNdXRr0sd2-LFg"><i class="fa fa-wechat"></i></a>
             </li>
             
             <li class="list-inline-item">

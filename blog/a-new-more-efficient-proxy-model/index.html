@@ -1,0 +1,1739 @@
+<!DOCTYPE html>
+
+<html lang="zh-cn"><head>
+  <meta charset="utf-8">
+  
+  <title>探讨Service Mesh中一种更高效的代理模式 | 云原生社区</title>
+  
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="借助 eBPF，作为 Service Mesh 的数据转发层，对接 Pilot、Mixer 等控制面，实现策略、流量和安全管理，是不是一种更高效的方式？这会比 Envoy 拥有更好的性能，虽然性能未必是 Mesh 首要考虑的问题，本文中讲述使用 Cilium 的尝试。">
+  
+  <meta name="author" content=" 云原生社区">
+  <meta name="generator" content="Hugo 0.65.3" />
+
+  <!-- plugins -->
+  
+  <link rel="stylesheet" href="/plugins/bootstrap/bootstrap.min.css">
+  
+  <link rel="stylesheet" href="/plugins/slick/slick.css">
+  
+  <link rel="stylesheet" href="/plugins/fontawesome/font-awesome.min.css">
+  
+  <link rel="stylesheet" href="/plugins/animate/animate.css">
+  
+  <link rel="stylesheet" href="/plugins/venobox/venobox.css">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="stylesheet" href="/scss/style.min.css" media="screen">
+
+  <!--Favicon-->
+  <link rel="shortcut icon" href="/images/favicon.png " type="image/x-icon">
+  <link rel="icon" href="/images/favicon.png " type="image/x-icon">
+  <meta property="og:image" content="https://cloudnative.to/images/favicon.png">
+  <!--Algolia-->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.css">
+  <!--Twitter card-->
+  <meta name="twitter:card" content="借助 eBPF，作为 Service Mesh 的数据转发层，对接 Pilot、Mixer 等控制面，实现策略、流量和安全管理，是不是一种更高效的方式？这会比 Envoy 拥有更好的性能，虽然性能未必是 Mesh 首要考虑的问题，本文中讲述使用 Cilium 的尝试。" />
+  <meta name="twitter:site" content="Cloud Native Community|云原生社区" />
+  <meta name="twitter:creator" content="@CloudNativeCN" />
+  <meta property="og:url" content="https://cloudnative.to/blog/a-new-more-efficient-proxy-model/" />
+  <meta property="og:title" content="探讨Service Mesh中一种更高效的代理模式" />
+  <meta property="og:description" content="借助 eBPF，作为 Service Mesh 的数据转发层，对接 Pilot、Mixer 等控制面，实现策略、流量和安全管理，是不是一种更高效的方式？这会比 Envoy 拥有更好的性能，虽然性能未必是 Mesh 首要考虑的问题，本文中讲述使用 Cilium 的尝试。" />
+  <meta property="og:image" content="https://cloudnative.to/images/favicon.png" />
+</head>
+<body>
+<!-- header -->
+<header>
+  
+
+  <!-- navigation -->
+  <div class="navigation bg-white position-relative">
+    <div class="container">
+      <nav class="navbar navbar-expand-lg navbar-light bg-white">
+        <a class="navbar-brand" href="/"><img class="img-fluid pb-lg-3" src="/images/logo.png" width="189px" alt="云原生社区"></a>
+        <button class="navbar-toggler border-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            <li class="nav-item">
+              <a class="nav-link" href="/"></a>
+            </li>
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                社区
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/team">管理委员会</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/academy/">云原生学院</a>
+                
+                <a class="dropdown-item" href="/city">城市站</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/community/">社区资料</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                兴趣小组
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/kubernetes/">Kubernetes SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/istio/">Istio SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/envoy/">Envoy SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/dapr/">Dapr SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/oam/">OAM SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/stability/">稳定性 SIG</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/observability/">可观察性 SIG</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                博客
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/categories/kubernetes">Kubernetes</a>
+                
+                <a class="dropdown-item" href="/categories/service-mesh">Service Mesh</a>
+                
+                <a class="dropdown-item" href="/categories/envoy">Envoy</a>
+                
+                <a class="dropdown-item" href="/categories/oam">OAM</a>
+                
+                <a class="dropdown-item" href="/categories/%E5%BC%80%E6%BA%90%E7%A4%BE%E5%8C%BA">开源社区</a>
+                
+                <a class="dropdown-item" href="/blog">所有</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                资料
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="http://landscape.opensourcecloud.cn/">云原生生态图景</a>
+                
+                <a class="dropdown-item" href="https://github.com/cloudnativeto/academy">云原生学院分享归档</a>
+                
+                <a class="dropdown-item" href="/kubebuilder">Kubebuilder 中文文档</a>
+                
+                <a class="dropdown-item" href="/envoy">Envoy 中文文档</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                关于
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/about">介绍</a>
+                
+                <a class="dropdown-item" href="/contact">联系</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/contribute">投稿</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/job">招聘</a>
+            </li>
+            
+            
+          </ul>
+
+          
+          
+
+          
+          <!-- search -->
+          <div class="search px-4">
+            <button id="searchOpen" class="search-btn"><i class="fa fa-search text-dark"></i></button>
+            <div class="search-wrapper">
+              <form action="/search">
+                <input class="search-box form-control" id="js-algolia-btn" name="s" type="search" placeholder="输入搜索词">
+              </form>
+              <button id="searchClose" class="search-close"><i class="fa fa-close text-dark"></i></button>
+            </div>
+          </div>
+          
+          
+          <!-- get start btn -->
+          <a href="/contact" class="btn btn-primary hover-ripple">加入我们</a>
+          
+        </div>
+      </nav>
+    </div>
+  </div>
+  <!-- /navigation -->
+</header>
+<!-- /header -->
+
+	<!-- page title -->
+<section class="section bg-cover overlay" style="background-image: url('/'),url('/'),url('/images/backgrounds/page-title-5.jpg');">
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <h2 class="text-white mb-3">探讨Service Mesh中一种更高效的代理模式</h2>
+        <!-- breadcrumb -->
+        
+        <p class="text-white">借助 eBPF，作为 Service Mesh 的数据转发层，对接 Pilot、Mixer 等控制面，实现策略、流量和安全管理，是不是一种更高效的方式？这会比 Envoy 拥有更好的性能，虽然性能未必是 Mesh 首要考虑的问题，本文中讲述使用 Cilium 的尝试。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /page title -->
+
+	
+
+<!-- blog details -->
+<section class="section">
+  <div class="container blog">
+    <div class="row">
+      <div class="col-lg-8">
+        <!-- post thumb -->
+        <div class="position-relative mb-5">
+          <img src="/"  onerror="this.src='\/images\/blog\/00704eQkgy1fsu9cwhaghj30rs0ku7j7.jpg'" alt="post thumb" class="img-fluid w-100">
+           <div class="card-type">Service Mesh</div>
+        </div>
+        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="http://yangjunsss.github.io/">陈洋钧</a></strong>
+          
+            发表于 <strong class="text-dark">2018年7月1日</strong></div>
+        <hr>
+        <div class="content">
+          <h4 id="背景和想法">背景和想法</h4>
+<p>Service Mesh 提供了微服务化开发的新思路，核心思想是构建一个代理转发网络并结合控制和转发分离的做法来对成千上万个微服务间做流量、策略、安全等管理，而另一方面 Linux Kernel 提供一种运行时高效扩可编程的网络注入机制 eBPF，借此能实现 L47 层代理转发。假设借助 eBPF，作为 Service Mesh 的数据转发层，对接 Pilot、Mixer 等控制面，实现策略、流量和安全管理，是不是一种更高效的方式？这会比 Envoy 拥有更好的性能，虽然性能未必是 Mesh 首要考虑的问题，后搜索发现 Cilium 果然做了类似的尝试，详情见 <a href="http://docs.cilium.io/en/latest/gettingstarted/istio/">http://docs.cilium.io/en/latest/gettingstarted/istio/</a>，但对接的方式很特别，并不像 Envoy 一样，为每一个 Pod 部署一个 Envoy 容器，而是在多个 Pod 外部署一个 Cilium，以 Kubernetes Daemon Set 模式部署，为多个 Pod 进行代理，对控制器层面的 Pilot 做了定制，部署配置如下：</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ sed -e <span style="color:#e6db74">&#39;s,docker\.io/istio/pilot:,docker.io/cilium/istio_pilot:,&#39;</span> <span style="color:#ae81ff">\
+</span><span style="color:#ae81ff"></span>      &lt; <span style="color:#e6db74">${</span>ISTIO_HOME<span style="color:#e6db74">}</span>/install/kubernetes/istio.yaml | <span style="color:#ae81ff">\
+</span><span style="color:#ae81ff"></span>      kubectl create -f -
+</code></pre></div><p>Cilium 部署了一个“书店”集群服务为例子来说明，如下，在下发“路由策略”之前流量如下：</p>
+<p><img src="https://raw.githubusercontent.com/servicemesher/website/master/content/blog/a-new-more-efficient-proxy-model/00704eQkgy1fsu96134y9j30cj09rt93.jpg" alt=""></p>
+<p>正常流量从书页到详情页，到评论页面</p>
+<p>配置一条 istio 路由策略，把流量全部导向 reviews-v1，reviews-v2 没有流量</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-yaml" data-lang="yaml"><span style="color:#66d9ef">apiVersion</span>: config.istio.io/v1alpha2
+<span style="color:#66d9ef">kind</span>: RouteRule
+<span style="color:#66d9ef">metadata</span>:
+  <span style="color:#66d9ef">name</span>: reviews-default
+<span style="color:#66d9ef">spec</span>:
+  <span style="color:#66d9ef">destination</span>:
+    <span style="color:#66d9ef">name</span>: reviews
+  <span style="color:#66d9ef">precedence</span>: <span style="color:#ae81ff">1</span>
+  <span style="color:#66d9ef">route</span>:
+  - <span style="color:#66d9ef">labels</span>:
+      <span style="color:#66d9ef">version</span>: v1
+</code></pre></div><p>导流后如下：</p>
+<p><img src="https://raw.githubusercontent.com/servicemesher/website/master/content/blog/a-new-more-efficient-proxy-model/00704eQkgy1fsu96jwbo7j30jh0d8dgv.jpg" alt=""></p>
+<p>可见，Cilium 能识别 service-name 和 labels ，并进行导流。策略相当灵活。</p>
+<p>Cilium 还做了个性能测试，在 Pod - Proxy - Pod 场景下的请求延迟对比：</p>
+<p><img src="https://raw.githubusercontent.com/servicemesher/website/master/content/blog/a-new-more-efficient-proxy-model/00704eQkgy1fsu96qkxthj30jg0ay0um.jpg" alt=""></p>
+<p>Cilium 的延迟全部小于当前的 Envoy、Nginx、Haproxy 代理。</p>
+<h4 id="从服务化-springcloud-框架开始">从服务化 SpringCloud 框架开始</h4>
+<p>我比较赞同微服务是一种 SOA 的衍生形态的观点，微服务并不完全是一种新的东西。SpringCloud 就是一种微服务化应用框架，目的在于帮助应用快速进行微服务化开发，官方定位如下：</p>
+<blockquote>
+<p>Spring Cloud provides tools for developers to quickly build some of the common patterns in distributed systems (e.g. configuration management, service discovery, circuit breakers, intelligent routing, micro-proxy, control bus, one-time tokens, global locks, leadership election, distributed sessions, cluster state). Coordination of distributed systems leads to boiler plate patterns, and using Spring Cloud developers can quickly stand up services and applications that implement those patterns.</p>
+</blockquote>
+<p>提供了微服务所需的配置管理、服务发现、服务环路发现、智能路由、代理、全局锁、集群选主、分布式 Session、集群状态管理等基础能力。</p>
+<h4 id="新服务化转折点-service-mesh">新服务化转折点 Service Mesh</h4>
+<p>而 2016 年，两个不为人知的小项目 linked 和 Envoy 也许没有想到自己在两年后的今天承载了下一代微服务框架的使命：无侵入式微服务架构，这种架构目前有星星燎原之势取代 SpringCloud 模式成为转折点，新架构完全解耦微服务框架和应用，使应用节点不再关心服务注册、发现、调用等问题，应用只管把请求发送给与应用共部署的代理进程，这个代理进程对内外承接应用所有的请求，并自身组成一个网络，相互间调用，最终把请求返回给应用，这意味着应用只关心自身业务实现，不再关心请求是如何发送的，发送到哪里的，统一由代理进程进行转发。并且应用代码可以用任何语言实现，在代码层面和框架完全解耦，不像 SpringCloud 应用进程需要基于这个框架进行开发，而是彻底地从应用进程中分离，这种解耦似乎一下子使整体系统的复杂度下降了一个级别。框架从应用代码中完全下沉到了另一个代理进程中，应用和“代理”仅以标准的协议交互，换句话说，框架从函数级别的接口变成了进程间通讯接口。这种彻底的解耦让应用抛开“包袱”变得轻量，这在复杂系统和资源敏感型系统中非常有好处，比如应用可以使用相比 Java 占用资源的 golang 语言编写程序；比如改变业务代码更加容易，也不会因为框架改变导致业务代码改变。进而不妨再大胆想象一下，曾经我们使用的 database library 是否也可以从应用代码里剥离出来下沉到代理进程呢？</p>
+<p>2016年9月，Linked 背后的创业公司 Buoyant 第一次在 SF Microservices 提出了“Service Mesh” 概念，并随后在 2017 年 4月 William Morgan 给 Service Mesh 做了定义：</p>
+<blockquote>
+<p>A service mesh is a dedicated infrastructure layer for handling service-to-service communication. It’s responsible for the reliable delivery of requests through the complex topology of services that comprise a modern, cloud native application. In practice, the service mesh is typically implemented as an array of lightweight network proxies that are deployed alongside application code, without the application needing to be aware.</p>
+</blockquote>
+<p><strong>are deployed alongside application code, without the application needing to be aware</strong> 这句话道出了 mesh 的核心，即对应用无感知和无侵入。微服务框架从应用代码里剥离出来，从强依赖变成弱依赖，甚至无依赖，应用本身不再关心集群状态、调用路由、安全策略等等，甚至可以自由升级，框架升级不再影响应用自身，业务迭代变得更加迅速，解耦带来了巨大收益，架构变得更加优雅。</p>
+<p>Service Mesh 的两个核心组件为控制组件和数据组件，数据组件和应用一起部署，接管应用所有请求，应用只需访问类似 http://127.0.0.1/service 地址，剩下代理进程会转发请求到对应的对端服务，并实现服务发现注册、流量控制、安全控制等功能。所有代理进程相互连通，组成了像一个格子的网络，并整个网络被一个控制器管理，而这个网格就叫做 Mesh 。Service Mesh 的数据层组件的主要实现者是 Linked 和 Envoy。</p>
+<p>2017年5月24日，Google 和 IBM 高调发布了基于 Service Mesh 思想的服务化框架产品 Istio，出身名门的 Istio 一下子火了，并给当时出身草根的 Linked 产品承重一击，Linked 瞬间陷入了黑暗。Istio 数据层收编了 Envoy ，自己做了控制层，提供 Pilot、Mixer、Istio-Auth 三大组件，如下：</p>
+<ol>
+<li>Mixer：提供监控数据管理、路由、负载均衡、路由、调用追踪等流量管理，是控制器的核心，并提供后端对接平台，如k8s、Mesos等。</li>
+<li>Pilot（飞行员）: Mixer 的执行模块，负责对 Envoy 进行运行时配置。</li>
+<li>Istio-Auth：提供服务间 TLS 安全通信、角色鉴权、用户认证等 AAA 管理。</li>
+</ol>
+<p>Envoy 与应用部署在一起，提供服务间请求高效转发，并提供扩展接口以实现不同的转发策略，同时上报流量监控数据，提供 HTTP、gRPC、TCP 转发能力。</p>
+<p><img src="https://raw.githubusercontent.com/servicemesher/website/master/content/blog/a-new-more-efficient-proxy-model/00704eQkgy1fsu97qrffkj31900oqwid.jpg" alt=""></p>
+<p>一开始 Linked 仅仅只有数据层面，是缺乏控制面的，而 Istio 一开始的定位就很清晰地包括了控制和数据面，后来 Buoyant 公司借鉴 Istio 的思想，开发了与 Istio 竞争的 Conduit，控制面用 Rust 开发，从这个角度讲， Google 似乎看得更远，Buoyant 挺有危机感。</p>
+<p>介绍完 Service Mesh，来看看能实现一个类似数据转发层的 eBPF 框架。</p>
+<h4 id="新内核的网络利器-ebpf">新内核的网络利器 eBPF</h4>
+<p>eBPF(Extended Berkeley Packet Filter)是 Kernel 3.18 之后的一个内核模块，提供了一种在网络栈的钩子节点处动态运行用户代码的能力，这种动态加载无需重启 Kernel ，用户使用 C 语言编写，由 llvm 编译成可执行文件，但因为是在内核态执行，eBPF 对用户代码非常严格，甚至提供了一个叫 verifier 的审核模块对用户代码进行检查，确保用户代码符合内核要求，并同时能在短时间内执行完毕，即便如此，只要设计巧妙，也能实现很高级的网络功能，Cilium 的能力和价值就在此了。</p>
+<p>编写 eBPF 的限制如下：</p>
+<ol>
+<li>在 Kernel 4.16 和 LLVM 6.0 之前不支持普通函数调用，所有调用必须为内联函数</li>
+<li>最大只能执行 4096 个 BPF 指令</li>
+<li>不支持共享库调用（使用 bfp/lib 定义的库）</li>
+<li>不允许全局变量，但可以使用 <code>BPF_MAP_TYPE_PERCPU_ARRAY</code> 作为全局 map 存储状态信息，并可以在多个 BPF 程序间共享数据</li>
+<li>不允许使用字符串常量和数组</li>
+<li>限制性的使用循环，BPF verifier 验证程序会检测代码是否有循环，使用 <code>#pragma unroll</code> 和 <code>BPF_MAP_TYPE_PERCPU_ARRAY</code> 最大只能支持 32 次迭代</li>
+<li>栈空间限制大小 512 bytes</li>
+</ol>
+<p>为了编写方便，内核也提供一些可以使用的组件如下：</p>
+<ol>
+<li>Helper Func：提供一些从内核中读写数据流的函数集</li>
+<li>Maps：内核中存储 KV 的 Map 集，用于变相存储全局变量</li>
+<li>Tail Calls 和 BPF to BPF Calls：BPF 程序调用另一个 BPF 程序，这样就能使功能模块化了</li>
+</ol>
+<p>其他能力：</p>
+<ol>
+<li>JIT：即时翻译执行代码能力</li>
+<li>Offloads：允许用户代码下沉到网卡中执行</li>
+</ol>
+<p>总之，要编写一个高级 BPF 相对普通开发还是有难度的，下面介绍个简单的例子，主要实现对网卡上下行进出流量进行统计。</p>
+<ul>
+<li>
+<p>开发环境准备</p>
+<p>当前 Ubuntu 17.04 以上版本，按照编译所依赖的包</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ sudo apt-get install -y make gcc libssl-dev bc libelf-dev libcap-dev <span style="color:#ae81ff">\
+</span><span style="color:#ae81ff"></span>clang gcc-multilib llvm libncurses5-dev git pkg-config libmnl bison flex <span style="color:#ae81ff">\
+</span><span style="color:#ae81ff"></span>graphviz
+</code></pre></div></li>
+<li>
+<p>编码代码 tc-example.c 实现对进出流量传输字节进行计数</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e">#include &lt;linux/bpf.h&gt;</span>
+<span style="color:#75715e">#include &lt;linux/pkt_cls.h&gt;</span>
+<span style="color:#75715e">#include &lt;stdint.h&gt;</span>
+<span style="color:#75715e">#include &lt;iproute2/bpf_elf.h&gt;</span>
+  
+<span style="color:#75715e">#ifndef __section</span>
+<span style="color:#75715e"># define __section(NAME)                  \</span>
+   __attribute__<span style="color:#f92672">((</span>section<span style="color:#f92672">(</span>NAME<span style="color:#f92672">)</span>, used<span style="color:#f92672">))</span>
+<span style="color:#75715e">#endif</span>
+  
+<span style="color:#75715e">#ifndef __inline</span>
+<span style="color:#75715e"># define __inline                         \</span>
+   inline __attribute__<span style="color:#f92672">((</span>always_inline<span style="color:#f92672">))</span>
+<span style="color:#75715e">#endif</span>
+  
+<span style="color:#75715e">#ifndef lock_xadd</span>
+<span style="color:#75715e"># define lock_xadd(ptr, val)              \</span>
+   <span style="color:#f92672">((</span>void<span style="color:#f92672">)</span>__sync_fetch_and_add<span style="color:#f92672">(</span>ptr, val<span style="color:#f92672">))</span>
+<span style="color:#75715e">#endif</span>
+  
+<span style="color:#75715e">#ifndef BPF_FUNC</span>
+<span style="color:#75715e"># define BPF_FUNC(NAME, ...)              \</span>
+   <span style="color:#f92672">(</span>*NAME<span style="color:#f92672">)(</span>__VA_ARGS__<span style="color:#f92672">)</span> <span style="color:#f92672">=</span> <span style="color:#f92672">(</span>void *<span style="color:#f92672">)</span>BPF_FUNC_##NAME
+<span style="color:#75715e">#endif</span>
+  
+static void *BPF_FUNC<span style="color:#f92672">(</span>map_lookup_elem, void *map, const void *key<span style="color:#f92672">)</span>;
+  
+struct bpf_elf_map acc_map __section<span style="color:#f92672">(</span><span style="color:#e6db74">&#34;maps&#34;</span><span style="color:#f92672">)</span> <span style="color:#f92672">=</span> <span style="color:#f92672">{</span>
+    .type           <span style="color:#f92672">=</span> BPF_MAP_TYPE_ARRAY,
+    .size_key       <span style="color:#f92672">=</span> sizeof<span style="color:#f92672">(</span>uint32_t<span style="color:#f92672">)</span>,
+    .size_value     <span style="color:#f92672">=</span> sizeof<span style="color:#f92672">(</span>uint32_t<span style="color:#f92672">)</span>,
+    .pinning        <span style="color:#f92672">=</span> PIN_GLOBAL_NS,
+    .max_elem       <span style="color:#f92672">=</span> 2,
+<span style="color:#f92672">}</span>;
+  
+static __inline int account_data<span style="color:#f92672">(</span>struct __sk_buff *skb, uint32_t dir<span style="color:#f92672">)</span>
+<span style="color:#f92672">{</span>
+    uint32_t *bytes;
+  
+    bytes <span style="color:#f92672">=</span> map_lookup_elem<span style="color:#f92672">(</span>&amp;acc_map, &amp;dir<span style="color:#f92672">)</span>;
+    <span style="color:#66d9ef">if</span> <span style="color:#f92672">(</span>bytes<span style="color:#f92672">)</span>
+            lock_xadd<span style="color:#f92672">(</span>bytes, skb-&gt;len<span style="color:#f92672">)</span>;
+  
+    <span style="color:#66d9ef">return</span> TC_ACT_OK;
+<span style="color:#f92672">}</span>
+  
+__section<span style="color:#f92672">(</span><span style="color:#e6db74">&#34;ingress&#34;</span><span style="color:#f92672">)</span>
+int tc_ingress<span style="color:#f92672">(</span>struct __sk_buff *skb<span style="color:#f92672">)</span>
+<span style="color:#f92672">{</span>
+    <span style="color:#66d9ef">return</span> account_data<span style="color:#f92672">(</span>skb, 0<span style="color:#f92672">)</span>;
+<span style="color:#f92672">}</span>
+  
+__section<span style="color:#f92672">(</span><span style="color:#e6db74">&#34;egress&#34;</span><span style="color:#f92672">)</span>
+int tc_egress<span style="color:#f92672">(</span>struct __sk_buff *skb<span style="color:#f92672">)</span>
+<span style="color:#f92672">{</span>
+    <span style="color:#66d9ef">return</span> account_data<span style="color:#f92672">(</span>skb, 1<span style="color:#f92672">)</span>;
+<span style="color:#f92672">}</span>
+  
+char __license<span style="color:#f92672">[]</span> __section<span style="color:#f92672">(</span><span style="color:#e6db74">&#34;license&#34;</span><span style="color:#f92672">)</span> <span style="color:#f92672">=</span> <span style="color:#e6db74">&#34;GPL&#34;</span>;
+  
+/**
+ *	struct sk_buff - socket buffer, it<span style="color:#e6db74">&#39;s the primary struct for network.
+</span><span style="color:#e6db74"> *    See  https://elixir.bootlin.com/linux/latest/source/include/linux/skbuff.h)
+</span><span style="color:#e6db74"> *	@next: Next buffer in list
+</span><span style="color:#e6db74"> *	@prev: Previous buffer in list
+</span><span style="color:#e6db74"> *	@tstamp: Time we arrived/left
+</span><span style="color:#e6db74"> *	@rbnode: RB tree node, alternative to next/prev for netem/tcp
+</span><span style="color:#e6db74"> *	@sk: Socket we are owned by
+</span><span style="color:#e6db74"> *	@dev: Device we arrived on/are leaving by
+</span><span style="color:#e6db74"> *	@cb: Control buffer. Free for use by every layer. Put private vars here
+</span><span style="color:#e6db74"> *	@_skb_refdst: destination entry (with norefcount bit)
+</span><span style="color:#e6db74"> *	@sp: the security path, used for xfrm
+</span><span style="color:#e6db74"> *	@len: Length of actual data
+</span><span style="color:#e6db74"> *	@data_len: Data length
+</span><span style="color:#e6db74"> *	@mac_len: Length of link layer header
+</span><span style="color:#e6db74"> *	@hdr_len: writable header length of cloned skb
+</span><span style="color:#e6db74"> *	@csum: Checksum (must include start/offset pair)
+</span><span style="color:#e6db74"> *	@csum_start: Offset from skb-&gt;head where checksumming should start
+</span><span style="color:#e6db74"> *	@csum_offset: Offset from csum_start where checksum should be stored
+</span><span style="color:#e6db74"> *	@priority: Packet queueing priority
+</span><span style="color:#e6db74"> *	@ignore_df: allow local fragmentation
+</span><span style="color:#e6db74"> *	@cloned: Head may be cloned (check refcnt to be sure)
+</span><span style="color:#e6db74"> *	@ip_summed: Driver fed us an IP checksum
+</span><span style="color:#e6db74"> *	@nohdr: Payload reference only, must not modify header
+</span><span style="color:#e6db74"> *	@pkt_type: Packet class
+</span><span style="color:#e6db74"> *	@fclone: skbuff clone status
+</span><span style="color:#e6db74"> *	@ipvs_property: skbuff is owned by ipvs
+</span><span style="color:#e6db74"> *	@tc_skip_classify: do not classify packet. set by IFB device
+</span><span style="color:#e6db74"> *	@tc_at_ingress: used within tc_classify to distinguish in/egress
+</span><span style="color:#e6db74"> *	@tc_redirected: packet was redirected by a tc action
+</span><span style="color:#e6db74"> *	@tc_from_ingress: if tc_redirected, tc_at_ingress at time of redirect
+</span><span style="color:#e6db74"> *	@peeked: this packet has been seen already, so stats have been
+</span><span style="color:#e6db74"> *		done for it, don&#39;</span>t <span style="color:#66d9ef">do</span> them again
+ *	@nf_trace: netfilter packet trace flag
+ *	@protocol: Packet protocol from driver
+ *	@destructor: Destruct <span style="color:#66d9ef">function</span>
+ *	@tcp_tsorted_anchor: list structure <span style="color:#66d9ef">for</span> TCP <span style="color:#f92672">(</span>tp-&gt;tsorted_sent_queue<span style="color:#f92672">)</span>
+ *	@_nfct: Associated connection, <span style="color:#66d9ef">if</span> any <span style="color:#f92672">(</span>with nfctinfo bits<span style="color:#f92672">)</span>
+ *	@nf_bridge: Saved data about a bridged frame - see br_netfilter.c
+ *	@skb_iif: ifindex of device we arrived on
+ *	@tc_index: Traffic control index
+ *	@hash: the packet hash
+ *	@queue_mapping: Queue mapping <span style="color:#66d9ef">for</span> multiqueue devices
+ *	@xmit_more: More SKBs are pending <span style="color:#66d9ef">for</span> this queue
+ *	@ndisc_nodetype: router type <span style="color:#f92672">(</span>from link layer<span style="color:#f92672">)</span>
+ *	@ooo_okay: allow the mapping of a socket to a queue to be changed
+ *	@l4_hash: indicate hash is a canonical 4-tuple hash over transport
+ *		ports.
+ *	@sw_hash: indicates hash was computed in software stack
+ *	@wifi_acked_valid: wifi_acked was set
+ *	@wifi_acked: whether frame was acked on wifi or not
+ *	@no_fcs:  Request NIC to treat last <span style="color:#ae81ff">4</span> bytes as Ethernet FCS
+ *	@csum_not_inet: use CRC32c to resolve CHECKSUM_PARTIAL
+ *	@dst_pending_confirm: need to confirm neighbour
+  *	@napi_id: id of the NAPI struct this skb came from
+ *	@secmark: security marking
+ *	@mark: Generic packet mark
+ *	@vlan_proto: vlan encapsulation protocol
+ *	@vlan_tci: vlan tag control information
+ *	@inner_protocol: Protocol <span style="color:#f92672">(</span>encapsulation<span style="color:#f92672">)</span>
+ *	@inner_transport_header: Inner transport layer header <span style="color:#f92672">(</span>encapsulation<span style="color:#f92672">)</span>
+ *	@inner_network_header: Network layer header <span style="color:#f92672">(</span>encapsulation<span style="color:#f92672">)</span>
+ *	@inner_mac_header: Link layer header <span style="color:#f92672">(</span>encapsulation<span style="color:#f92672">)</span>
+ *	@transport_header: Transport layer header
+ *	@network_header: Network layer header
+ *	@mac_header: Link layer header
+ *	@tail: Tail pointer
+ *	@end: End pointer
+ *	@head: Head of buffer
+ *	@data: Data head pointer
+ *	@truesize: Buffer size
+ *	@users: User count - see <span style="color:#f92672">{</span>datagram,tcp<span style="color:#f92672">}</span>.c
+ */
+</code></pre></div></li>
+<li>
+<p>编译成 BPF 可执行程序</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ clang -O2 -Wall -target bpf -c tc-example.c -o tc-example.o
+</code></pre></div></li>
+<li>
+<p>加载执行程序到网卡</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># tc qdisc add dev em1 clsact</span>
+<span style="color:#75715e"># tc filter add dev em1 ingress bpf da obj tc-example.o sec ingress</span>
+<span style="color:#75715e"># tc filter add dev em1 egress bpf da obj tc-example.o sec egress</span>
+  
+<span style="color:#75715e"># tc filter show dev em1 ingress</span>
+filter protocol all pref <span style="color:#ae81ff">49152</span> bpf
+filter protocol all pref <span style="color:#ae81ff">49152</span> bpf handle 0x1 tc-example.o:<span style="color:#f92672">[</span>ingress<span style="color:#f92672">]</span> direct-action id <span style="color:#ae81ff">1</span> tag c5f7825e5dac396f
+  
+<span style="color:#75715e"># tc filter show dev em1 egress</span>
+filter protocol all pref <span style="color:#ae81ff">49152</span> bpf
+filter protocol all pref <span style="color:#ae81ff">49152</span> bpf handle 0x1 tc-example.o:<span style="color:#f92672">[</span>egress<span style="color:#f92672">]</span> direct-action id <span style="color:#ae81ff">2</span> tag b2fd5adc0f262714
+  
+<span style="color:#75715e"># mount | grep bpf</span>
+sysfs on /sys/fs/bpf type sysfs <span style="color:#f92672">(</span>rw,nosuid,nodev,noexec,relatime,seclabel<span style="color:#f92672">)</span>
+bpf on /sys/fs/bpf type bpf <span style="color:#f92672">(</span>rw,relatime,mode<span style="color:#f92672">=</span>0700<span style="color:#f92672">)</span>
+  
+<span style="color:#75715e"># tree /sys/fs/bpf/</span>
+/sys/fs/bpf/
++-- ip -&gt; /sys/fs/bpf/tc/
++-- tc
+|   +-- globals
+|       +-- acc_map
++-- xdp -&gt; /sys/fs/bpf/tc/
+  
+<span style="color:#ae81ff">4</span> directories, <span style="color:#ae81ff">1</span> file
+</code></pre></div></li>
+</ul>
+<p>以上展现了对当前网络数据包的操作，这种可编程的能力就给上层应用提供了无限的想象空间了，其中 Cilium 就是基于可编程 eBPF 之上开发了 L47 层网络管理框架。</p>
+<h4 id="为服务化诞生的-cilium">为服务化诞生的 Cilium</h4>
+<p>Cilium 是一个强大的以 eBPF 为基础的网络框架，能做到 L47 层的安全策略、流量控制，并且性能高、灵活性强，主要解决微服务的使用场景，能与 kubernetes 集成，官方解释如下：</p>
+<blockquote>
+<p>Cilium is open source software for transparently securing the network connectivity between application services deployed using Linux container management platforms like Docker and Kubernetes. The development of modern datacenter applications has shifted to a service-oriented architecture often referred to as microservices, wherein a large application is split into small independent services that communicate with each other via APIs using lightweight protocols like HTTP.</p>
+</blockquote>
+<p>Cilium 就定位为微服务解决网络管理问题。</p>
+<blockquote>
+<p>Microservices applications tend to be highly dynamic, with individual containers getting started or destroyed as the application scales out / in to adapt to load changes and during rolling updates that are deployed as part of continuous delivery. This shift toward highly dynamic microservices presents both a challenge and an opportunity in terms of securing connectivity between microservices.</p>
+</blockquote>
+<p>要解决微服务架构下的网络问题的挑战和机会在于要适应微服务快速变化能力，因为微服务扩容和升级非常频繁，从而网络和安全管理也需要适应这种变革。</p>
+<blockquote>
+<p>Traditional Linux network security approaches (e.g., iptables) filter on IP address and TCP/UDP ports, but IP addresses frequently churn in dynamic microservices environments. The highly volatile life cycle of containers causes these approaches to struggle to scale side by side with the application as load balancing tables and access control lists carrying hundreds of thousands of rules that need to be updated with a continuously growing frequency.</p>
+</blockquote>
+<p>而使用传统的以 IP Base 的策略模型已经不再适应当今以微服务为模型的架构了，微服务的底层网络变化会非常灵活和迅速，如二层的网络 IP 地址可以迅速改变和销毁，传统安全策略如果基于 IP Policy 模型会产生成百上千条规则，并且这些规则会被频繁变更，变更的性能非常低下。</p>
+<blockquote>
+<p>By leveraging Linux BPF, Cilium retains the ability to transparently insert security visibility + enforcement, but does so in a way that is based on service / pod / container identity (in contrast to IP address identification in traditional systems) and can filter on application-layer (e.g. HTTP). As a result, Cilium not only makes it simple to apply security policies in a highly dynamic environment by decoupling security from addressing, but can also provide stronger security isolation by operating at the HTTP-layer in addition to providing traditional Layer 3 and Layer 4 segmentation.</p>
+</blockquote>
+<p>因此 Cilium 利用 BPF 的能力，能以 service / pod / container 为对象进行动态地网络和安全策略管理，解耦控制面的策略管理和不断变化的网络环境，还做到 7 层能力。</p>
+<p>整体 Cilium 架构如下：</p>
+<p><img src="https://raw.githubusercontent.com/servicemesher/website/master/content/blog/a-new-more-efficient-proxy-model/00704eQkgy1fsu98qo3jgj318z143gos.jpg" alt=""></p>
+<p>上层对接控制编排面，下层转换成 BPF 的程序注入到内核网络栈执行。</p>
+<p>已实现的功能如下：</p>
+<ol>
+<li>支持 HTTP 协议，支持 method、path、host、headers 匹配的策略</li>
+<li>支持 Kafka 的协议，支持 Role、topic 匹配的策略管理</li>
+<li>支持 IP/CIDR、Label、Service、Entities Base 的策略管理</li>
+<li>负载均衡</li>
+<li>监控和故障定位，支持对接 Prometheus 监控平台</li>
+</ol>
+<p>可见 Cilium 做得很高级，不仅仅支持了 HTTP，还支持 Kafka 协议，相信未来还会支持更多的协议，提供更强大的功能，虽然看上去目前只能做到转发层业务（主要以网络栈 HOOK 的方式），对需要新建网络连接的业务有限制，但结合上层应用实现，做到替换 Envoy 数据层还是有可能的，尽情期待。</p>
+<hr>
+<p>本文转载自：<a href="http://yangjunsss.github.io/2018-05-12/%E6%8E%A2%E8%AE%A8%E4%B8%80%E7%A7%8D%E6%9B%B4%E9%AB%98%E6%95%88%E7%9A%84%E4%BB%A3%E7%90%86%E6%A8%A1%E5%BC%8F/?from=groupmessage&amp;isappinstalled=0">探讨一种更高效的代理模式</a></p>
+
+        </div>
+        <!-- tags -->
+        <div class="mb-3">
+          <h5 class="d-inline-block mr-3">Tags:</h5>
+          <ul class="list-inline d-inline-block">
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/service-mesh"> 
+            Service Mesh</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/cilium"> , 
+            Cilium</a>
+            
+          </ul>
+        </div>
+        <!-- previous -->
+        <div class="mb-3 link-article">
+  <div class="pre-article">
+    
+    <div><i class="fa fa-arrow-left"></i> 上一篇</div>
+    <a href="https://cloudnative.to/blog/rate-limiting-a-useful-tool-with-distributed-systems-part1/">速率限制part1—分布式系统的一个实用工具</a>
+    
+  </div>
+  <div class="next-article">
+    
+    <div>下一篇 <i class="fa fa-arrow-right"></i></div>
+    <a href="https://cloudnative.to/blog/rate-limiting-for-api-gateway-daniel-bryant-part2/">速率限制part2—作用于API网关的速率限制</a>
+  
+  </div>
+</div>
+
+
+        <!-- previous -->
+
+        <!-- recommend -->
+        
+
+<div class="mb-3">
+  <h2>文章推荐</h2>
+  <ul class="related">
+  
+    <li><a href="/blog/vp-microservices-communication-governance-using-service-mesh/">InfoQ访谈：使用服务网格的微服务通信与治理</a></li>
+  
+    <li><a href="/blog/the-universal-data-plane-api/">Service Mesh中的通用数据平面API设计</a></li>
+  
+    <li><a href="/blog/making-most-out-microservices-service-mesh/">使用Service Mesh来充分利用微服务</a></li>
+  
+    <li><a href="/blog/service-mesh-in-cookpad/">服务网格在Cookpad网站中的实践</a></li>
+  
+    <li><a href="/blog/lightweight-service-mesh-practice-in-ucloud/">轻量Service Mesh在Ucloud的实践</a></li>
+  
+  </ul>
+</div>
+
+
+        <!-- comments -->
+
+        
+        <div id="gitalk-container"></div>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+        <script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+        <script>
+          window.onload = function() {
+              const gitalk = new Gitalk({
+              clientID: '0f001988910adcfadfb7',
+              clientSecret: '14f7d06ee5e6575c295d18fc11616e8cb60fb84e',
+              repo: 'cloudnativeto.github.io',
+              owner: 'cloudnativeto',
+              admin: ['rootsongjc'],
+              id: hex_md5(hex_md5(window.location.pathname + window.location.hash)), 
+              distractionFreeMode: false 
+            });
+            (function() {
+              if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+                document.getElementById('gitalk-container').innerHTML = 'Gitalk comments not available by default when the website is previewed locally.';
+                return;
+              }
+              gitalk.render('gitalk-container');
+            })();
+          }
+        </script>
+        
+      </div>
+      <!-- sidebar -->
+<aside class="col-lg-4 order-1 order-lg-2">
+  <!-- tags -->
+  <div class="bg-white px-4 py-5 box-shadow mb-5 word-cloud">
+    <h4 class="mb-4">标签</h4>
+    
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      <div id="tag-cloud" style="padding: 5px 15px">
+      
+        
+          
+          
+          
+          <a href="/tags/ab-test" style="font-size:1rem">ab-test</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ambassador" style="font-size:1.0129032258064516rem">ambassador</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/anthos" style="font-size:1rem">anthos</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/anthos-service-mesh" style="font-size:1rem">anthos-service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-gateway" style="font-size:1.0193548387096774rem">api-gateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-management" style="font-size:1rem">api-management</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/app-mesh" style="font-size:1rem">app-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/appmesh" style="font-size:1rem">appmesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/arm" style="font-size:1rem">arm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/aspen-mesh" style="font-size:1rem">aspen-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/autoscaler" style="font-size:1rem">autoscaler</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/baggage" style="font-size:1rem">baggage</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/bgp" style="font-size:1rem">bgp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/bpf" style="font-size:1.0129032258064516rem">bpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chart" style="font-size:1rem">chart</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chatops" style="font-size:1.0064516129032257rem">chatops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ci-cd" style="font-size:1rem">ci-cd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cicd" style="font-size:1.0064516129032257rem">cicd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cilium" style="font-size:1.038709677419355rem">cilium</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/circuit-breaking" style="font-size:1rem">circuit-breaking</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/client-go" style="font-size:1.0129032258064516rem">client-go</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloud-native" style="font-size:1.0516129032258064rem">cloud-native</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloud-security" style="font-size:1rem">cloud-security</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cncf" style="font-size:1rem">cncf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/community" style="font-size:1rem">community</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/conduit" style="font-size:1rem">conduit</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/consul" style="font-size:1.0129032258064516rem">consul</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/container" style="font-size:1.0064516129032257rem">container</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/crd" style="font-size:1.0064516129032257rem">crd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/crossplane" style="font-size:1rem">crossplane</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/dashboard" style="font-size:1rem">dashboard</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/devops" style="font-size:1.0258064516129033rem">devops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/docker" style="font-size:1.0064516129032257rem">docker</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/dubbo" style="font-size:1.0064516129032257rem">dubbo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ebpf" style="font-size:1rem">ebpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/envoy" style="font-size:1.303225806451613rem">envoy</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/etcd" style="font-size:1rem">etcd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/f5" style="font-size:1rem">f5</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/faas" style="font-size:1.0064516129032257rem">faas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/fission" style="font-size:1rem">fission</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/flagger" style="font-size:1rem">flagger</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/flamegraph" style="font-size:1rem">flamegraph</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/gateway" style="font-size:1.0258064516129033rem">gateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/gitops" style="font-size:1.0129032258064516rem">gitops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/glasnostic" style="font-size:1rem">glasnostic</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/gloo" style="font-size:1.0193548387096774rem">gloo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/golang" style="font-size:1rem">golang</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/google" style="font-size:1rem">google</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/google-cloud" style="font-size:1rem">google-cloud</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/grafana" style="font-size:1rem">grafana</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/grpc" style="font-size:1.032258064516129rem">grpc</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/grpc-web" style="font-size:1rem">grpc-web</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/helm" style="font-size:1.0064516129032257rem">helm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hpa" style="font-size:1rem">hpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hystrix" style="font-size:1.0064516129032257rem">hystrix</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/informer" style="font-size:1.0064516129032257rem">informer</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingress" style="font-size:1.0193548387096774rem">ingress</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingresss" style="font-size:1rem">ingresss</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/iptables" style="font-size:1.0064516129032257rem">iptables</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ipvs" style="font-size:1rem">ipvs</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/istio" style="font-size:1.9935483870967743rem">istio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jaeger" style="font-size:1.0129032258064516rem">jaeger</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins" style="font-size:1.0064516129032257rem">jenkins</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins-x" style="font-size:1rem">jenkins-x</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kafka" style="font-size:1rem">kafka</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kiali" style="font-size:1rem">kiali</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/knative" style="font-size:1.064516129032258rem">knative</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kong" style="font-size:1.0064516129032257rem">kong</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kube-proxy" style="font-size:1rem">kube-proxy</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kube-router" style="font-size:1rem">kube-router</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubebuilder" style="font-size:1rem">kubebuilder</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubecon" style="font-size:1rem">kubecon</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubeless" style="font-size:1rem">kubeless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubernetes" style="font-size:1.303225806451613rem">kubernetes</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kublr" style="font-size:1.0064516129032257rem">kublr</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kylin" style="font-size:1rem">kylin</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/linkerd" style="font-size:1.0451612903225806rem">linkerd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/linux" style="font-size:1rem">linux</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/meetup" style="font-size:1.0580645161290323rem">meetup</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microgateway" style="font-size:1rem">microgateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microprofile" style="font-size:1rem">microprofile</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservice" style="font-size:1.0129032258064516rem">microservice</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservices" style="font-size:1.096774193548387rem">microservices</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/monitoring" style="font-size:1rem">monitoring</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/mosn" style="font-size:1.0516129032258064rem">mosn</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/netfilter" style="font-size:1rem">netfilter</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/nfv" style="font-size:1rem">nfv</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/nginx" style="font-size:1rem">nginx</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/oam" style="font-size:1.0064516129032257rem">oam</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/observability" style="font-size:1.0064516129032257rem">observability</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-shift" style="font-size:1rem">open-shift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-source" style="font-size:1.0258064516129033rem">open-source</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openfaas" style="font-size:1rem">openfaas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openshift" style="font-size:1rem">openshift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/opentracing" style="font-size:1.0129032258064516rem">opentracing</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/operator" style="font-size:1.0064516129032257rem">operator</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/pilot" style="font-size:1rem">pilot</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/profile" style="font-size:1rem">profile</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/prometheus" style="font-size:1.032258064516129rem">prometheus</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/prow" style="font-size:1.0064516129032257rem">prow</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/rbac" style="font-size:1.0064516129032257rem">rbac</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/redis" style="font-size:1rem">redis</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/security" style="font-size:1.0580645161290323rem">security</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/servcie-mesh" style="font-size:1rem">servcie-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/serverless" style="font-size:1.0903225806451613rem">serverless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/service-mesh" style="font-size:1.5225806451612902rem">service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sidecar" style="font-size:1.0193548387096774rem">sidecar</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/smi" style="font-size:1rem">smi</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sofamesh" style="font-size:1.0580645161290323rem">sofamesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/source-code" style="font-size:1.0193548387096774rem">source-code</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/spring-boot" style="font-size:1rem">spring-boot</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/spring-cloud" style="font-size:1rem">spring-cloud</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/supergloo" style="font-size:1rem">supergloo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tcpdump" style="font-size:1rem">tcpdump</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tekton" style="font-size:1rem">tekton</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tls" style="font-size:1rem">tls</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tracing" style="font-size:1rem">tracing</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/traffic-director" style="font-size:1rem">traffic-director</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tutorial" style="font-size:1.038709677419355rem">tutorial</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vamp" style="font-size:1rem">vamp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vistio" style="font-size:1rem">vistio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vizceral" style="font-size:1rem">vizceral</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vpa" style="font-size:1rem">vpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vxlan" style="font-size:1.0064516129032257rem">vxlan</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wasm" style="font-size:1.0129032258064516rem">wasm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wireshark" style="font-size:1rem">wireshark</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/x-protocol" style="font-size:1.0193548387096774rem">x-protocol</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/xds" style="font-size:1.0193548387096774rem">xds</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/zero-trust" style="font-size:1rem">zero-trust</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/zookeeper" style="font-size:1rem">zookeeper</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f%e5%ad%a6%e9%99%a2" style="font-size:1.0064516129032257rem">云原生学院</a>
+        
+      
+      </div>
+    
+  </div>
+
+  <!-- profile -->
+  <!-- toc -->
+  
+  <div class="bg-white px-4 py-5 box-shadow mb-5 sticky-top">
+    <h4 class="mb-4">目录</h4>
+    <nav id="TableOfContents">
+  <ul>
+    <li>
+      <ul>
+        <li></li>
+      </ul>
+    </li>
+  </ul>
+</nav>
+  </div>
+
+</aside>
+<!-- /sidebar -->
+
+    </div>
+  </div>
+</section>
+<!-- /blog details -->
+
+
+
+<footer>
+  
+  <div class="section bg-secondary">
+    <div class="container">
+      <div class="row justify-content-between">
+        
+        <div class="col-lg-5 mb-5 mb-lg-0">
+          
+          <a class="mb-4 d-inline-block" href="/"><img class="img-fluid"
+              src="/images/logo-alt.png" alt="云原生社区" width="60%"></a>
+          <p class="text-light mb-5">云原生社区是一个中立的云原生终端用户社区，由 CNCF 大使、开源意见领袖共同发起成立于 2020 年 5 月 12 日，旨在推广云原生技术，构建开发者生态。</p>
+          <h4 class="text-white mb-4">关注我们</h4>
+          
+          <ul class="list-inline social-icon-alt">
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://twitter.com/cloudnativecn"><i class="fa fa-twitter"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://github.com/cloudnativeto"><i class="fa fa-github"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://mp.weixin.qq.com/s/vWlSdzz2MNdXRr0sd2-LFg"><i class="fa fa-wechat"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="mailto:contact@cloudnative.to"><i class="fa fa-envelope"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://cloudnative.to/blog/index.xml"><i class="fa fa-rss"></i></a>
+            </li>
+            
+          </ul>
+        </div>
+        <div class="col-lg-5 mb-5 mb-lg-0">
+            
+            
+            
+            
+            
+            <div class="mb-5 address">
+              <h4 class="text-white mb-4">联系信息</h4>
+              <p class="text-light mb-3"><a href="/city/beijing">北京</a>|<a href="/city/shanghai">上海</a>|<a href="https://github.com/cloudnativeto/community/issues/58">成都</a>|<a href="https://github.com/cloudnativeto/community/issues/60">深圳</a>|<a href="/city/hangzhou/">杭州</a>|<a href="https://github.com/cloudnativeto/community/issues/59">广州</a>|<a href="https://github.com/cloudnativeto/community/issues/55">武汉</a>|<a href="/city/nanjing">南京</a>|<a href="https://github.com/cloudnativeto/community/issues/61">西安</a>|<a href="/city/dalian">大连</a>|<a href="https://github.com/cloudnativeto/community/issues/52">长沙</a>|<a href="https://github.com/cloudnativeto/community/issues/66">苏州</a>|<a href="https://github.com/cloudnativeto/community/issues/67">珠海</a>|<a href="https://github.com/cloudnativeto/community/issues/78">重庆</a>|<a href="https://github.com/cloudnativeto/community/issues/82">济南</a>|<a href="https://github.com/cloudnativeto/community/issues/83">厦门</a>|<a href="https://github.com/cloudnativeto/community/issues/86">无锡</a>|<a href="https://github.com/cloudnativeto/community/issues/91">青岛</a>|<a href="https://github.com/cloudnativeto/community/issues/103">郑州</a>|<a href="https://github.com/cloudnativeto/community/issues/107">合肥</a></p>
+              <p class="text-light mb-3"></p>
+              <p class="text-light mb-3">关注云原生社区微信公众号，加入社区并获取最新资讯。</p>
+              <p class="text-light mb-3"><img src="/images/wechat-qrcode.png" width="128px"></p>
+            </div>
+            
+            
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="bg-secondary-darken py-4">
+    <div class="container">
+      <div class="row">
+        <div class="col-md-6 text-center text-md-left mb-3 mb-md-0">
+          <p class="mb-0 text-white">Copyright © 2021 云原生社区</p>
+        </div>
+        <div class="col-md-6 text-center text-md-right">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item mx-0"><a class="d-inline-block px-3 text-white" href="/code-of-conduct"
+                class="text-white">声明与政策</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+
+<script>
+  var indexURL = "/index.json"
+</script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/jQuery/jquery.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/google-map/gmap.js"></script>
+
+<script src="/plugins/venobox/venobox.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/search/search.js"></script>
+
+<script src="/plugins/bigPicture/bigPicture.js"></script>
+
+<script src="/plugins/hex_md5/hex_md5.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.js"></script>
+
+<!-- Algolia -->
+<script src="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.js"></script>
+<script>
+  docsearch({
+    apiKey: '870a8addaf7a712ecc6e33ce9def93b1',
+    indexName: 'DocSearch',
+    appId: '2506Q6I4IV',
+    inputSelector: '#js-algolia-btn',
+    debug: false,
+  });
+</script>
+
+<!-- baidu tongji-->
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?f3dc895ea3bd6186cd835841d365c103";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+<!-- google analitycs -->
+
+<script>
+  (function (i, s, o, g, r, a, m) {
+    i['GoogleAnalyticsObject'] = r;
+    i[r] = i[r] || function () {
+      (i[r].q = i[r].q || []).push(arguments)
+    }, i[r].l = 1 * new Date();
+    a = s.createElement(o),
+      m = s.getElementsByTagName(o)[0];
+    a.async = 1;
+    a.src = g;
+    m.parentNode.insertBefore(a, m)
+  })(window, document, 'script', '//www.google-analytics.com/analytics.js', 'ga');
+  ga('create', 'UA-93485976-4', 'auto');
+  ga('send', 'pageview');
+</script>
+
+
+</body>
+
+</html>

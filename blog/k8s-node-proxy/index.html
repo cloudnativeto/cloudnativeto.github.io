@@ -2,7 +2,9 @@
 
 <html lang="zh-cn"><head>
   <meta charset="utf-8">
+  
   <title>深入理解 Kubernetes 网络模型：自己实现 kube-proxy 的功能 | 云原生社区</title>
+  
 
   <!-- mobile responsive meta -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -263,7 +265,7 @@
 <li>命令行工具 <code>iptables</code> 可用于<strong>动态地将规则插入到钩子点中</strong></li>
 <li>可以通过组合各种 <code>iptables</code> 规则来操作数据包（接受/重定向/删除/修改，等等）</li>
 </ul>
-<p><img src="./images/proxy_hooks.png" alt="The 5 hook points in netfilter framework">
+<p><img src="proxy_hooks.png" alt="The 5 hook points in netfilter framework">
 此外，这 5 个钩子点还可以与内核的其他网络设施，如内核路由子系统进行协同工作。</p>
 <p>此外，在每个钩子点中，规则被组织到具有预定义优先级的不同链中。为了按目的管理链，链被进一步组织到表中。现在有 5 个表：</p>
 <ul>
@@ -274,11 +276,11 @@
 <li><code>security</code>：本文未涉及</li>
 </ul>
 <p>将表/链添加到上图中，我们可以得到更详细的视图：</p>
-<p><img src="./images/proxy_hooks-and-tables.png" alt="iptables table/chains inside hook points"></p>
+<p><img src="proxy_hooks-and-tables.png" alt="iptables table/chains inside hook points"></p>
 <h3 id="vip-与负载均衡-lb">VIP 与负载均衡 (LB)</h3>
 <p>虚拟 IP (IP) 将所有后端 IP 隐藏给客户端/用户，因此客户端/用户总是与 VIP 的后端服务通信，而不需要关心 VIP 后面有多少实例。</p>
 <p>VIP 总是伴随着负载均衡，因为它需要在不同的后端之间分配流量。</p>
-<p><img src="./images/proxy_vip-and-lb.png" alt="VIP and load balancing"></p>
+<p><img src="proxy_vip-and-lb.png" alt="VIP and load balancing"></p>
 <h3 id="cross-host-网络模型">Cross-host 网络模型</h3>
 <p>主机 A 上的实例（容器、VM 等）如何与主机 B 上的另一个实例通信？有很多解决方案：</p>
 <ul>
@@ -300,7 +302,7 @@
 <p>这篇文章将关注 <code>ClusterIP</code>，但是其他三种类型在流量拦截和转发方面的底层实现非常相似。</p>
 <h3 id="节点代理">节点代理</h3>
 <p>一个 Service 有一个 VIP（本文中的 <code>ClusterIP</code>）和多个端点（后端 pod）。每个 pod 或节点都可以通过 VIP 直接访问应用程序。要做到这一点，节点代理程序需要在每个节点上运行，它应该能够透明地拦截到任何 <code>ClusterIP:Port</code>[注解 1] 的流量，并将它们重定向到一个或多个后端 pod。</p>
-<p><img src="./images/proxy_k8s-proxier-model.png" alt="Kubernetes proxier model"></p>
+<p><img src="proxy_k8s-proxier-model.png" alt="Kubernetes proxier model"></p>
 <blockquote>
 <p>注解 1：</p>
 <p>对 <code>ClusterIP</code> 的一个常见误解是，<code>ClusterIP</code> 是可访问的——它们不是通过定义访问的。如果 ping 一个 <code>ClusterIP</code>，可能会发现它不可访问。</p>
@@ -332,7 +334,7 @@
 </li>
 <li>一个非 k8s 节点，但是它可以到达工作节点和 Pod（得益于直接路由网络方案）</li>
 </ul>
-<p><img src="./images/proxy_test-env.png" alt="test env"></p>
+<p><img src="proxy_test-env.png" alt="test env"></p>
 <p>我们将在工作节点上部署 pod，并从 test 节点通过 <code>ClusterIP</code> 访问 pod 中的应用程序。</p>
 <h3 id="创建一个-service">创建一个 Service</h3>
 <p>创建一个简单的 <code>Statefulset</code>，其中包括一个 <code>Service</code>，该 <code>Service</code> 将有一个或多个后端 pod:</p>
@@ -371,7 +373,7 @@ webapp-0    2/2     Running   <span style="color:#ae81ff">0</span>    2m12s 10.5
 <li><code>动态应用代理规则</code>：对于任何 Service/Endpoint 更新，相应地更改 <code>toy-proxy</code> 连接设置</li>
 </ul>
 <p>对于我们上面的测试应用 <code>webapp</code>，数据流程如下图：</p>
-<p><img src="./images/proxy_userspace-proxier.png" alt="userspace-proxier"></p>
+<p><img src="proxy_userspace-proxier.png" alt="userspace-proxier"></p>
 <h3 id="poc-实现">POC 实现</h3>
 <p>让我们来看看上图的概念验证实现。</p>
 <h4 id="代码">代码</h4>
@@ -472,7 +474,7 @@ $ iptables -t nat -X <span style="color:#75715e"># delete all custom chains</spa
 </code></pre></div><h4 id="改进">改进</h4>
 <p>在这个 <code>toy-proxy</code> 实现中，我们拦截了 <code>ClusterIP:80</code> 到 <code>localhost:80</code>，但是如果该主机上的本机应用程序也想使用 <code>localhost:80</code> 怎么办？此外，如果多个服务都公开 80 端口会怎样？显然，我们需要区分这些应用程序或服务。解决这个问题的正确方法是：为每个代理分配一个未使用的临时端口 TmpPort，拦截 <code>ClusterIP:Port</code> 到 <code>local:TmpPort</code>。例如，app1 使用 10001, app2 使用 10002。</p>
 <p>其次，上面的代码只处理一个后端，如果有多个后端 pod 怎么办？因此，我们需要通过负载均衡算法将请求分发到不同的后端 pod。</p>
-<p><img src="./images/proxy_userspace-proxier-2.png" alt="userspace-proxier-2"></p>
+<p><img src="proxy_userspace-proxier-2.png" alt="userspace-proxier-2"></p>
 <h4 id="优缺点">优缺点</h4>
 <p>这种方法非常容易理解和实现，但是，它的性能会很差，因为它必须在两端以及内核和用户空间内存之间复制字节。</p>
 <p>我们没有在这上面花太多时间，如果你感兴趣，可以在这里查看用户空间 <code>kube-proxy</code> 的简单实现。</p>
@@ -489,7 +491,7 @@ $ iptables -t nat -X <span style="color:#75715e"># delete all custom chains</spa
 <p>用网络术语来说，这是一个网络地址转换 (NAT) 过程。</p>
 <h4 id="在哪里做-dnat">在哪里做 DNAT</h4>
 <p>通过 curl 查看出口数据包路径（下图展示了数据流向过程）：</p>
-<p><img src="./images/proxy_host-to-clusterip-dnat.png" alt="host-to-clusterip-dnat"></p>
+<p><img src="proxy_host-to-clusterip-dnat.png" alt="host-to-clusterip-dnat"></p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">&lt;curl process&gt; -&gt; raw -&gt; CT -&gt; mangle -&gt; dnat -&gt; filter -&gt; security -&gt; snat -&gt; &lt;ROUTING&gt; -&gt; mangle -&gt; snat -&gt; NIC
 </code></pre></div><p>很明显，在 OUTPUT 钩中只有一个 dnat（链），我们可以在其中进行 DNAT。</p>
 <p>让我们看看我们将如何进行黑客入侵。</p>
@@ -545,7 +547,7 @@ DNAT       tcp  --  0.0.0.0/0   10.7.111.132   tcp dpt:80 to:10.5.41.204:80
 &lt;/html&gt;
 </code></pre></div><p>就是这样！访问成功。</p>
 <p>但是等等！我们期望出口的交通应该是正确的，但我们没有添加任何 NAT 规则的入口路径，怎么可能交通是正常的两个方向？事实证明，当你为一个方向添加一个 NAT 规则时，Linux 内核会自动为另一个方向添加保留规则！这与 conntrack (CT，连接跟踪）模块协同工作。</p>
-<p><img src="./images/proxy_host-to-clusterip-dnat-ct.png" alt="host-to-clusterip-dnat-ct"></p>
+<p><img src="proxy_host-to-clusterip-dnat-ct.png" alt="host-to-clusterip-dnat-ct"></p>
 <h4 id="清理">清理</h4>
 <p>删除这些规则：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ iptables -t nat -L -n --line-numbers
@@ -586,7 +588,7 @@ Chain OUTPUT <span style="color:#f92672">(</span>policy ACCEPT<span style="color
 target  prot opt source      destination
 DNAT    tcp  --  0.0.0.0/0   10.7.111.132  tcp dpt:80 statistic mode random probability 0.50000000000 to:10.5.41.204:80
 DNAT    tcp  --  0.0.0.0/0   10.7.111.132  tcp dpt:80 statistic mode random probability 1.00000000000 to:10.5.41.5:80
-</code></pre></div><p><img src="./images/proxy_host-to-clusterip-lb-ct.png" alt="host-to-clusterip-lb-ct"></p>
+</code></pre></div><p><img src="proxy_host-to-clusterip-lb-ct.png" alt="host-to-clusterip-lb-ct"></p>
 <h4 id="验证">验证</h4>
 <p>现在，我们来验证下负载均衡是否生效。我们发出 8 个 请求，并捕获到这个主机通信的真实 PodIPs:</p>
 <p>在测试节点上打开一个 shell:</p>
@@ -638,7 +640,7 @@ $ iptables -t nat -D OUTPUT <span style="color:#ae81ff">3</span>
 </li>
 </ol>
 <p>下图展示了隧道的情况：</p>
-<p><img src="./images/proxy_tunneling.png" alt="tunneling"></p>
+<p><img src="proxy_tunneling.png" alt="tunneling"></p>
 <p>代理与隧道相关的职责包括：</p>
 <ul>
 <li><strong>同步所有节点之间的隧道信息</strong>，例如描述哪个实例在哪个节点上的信息</li>
@@ -949,7 +951,7 @@ sudo tc filter show dev $NIC ingress
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ sudo tc qdisc del dev $NIC clsact 2&gt;&amp;<span style="color:#ae81ff">1</span> &gt;/dev/null
 </code></pre></div><h2 id="总结">总结</h2>
 <p>在这篇文章中，我们用不同的方法手工实现了 <code>kube-proxy</code> 的核心功能。希望你现在对 kubernetes 节点代理有了更好的理解，以及关于网络的其他一些配置。</p>
-<p>在这篇文章中使用的代码和脚本：<a href="https://github.com/icyxp/icyxp.github.io/tree/master./images/code">这里</a>。</p>
+<p>在这篇文章中使用的代码和脚本：<a href="https://github.com/icyxp/icyxp.github.io/tree/mastercode">这里</a>。</p>
 <h3 id="参考文献">参考文献</h3>
 <ol>
 <li><a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-proxy/">Kubernetes Doc: CLI - kube-proxy</a></li>
@@ -1056,6 +1058,17 @@ sudo tc filter show dev $NIC ingress
         <!-- recommend -->
         
 
+<div class="mb-3">
+  <h2>文章推荐</h2>
+  <ul class="related">
+  
+    <li><a href="/blog/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/">理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持</a></li>
+  
+    <li><a href="/blog/how-cilium-enhances-istio-with-socket-aware-bpf-programs/">使用Cilium增强Istio—通过Socket感知BPF程序</a></li>
+  
+  </ul>
+</div>
+
 
         <!-- comments -->
 
@@ -1108,7 +1121,56 @@ sudo tc filter show dev $NIC ingress
           
           
           
+          <a href="/tags/ab-test" style="font-size:1rem">ab-test</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ambassador" style="font-size:1.0129032258064516rem">ambassador</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/anthos" style="font-size:1rem">anthos</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/anthos-service-mesh" style="font-size:1rem">anthos-service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-gateway" style="font-size:1.0193548387096774rem">api-gateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/api-management" style="font-size:1rem">api-management</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/app-mesh" style="font-size:1rem">app-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/appmesh" style="font-size:1rem">appmesh</a>
         
       
         
@@ -1122,28 +1184,91 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/bpf" style="font-size:1.0454545454545454rem">bpf</a>
+          <a href="/tags/aspen-mesh" style="font-size:1rem">aspen-mesh</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/cicd" style="font-size:1.0454545454545454rem">cicd</a>
+          <a href="/tags/autoscaler" style="font-size:1rem">autoscaler</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/client-go" style="font-size:1.0909090909090908rem">client-go</a>
+          <a href="/tags/baggage" style="font-size:1rem">baggage</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/cloud-native" style="font-size:1.0909090909090908rem">cloud-native</a>
+          <a href="/tags/bgp" style="font-size:1rem">bgp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/bpf" style="font-size:1.0129032258064516rem">bpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chart" style="font-size:1rem">chart</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/chatops" style="font-size:1.0064516129032257rem">chatops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ci-cd" style="font-size:1rem">ci-cd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cicd" style="font-size:1.0064516129032257rem">cicd</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cilium" style="font-size:1.038709677419355rem">cilium</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/circuit-breaking" style="font-size:1rem">circuit-breaking</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/client-go" style="font-size:1.0129032258064516rem">client-go</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/cloud-native" style="font-size:1.0516129032258064rem">cloud-native</a>
         
       
         
@@ -1157,7 +1282,42 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
+          <a href="/tags/cncf" style="font-size:1rem">cncf</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/community" style="font-size:1rem">community</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/conduit" style="font-size:1rem">conduit</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/consul" style="font-size:1.0129032258064516rem">consul</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/container" style="font-size:1.0064516129032257rem">container</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/crd" style="font-size:1.0064516129032257rem">crd</a>
         
       
         
@@ -1171,21 +1331,42 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/devops" style="font-size:1rem">devops</a>
+          <a href="/tags/dashboard" style="font-size:1rem">dashboard</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/docker" style="font-size:1rem">docker</a>
+          <a href="/tags/devops" style="font-size:1.0258064516129033rem">devops</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/envoy" style="font-size:1.4090909090909092rem">envoy</a>
+          <a href="/tags/docker" style="font-size:1.0064516129032257rem">docker</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/dubbo" style="font-size:1.0064516129032257rem">dubbo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ebpf" style="font-size:1rem">ebpf</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/envoy" style="font-size:1.303225806451613rem">envoy</a>
         
       
         
@@ -1199,6 +1380,34 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
+          <a href="/tags/f5" style="font-size:1rem">f5</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/faas" style="font-size:1.0064516129032257rem">faas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/fission" style="font-size:1rem">fission</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/flagger" style="font-size:1rem">flagger</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/flamegraph" style="font-size:1rem">flamegraph</a>
         
       
@@ -1206,14 +1415,42 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/gateway" style="font-size:1rem">gateway</a>
+          <a href="/tags/gateway" style="font-size:1.0258064516129033rem">gateway</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/gitops" style="font-size:1rem">gitops</a>
+          <a href="/tags/gitops" style="font-size:1.0129032258064516rem">gitops</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/glasnostic" style="font-size:1rem">glasnostic</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/gloo" style="font-size:1.0193548387096774rem">gloo</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/golang" style="font-size:1rem">golang</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/google" style="font-size:1rem">google</a>
         
       
         
@@ -1227,21 +1464,70 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/helm" style="font-size:1rem">helm</a>
+          <a href="/tags/grafana" style="font-size:1rem">grafana</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/informer" style="font-size:1.1363636363636362rem">informer</a>
+          <a href="/tags/grpc" style="font-size:1.032258064516129rem">grpc</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/iptables" style="font-size:1rem">iptables</a>
+          <a href="/tags/grpc-web" style="font-size:1rem">grpc-web</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/helm" style="font-size:1.0064516129032257rem">helm</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hpa" style="font-size:1rem">hpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/hystrix" style="font-size:1.0064516129032257rem">hystrix</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/informer" style="font-size:1.0064516129032257rem">informer</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingress" style="font-size:1.0193548387096774rem">ingress</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/ingresss" style="font-size:1rem">ingresss</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/iptables" style="font-size:1.0064516129032257rem">iptables</a>
         
       
         
@@ -1255,7 +1541,56 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/istio" style="font-size:1.9545454545454546rem">istio</a>
+          <a href="/tags/istio" style="font-size:1.9935483870967743rem">istio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jaeger" style="font-size:1.0129032258064516rem">jaeger</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins" style="font-size:1.0064516129032257rem">jenkins</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/jenkins-x" style="font-size:1rem">jenkins-x</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kafka" style="font-size:1rem">kafka</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kiali" style="font-size:1rem">kiali</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/knative" style="font-size:1.064516129032258rem">knative</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kong" style="font-size:1.0064516129032257rem">kong</a>
         
       
         
@@ -1269,6 +1604,13 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
+          <a href="/tags/kube-router" style="font-size:1rem">kube-router</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/kubebuilder" style="font-size:1rem">kubebuilder</a>
         
       
@@ -1276,7 +1618,28 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/kubernetes" style="font-size:1.5454545454545454rem">kubernetes</a>
+          <a href="/tags/kubecon" style="font-size:1rem">kubecon</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubeless" style="font-size:1rem">kubeless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kubernetes" style="font-size:1.303225806451613rem">kubernetes</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/kublr" style="font-size:1.0064516129032257rem">kublr</a>
         
       
         
@@ -1290,21 +1653,63 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/linux%e5%86%85%e6%a0%b8" style="font-size:1rem">linux内核</a>
+          <a href="/tags/linkerd" style="font-size:1.0451612903225806rem">linkerd</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/microservices" style="font-size:1.0454545454545454rem">microservices</a>
+          <a href="/tags/linux" style="font-size:1rem">linux</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/mosn" style="font-size:1rem">mosn</a>
+          <a href="/tags/meetup" style="font-size:1.0580645161290323rem">meetup</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microgateway" style="font-size:1rem">microgateway</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microprofile" style="font-size:1rem">microprofile</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservice" style="font-size:1.0129032258064516rem">microservice</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/microservices" style="font-size:1.096774193548387rem">microservices</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/monitoring" style="font-size:1rem">monitoring</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/mosn" style="font-size:1.0516129032258064rem">mosn</a>
         
       
         
@@ -1318,21 +1723,77 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/oam" style="font-size:1.0454545454545454rem">oam</a>
+          <a href="/tags/nfv" style="font-size:1rem">nfv</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/observability" style="font-size:1rem">observability</a>
+          <a href="/tags/nginx" style="font-size:1rem">nginx</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/operator" style="font-size:1rem">operator</a>
+          <a href="/tags/oam" style="font-size:1.0064516129032257rem">oam</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/observability" style="font-size:1.0064516129032257rem">observability</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-shift" style="font-size:1rem">open-shift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/open-source" style="font-size:1.0258064516129033rem">open-source</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openfaas" style="font-size:1rem">openfaas</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/openshift" style="font-size:1rem">openshift</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/opentracing" style="font-size:1.0129032258064516rem">opentracing</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/operator" style="font-size:1.0064516129032257rem">operator</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/pilot" style="font-size:1rem">pilot</a>
         
       
         
@@ -1346,7 +1807,21 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/rbac" style="font-size:1.0454545454545454rem">rbac</a>
+          <a href="/tags/prometheus" style="font-size:1.032258064516129rem">prometheus</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/prow" style="font-size:1.0064516129032257rem">prow</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/rbac" style="font-size:1.0064516129032257rem">rbac</a>
         
       
         
@@ -1360,14 +1835,56 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/security" style="font-size:1.2272727272727273rem">security</a>
+          <a href="/tags/security" style="font-size:1.0580645161290323rem">security</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/service-mesh" style="font-size:1.7272727272727273rem">service-mesh</a>
+          <a href="/tags/servcie-mesh" style="font-size:1rem">servcie-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/serverless" style="font-size:1.0903225806451613rem">serverless</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/service-mesh" style="font-size:1.5225806451612902rem">service-mesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sidecar" style="font-size:1.0193548387096774rem">sidecar</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/smi" style="font-size:1rem">smi</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/sofamesh" style="font-size:1.0580645161290323rem">sofamesh</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/source-code" style="font-size:1.0193548387096774rem">source-code</a>
         
       
         
@@ -1388,6 +1905,13 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
+          <a href="/tags/supergloo" style="font-size:1rem">supergloo</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/tcpdump" style="font-size:1rem">tcpdump</a>
         
       
@@ -1402,6 +1926,20 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
+          <a href="/tags/tls" style="font-size:1rem">tls</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/tracing" style="font-size:1rem">tracing</a>
+        
+      
+        
+          
+          
+          &middot;
           <a href="/tags/traffic-director" style="font-size:1rem">traffic-director</a>
         
       
@@ -1409,14 +1947,49 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/vxlan" style="font-size:1.0454545454545454rem">vxlan</a>
+          <a href="/tags/tutorial" style="font-size:1.038709677419355rem">tutorial</a>
         
       
         
           
           
           &middot;
-          <a href="/tags/wasm" style="font-size:1.0454545454545454rem">wasm</a>
+          <a href="/tags/vamp" style="font-size:1rem">vamp</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vistio" style="font-size:1rem">vistio</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vizceral" style="font-size:1rem">vizceral</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vpa" style="font-size:1rem">vpa</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/vxlan" style="font-size:1.0064516129032257rem">vxlan</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/wasm" style="font-size:1.0129032258064516rem">wasm</a>
         
       
         
@@ -1430,7 +2003,21 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/zero-trust-cybersecurity" style="font-size:1rem">zero-trust-cybersecurity</a>
+          <a href="/tags/x-protocol" style="font-size:1.0193548387096774rem">x-protocol</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/xds" style="font-size:1.0193548387096774rem">xds</a>
+        
+      
+        
+          
+          
+          &middot;
+          <a href="/tags/zero-trust" style="font-size:1rem">zero-trust</a>
         
       
         
@@ -1444,70 +2031,7 @@ sudo tc filter show dev $NIC ingress
           
           
           &middot;
-          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f" style="font-size:1rem">云原生</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f%e5%ad%a6%e9%99%a2" style="font-size:1.0454545454545454rem">云原生学院</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%ad%a6%e4%b9%a0%e5%b0%8f%e7%bb%84" style="font-size:1rem">学习小组</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%bc%80%e6%ba%90" style="font-size:1rem">开源</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e5%bc%80%e6%ba%90%e7%a4%be%e5%8c%ba" style="font-size:1rem">开源社区</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e6%ba%90%e7%a0%81%e5%88%86%e6%9e%90" style="font-size:1rem">源码分析</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e6%ba%90%e7%a0%81%e7%90%86%e8%a7%a3" style="font-size:1.0454545454545454rem">源码理解</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e7%a4%be%e5%8c%ba" style="font-size:1.0454545454545454rem">社区</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e7%bf%bb%e8%af%91" style="font-size:1.0909090909090908rem">翻译</a>
-        
-      
-        
-          
-          
-          &middot;
-          <a href="/tags/%e8%b4%a1%e7%8c%ae%e5%bc%80%e6%ba%90" style="font-size:1rem">贡献开源</a>
+          <a href="/tags/%e4%ba%91%e5%8e%9f%e7%94%9f%e5%ad%a6%e9%99%a2" style="font-size:1.0064516129032257rem">云原生学院</a>
         
       
       </div>
@@ -1629,7 +2153,7 @@ sudo tc filter show dev $NIC ingress
             </li>
             
             <li class="list-inline-item">
-              <a class="hover-ripple" href="/contact"><i class="fa fa-wechat"></i></a>
+              <a class="hover-ripple" href="https://mp.weixin.qq.com/s/vWlSdzz2MNdXRr0sd2-LFg"><i class="fa fa-wechat"></i></a>
             </li>
             
             <li class="list-inline-item">
