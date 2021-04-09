@@ -285,7 +285,7 @@
 <h2 id="上云过程遇到了哪些痛点">上云过程遇到了哪些痛点</h2>
 <h3 id="kubernetes-环境问题">Kubernetes 环境问题</h3>
 <p>由于大数据组件有很多是分布式存储系统，组件本身会要求客户端和服务端能够网络互通，端到端的建立连接。这就需要<code>Kubernetes</code>容器网络要和外部物理网络打通，当然也可以采用<code>Proxy</code>层来屏蔽底层存储。同程大数据选择构建 <code>Underlay</code> 的容器网络，做到IP保持，容器IP提前分配，IP自动回收等功能。</p>
-<p>将<code>Service</code>层网络和公司四层负载 <code>TVS</code> 服务做到很好的集成，利用Endpoints和Service 事件监听来保证负载数据的一致性。由于网络环境的限制，一个机房没有办法只搭建一个Kuberntes集群，需要支持一个应用跨多k8s集群部署，负载服务要支持跨多个k8s集群的应用负载。</p>
+<p>将<code>Service</code>层网络和公司四层负载 <code>TVS</code> 服务做到很好的集成，利用Endpoints和Service 事件监听来保证负载数据的一致性。由于网络环境的限制，一个机房没有办法只搭建一个Kuberntes集群，需要支持一个应用跨多<code>Kubernetes</code>集群部署，负载服务要支持跨多个<code>Kubernetes</code>集群的应用负载。</p>
 <p><code>DNS</code> 层采用子域的方式做到Kubernetes 内部<code>CoreDns</code> 和公司<code>DNS</code>服务器数据同步，保证一致性，保证内外部域名通信一致。由于一些组件迁移的需求，需要提供在容器拉起来之前预先配置<code>DNS</code>和<code>IP</code>映射的功能,所以只好根据已知的<code>Pod</code>标识，提前分配IP。</p>
 <h3 id="基于pod的方式管理容器">基于Pod的方式管理容器</h3>
 <p>刚开始的时候采用<code>Statefulset</code>来部署一些服务，一些开源的Operator也是基于<code>STS</code>管理服务，比如我正在持续贡献的 <code>TiDB Operator</code> 、<code>Prometheus Operator</code>。虽然可以复用已有Workload的功能，但是当场景复杂，这么做反而会缝缝补补。大数据组件就是这样一个复杂的场景，所以决定采用纯<code>Pod</code>管理容器，基于Pod去组装成 <code>Group</code>。比如HDFS组件，会拆分成 <code>namenode</code> 、<code>journalnode</code>、<code>datanode</code> 这三个<code>Group</code>，每个<code>Group</code>可以理解为是同一种节点类型的容器。</p>
@@ -302,14 +302,14 @@
 <p>在<code>Kubernetes</code>中使用本地盘，一般会推荐<code>localpv</code>的方式，大数据某些组件会采用多盘写入的方式部署，<code>local pv</code>的方式并不能解决这个问题。同程大数据选择采用<code>hostpath</code>+<code>nodeselector</code>的方式来做到多盘绑定且节点不漂移。在提交给<code>Kubernetes Scheduler</code>之前，会在<code>云舱Scheduler</code>基于资源池和节点信息对容器提前做一层调度。
 起初准备用<code>hostpath</code>+<code>nodename</code>的方式来做到节点不漂移，但是<code>nodename</code> 会跳过 Scheduler update 步骤，并不会进行 <code>bind</code> pvc等步骤。详情可以参考 <a href="https://github.com/kubernetes/kubernetes/issues/93145">issue 93145</a>。</p>
 <h3 id="dns-问题">DNS 问题</h3>
-<p>大数据里面很多组件节点都采用 <code>hostname</code> 作为节点标识，比如NodeManager采用<code>hostname</code>注册。<code>Hbase</code>组件要支持域名反解，<code>Kudu</code>的master节点依赖自身的域名通信。这些都违背了Kubernetes的设计理念，容器创建出来后，才会从CNI分配得到IP,进程启动OK，Service域名才能通信。</p>
+<p>大数据里面很多组件节点都采用 <code>hostname</code> 作为节点标识，比如<code>NodeManager</code>采用<code>hostname</code>注册，<code>Hbase</code>组件要支持域名反解，<code>Kudu</code>的master节点依赖自身的域名提前通信。这些都违背了Kubernetes的设计理念，<code>Kubernetes</code> 创建容器，CNI分配得到IP，进程启动OK，容器变成Ready状态，Pod的Service域名才能通信。</p>
 <p>同程大数据选择用<code>Host</code>网络部署大部分的存储组件，沿用宿主机网络，除了<code>Kubernetes</code>集群子域外再创建一个子域用于组件本身标识，这样组件迁移会很方便，也不有网络损耗的烦恼。但是要做好宿主机端口的管理划分。</p>
 <h3 id="调度问题">调度问题</h3>
 <p>为了提升资源利用率，<code>云舱</code> 平台会有很多分时段的部署任务和资源销毁任务。比如某个<code>Yarn</code>集群，晚上的时候，对可以混部的资源池打上标签，在晚高峰的时候尽可能的扩容<code>NodeManager</code>。这个类似于<code>HPA</code>，由于业务逻辑的复杂性，同程基于自研 <code>云舱Scheduler</code> 做到这一点。</p>
 <h2 id="大数据服务基于kubernetes的架构体系">大数据服务基于Kubernetes的架构体系</h2>
 <p>从<code>2019</code>年开始转向 <code>Kubernetes</code> 到现在，同程已经建立了一套成熟的大数据服务<code>PAAS</code>体系。
 <img src="%E6%9E%B6%E6%9E%84.png" alt=""></p>
-<p>基于Kubernetes屏蔽底层的基础设施，支持多机房多k8s集群的应用部署，除了要考虑各种大数据服务如何迁移上云，也要考虑整个平台的易用性，让组件研发无需登录机器进行运维和迁移等操作。同程自研了<code>云舱</code>平台，主要承担这一职责。</p>
+<p>基于Kubernetes屏蔽底层的基础设施，支持多机房多<code>Kubernetes</code>集群的应用部署，除了要考虑各种大数据服务如何迁移上云，也要考虑整个平台的易用性，让组件研发无需登录机器进行运维和迁移等操作。同程自研了<code>云舱</code>平台，主要承担这一职责。</p>
 <p>考虑到业务研发的接入成本，学习成本，研发<code>控制台</code>平台，让只读的集群信息和集群管理结合起来。改变以前底层信息触摸不到的情景，让业务研发也能在平台层获取更多的信息，可以对自己的服务做出一些合理的判断。</p>
 <h3 id="监控收集">监控收集</h3>
 <p>使用<code>Thanos</code>+<code>Prometheus Operator</code>框架部署收集各个组件集群的监控，按照以下原则来做到监控的可扩展。</p>
@@ -348,14 +348,14 @@
 <h2 id="现状">现状</h2>
 <p>当前同程将几乎所有的大数据服务都采用 <code>Kubernetes</code> 工具部署和调度，有近<code>400+</code>集群服务跑在<code>Kubernetes</code>上， 一个新的组件集群可以在15分钟之内完成交付，极大地减少组件部署消耗的时间。当所有的集群服务被平台化管理后，对于机器资源层的调度和利用率提升的需求越来越明显，同程基于资源监控对组件做混合部署，利用率提升<code>30%</code>。</p>
 <p>大数据底层一般会分为计算和存储，但是随着机器资源越来越多，资源层的研发也是很关键的一环。同程希望将数据，资源，算法流程打通，让数据使用更简单，让数据处理更快更稳定。</p>
-<p>业界有很多公司会考虑将大数据计算任务 <code>native on k8s</code>,同程也进行调研和尝试，当前大家都只是解决了部署的问题，任务的完整生命周期还需要研发和测试。所以同程还是着重于 <code>Yarn</code> on k8s,一些算法和分析类的<code>Python</code>任务会采用容器调度方式运行。</p>
+<p>业界有很多公司会考虑将大数据计算任务 <code>native on Kubernetes</code>,同程也进行调研和尝试，当前大家都只是解决了部署的问题，任务的完整生命周期还需要研发和测试。所以同程还是着重于 <code>Yarn</code> on <code>Kubernetes</code>,一些算法和分析类的<code>Python</code>任务会采用容器调度方式运行。</p>
 <h2 id="未来方向">未来方向</h2>
 <p>同程大数据上云还有很多问题没有去优雅的解决，比如已有服务如何平滑的通过平台的方式迁移上云，现在还有很多中间过程需要资源研发介入。</p>
 <p>未来的方向主要分为:</p>
 <ul>
-<li>采用混部和分时调度，提升集群资源整体利用率</li>
+<li>采用混部和分时调度，提升集群资源整体利用率。</li>
 <li>用混沌工程的方式提升组件稳定性。</li>
-<li>计算任务 <code>native on k8s</code>,提供高优保障。</li>
+<li>计算任务 <code>native on Kubernetes</code>,提供高优保障。</li>
 <li>持续提升PAAS平台易用性。</li>
 <li>让底层资源触手可及。</li>
 </ul>
