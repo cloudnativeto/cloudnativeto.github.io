@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+
+<html lang="zh-cn"><head>
+  <meta charset="utf-8">
+  
+  <title>Kubernetes 上如何控制容器的启动顺序？ | 云原生社区</title>
+  
+
+  <!-- mobile responsive meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Kubernetes 上如何保证容器按照期望的顺序启动？参考 Istio 的实现，模拟容器按指定顺序启动。">
+  
+  <meta name="author" content=" 云原生社区">
+  <meta name="generator" content="Hugo 0.65.3" />
+
+  <!-- plugins -->
+  
+  <link rel="stylesheet" href="/plugins/bootstrap/bootstrap.min.css">
+  
+  <link rel="stylesheet" href="/plugins/slick/slick.css">
+  
+  <link rel="stylesheet" href="/plugins/fontawesome/font-awesome.min.css">
+  
+  <link rel="stylesheet" href="/plugins/animate/animate.css">
+  
+  <link rel="stylesheet" href="/plugins/venobox/venobox.css">
+  
+
+  <!-- Main Stylesheet -->
+  
+  <link rel="stylesheet" href="/scss/style.min.css" media="screen">
+
+  <!--Favicon-->
+  <link rel="shortcut icon" href="/images/favicon.png " type="image/x-icon">
+  <link rel="icon" href="/images/favicon.png " type="image/x-icon">
+  <meta property="og:image" content="https://cloudnative.to/images/favicon.png">
+  <!--Algolia-->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.css">
+  <!--Twitter card-->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="Cloud Native Community|云原生社区" />
+  <meta name="twitter:creator" content="@CloudNativeCN" />
+  <meta property="og:url" content="https://cloudnative.to/blog/k8s-1.18-container-start-sequence-control/" />
+  <meta property="og:title" content="Kubernetes 上如何控制容器的启动顺序？" />
+  <meta property="og:description" content="Kubernetes 上如何保证容器按照期望的顺序启动？参考 Istio 的实现，模拟容器按指定顺序启动。" />
+  <meta property="og:image" content="https://cloudnative.to/images/blog/kubernetes-container-order.jpeg" />
+</head>
+<body>
+<!-- header -->
+
+<img src="images/logo-square.jpg" width="0" height="0" />
+<div style='margin:0 auto;width:0px;height:0px;overflow:hidden;'>
+     <img src="" width='700'>
+</div>
+<header>
+  
+
+  <!-- navigation -->
+  <div class="navigation bg-white position-relative">
+    <div class="container">
+      <nav class="navbar navbar-expand-lg navbar-light bg-white">
+        <a class="navbar-brand" href="/"><img class="img-fluid pb-lg-3" src="/images/logo.png" width="189px" alt="云原生社区"></a>
+        <button class="navbar-toggler border-0" type="button" data-toggle="collapse" data-target="#navigation"
+          aria-controls="navigation" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse text-center" id="navigation">
+          <ul class="navbar-nav ml-auto">
+            <li class="nav-item">
+              <a class="nav-link" href="/"></a>
+            </li>
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/blog/">博客</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="https://i.cloudnative.to/community/sig/">兴趣小组</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/contribute">投稿</a>
+            </li>
+            
+            
+            
+            <li class="nav-item">
+              <a class="nav-link" href="/job">招聘</a>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                社区
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="/team">管理委员会</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/academy/">云原生学院</a>
+                
+                <a class="dropdown-item" href="/city">城市站</a>
+                
+                <a class="dropdown-item" href="https://i.cloudnative.to/community/">社区资料</a>
+                
+              </div>
+            </li>
+            
+            
+            
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-toggle="dropdown" aria-haspopup="true"
+                aria-expanded="false">
+                资料
+              </a>
+              <div class="dropdown-menu" >
+                
+                <a class="dropdown-item" href="http://landscape.opensourcecloud.cn/">云原生生态图景</a>
+                
+                <a class="dropdown-item" href="/kubebuilder">Kubebuilder 中文文档</a>
+                
+                <a class="dropdown-item" href="/envoy">Envoy 中文文档</a>
+                
+              </div>
+            </li>
+            
+            
+          </ul>
+
+          
+          
+
+          
+          <!-- search -->
+          <div class="search px-4">
+            <button id="searchOpen" class="search-btn"><i class="fa fa-search text-dark"></i></button>
+            <div class="search-wrapper">
+              <form action="/search">
+                <input class="search-box form-control" id="js-algolia-btn" name="s" type="search" placeholder="输入搜索词">
+              </form>
+              <button id="searchClose" class="search-close"><i class="fa fa-close text-dark"></i></button>
+            </div>
+          </div>
+          
+          
+          <!-- get start btn -->
+          <a href="/contact" class="btn btn-primary hover-ripple">加入我们</a>
+          
+        </div>
+      </nav>
+    </div>
+  </div>
+  <!-- /navigation -->
+</header>
+<!-- /header -->
+
+	<!-- page title -->
+<section class="section bg-cover overlay" style="background-image: url('/'),url('/'),url('/images/backgrounds/page-title-5.jpg');">
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <h2 class="text-white mb-3 text-capitalize">Kubernetes 上如何控制容器的启动顺序？</h2>
+        <!-- breadcrumb -->
+        
+        <p class="text-white">Kubernetes 上如何保证容器按照期望的顺序启动？参考 Istio 的实现，模拟容器按指定顺序启动。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- /page title -->
+
+	
+
+<!-- blog details -->
+<section class="section">
+  <div class="container blog">
+    <div class="row">
+      <div class="col-lg-8">
+        <!-- post thumb -->
+        <div class="position-relative mb-5">
+          <img src="/"  onerror="this.src='\/images\/blog\/kubernetes-container-order.jpeg'" alt="post thumb" class="img-fluid w-100">
+           <div class="card-type"><a href="/categories/kubernetes">Kubernetes</a></div>
+        </div>
+        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://atbug.com">张晓辉</a></strong>
+          
+            发表于 <strong class="text-dark">2021年5月4日</strong></div>
+        <hr>
+        <div class="content">
+          <p>去年写过一篇博客：<a href="https://mp.weixin.qq.com/s/5UXhXpwPDBh2xuGKq9Nqig">控制 Pod 内容器的启动顺序</a>，分析了 <a href="https://github.com/tektoncd">TektonCD</a>  的容器启动控制的原理。</p>
+<h2 id="背景">背景</h2>
+<p>为什么要做容器启动顺序控制？我们都知道 Pod 中除了 <code>init-container</code> 之外，是允许添加多个容器的。类似 TektonCD 中 <code>task</code> 和 <code>step</code> 的概念就分别与 <code>pod</code> 和 <code>container</code> 对应，而 <code>step</code> 是按照顺序执行的。此外还有服务网格的场景，sidecar 容器需要在服务容器启动之前完成配置的加载，也需要对容器的启动顺序加以控制。否则，服务容器先启动，而 sidecar 还无法提供网络上的支持。</p>
+<h3 id="现实">现实</h3>
+<p><img src="https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/04/30/sidecarlifecycle1.gif" alt="sidecar-lifecycle-1"></p>
+<h3 id="期望">期望</h3>
+<p><img src="https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/04/30/sidecarlifecycle2.gif" alt="sidecar-lifecycle-2"></p>
+<p>到了这里肯定有同学会问，<code>spec.containers[]</code> 是一个数组，数组是有顺序的。Kubernetes 也确实是按照顺序来创建和启动容器，但是 <strong>容器启动成功，并不表示容器可以对外提供服务</strong>。</p>
+<p>在 Kubernetes 1.18 非正式版中曾在 Lifecycle 层面提供了对  <code>sidecar 类型容器的</code> 支持，但是最终该功能并<a href="https://github.com/kubernetes/enhancements/issues/753#issuecomment-713471597">没有落地</a>。</p>
+<p>那到底该怎么做？</p>
+<h2 id="tldr">TL;DR</h2>
+<p>笔者准备了一个简单的 <a href="https://github.com/addozhang/k8s-container-sequence-sample">go 项目</a>，用于模拟 sidecar 的启动及配置加载。</p>
+<p>克隆代码后可以通过 <code>make build</code> 构建出镜像，假如你是用的 minikube 进行的实验，可以通过命令 <code>make load-2-minikube</code> 将镜像加载到 minikube 节点中。</p>
+<p>使用 Deployment 的方式进行部署，直接用 Pod 也可以。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-yaml" data-lang="yaml"><span style="color:#66d9ef">apiVersion</span>: apps/v1
+<span style="color:#66d9ef">kind</span>: Deployment
+<span style="color:#66d9ef">metadata</span>:
+  <span style="color:#66d9ef">creationTimestamp</span>: <span style="color:#66d9ef">null</span>
+  <span style="color:#66d9ef">labels</span>:
+    <span style="color:#66d9ef">app</span>: sample
+  <span style="color:#66d9ef">name</span>: sample
+<span style="color:#66d9ef">spec</span>:
+  <span style="color:#66d9ef">replicas</span>: <span style="color:#ae81ff">1</span>
+  <span style="color:#66d9ef">selector</span>:
+    <span style="color:#66d9ef">matchLabels</span>:
+      <span style="color:#66d9ef">app</span>: sample
+  <span style="color:#66d9ef">strategy</span>: {}
+  <span style="color:#66d9ef">template</span>:
+    <span style="color:#66d9ef">metadata</span>:
+      <span style="color:#66d9ef">creationTimestamp</span>: <span style="color:#66d9ef">null</span>
+      <span style="color:#66d9ef">labels</span>:
+        <span style="color:#66d9ef">app</span>: sample
+    <span style="color:#66d9ef">spec</span>:
+      <span style="color:#66d9ef">containers</span>:
+      - <span style="color:#66d9ef">image</span>: addozhang/k8s-container-sequence-sidecar:latest
+        <span style="color:#66d9ef">name</span>: sidecar
+        <span style="color:#66d9ef">imagePullPolicy</span>: IfNotPresent
+        <span style="color:#66d9ef">lifecycle</span>:
+          <span style="color:#66d9ef">postStart</span>:
+            <span style="color:#66d9ef">exec</span>:
+              <span style="color:#66d9ef">command</span>:
+                - /entrypoint
+                - wait
+      - <span style="color:#66d9ef">image</span>: busybox:latest
+        <span style="color:#66d9ef">name</span>: app
+        <span style="color:#66d9ef">imagePullPolicy</span>: IfNotPresent
+        <span style="color:#66d9ef">command</span>: [<span style="color:#e6db74">&#34;/bin/sh&#34;</span>,<span style="color:#e6db74">&#34;-c&#34;</span>]
+        <span style="color:#66d9ef">args</span>: [<span style="color:#e6db74">&#34;date; echo &#39;app container started&#39;; tail -f /dev/null&#34;</span>]
+</code></pre></div><p>下面的截图中，演示了在 <code>sample</code> 命名空间中，pod 内两个容器的执行顺序。</p>
+<p><img src="https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/04/30/20210430-062819.gif" alt="2021-04-30 06.28.19"></p>
+<h2 id="kubernetes-源码">Kubernetes 源码</h2>
+<p>在 kubelet 的源码 <code>pkg/kubelet/kuberuntime/kuberuntime_manager.go</code> 中，<code>#SyncPod</code> 方法用于创建 Pod，步骤比较繁琐，直接看第 7 步：创建普通容器。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// SyncPod syncs the running pod into the desired pod by executing following steps:
+</span><span style="color:#75715e">//
+</span><span style="color:#75715e">//  1. Compute sandbox and container changes.
+</span><span style="color:#75715e">//  2. Kill pod sandbox if necessary.
+</span><span style="color:#75715e">//  3. Kill any containers that should not be running.
+</span><span style="color:#75715e">//  4. Create sandbox if necessary.
+</span><span style="color:#75715e">//  5. Create ephemeral containers.
+</span><span style="color:#75715e">//  6. Create init containers.
+</span><span style="color:#75715e">//  7. Create normal containers.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">kubeGenericRuntimeManager</span>) <span style="color:#a6e22e">SyncPod</span>(<span style="color:#a6e22e">pod</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">v1</span>.<span style="color:#a6e22e">Pod</span>, <span style="color:#a6e22e">podStatus</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">kubecontainer</span>.<span style="color:#a6e22e">PodStatus</span>, <span style="color:#a6e22e">pullSecrets</span> []<span style="color:#a6e22e">v1</span>.<span style="color:#a6e22e">Secret</span>, <span style="color:#a6e22e">backOff</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">flowcontrol</span>.<span style="color:#a6e22e">Backoff</span>) (<span style="color:#a6e22e">result</span> <span style="color:#a6e22e">kubecontainer</span>.<span style="color:#a6e22e">PodSyncResult</span>) {
+    
+    <span style="color:#f92672">...</span>
+    
+	<span style="color:#75715e">// Step 7: start containers in podContainerChanges.ContainersToStart.
+</span><span style="color:#75715e"></span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">idx</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">podContainerChanges</span>.<span style="color:#a6e22e">ContainersToStart</span> {
+		<span style="color:#a6e22e">start</span>(<span style="color:#e6db74">&#34;container&#34;</span>, <span style="color:#a6e22e">containerStartSpec</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">pod</span>.<span style="color:#a6e22e">Spec</span>.<span style="color:#a6e22e">Containers</span>[<span style="color:#a6e22e">idx</span>]))
+	}
+
+	<span style="color:#66d9ef">return</span>
+}
+</code></pre></div><p>在 <code>#start</code> 方法中调用了 <code>#startContainer</code> 方法，该方法会启动容器，并返回容器启动的结果。注意，这里的结果还 <strong>包含了容器的 Lifecycle hooks 调用</strong>。</p>
+<p>也就是说，假如容器的 <code>PostStart</code> hook 没有正确的返回，kubelet 便不会去创建下一个容器。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// startContainer starts a container and returns a message indicates why it is failed on error.
+</span><span style="color:#75715e">// It starts the container through the following steps:
+</span><span style="color:#75715e">// * pull the image
+</span><span style="color:#75715e">// * create the container
+</span><span style="color:#75715e">// * start the container
+</span><span style="color:#75715e">// * run the post start lifecycle hooks (if applicable)
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">kubeGenericRuntimeManager</span>) <span style="color:#a6e22e">startContainer</span>(<span style="color:#a6e22e">podSandboxID</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">podSandboxConfig</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">runtimeapi</span>.<span style="color:#a6e22e">PodSandboxConfig</span>, <span style="color:#a6e22e">spec</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">startSpec</span>, <span style="color:#a6e22e">pod</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">v1</span>.<span style="color:#a6e22e">Pod</span>, <span style="color:#a6e22e">podStatus</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">kubecontainer</span>.<span style="color:#a6e22e">PodStatus</span>, <span style="color:#a6e22e">pullSecrets</span> []<span style="color:#a6e22e">v1</span>.<span style="color:#a6e22e">Secret</span>, <span style="color:#a6e22e">podIP</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">podIPs</span> []<span style="color:#66d9ef">string</span>) (<span style="color:#66d9ef">string</span>, <span style="color:#66d9ef">error</span>) {
+     
+     <span style="color:#f92672">...</span>
+     
+	<span style="color:#75715e">// Step 4: execute the post start hook.
+</span><span style="color:#75715e"></span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">container</span>.<span style="color:#a6e22e">Lifecycle</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">container</span>.<span style="color:#a6e22e">Lifecycle</span>.<span style="color:#a6e22e">PostStart</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+		<span style="color:#a6e22e">kubeContainerID</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">kubecontainer</span>.<span style="color:#a6e22e">ContainerID</span>{
+			<span style="color:#a6e22e">Type</span>: <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">runtimeName</span>,
+			<span style="color:#a6e22e">ID</span>:   <span style="color:#a6e22e">containerID</span>,
+		}
+		<span style="color:#a6e22e">msg</span>, <span style="color:#a6e22e">handlerErr</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">runner</span>.<span style="color:#a6e22e">Run</span>(<span style="color:#a6e22e">kubeContainerID</span>, <span style="color:#a6e22e">pod</span>, <span style="color:#a6e22e">container</span>, <span style="color:#a6e22e">container</span>.<span style="color:#a6e22e">Lifecycle</span>.<span style="color:#a6e22e">PostStart</span>)
+		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">handlerErr</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+			<span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">recordContainerEvent</span>(<span style="color:#a6e22e">pod</span>, <span style="color:#a6e22e">container</span>, <span style="color:#a6e22e">kubeContainerID</span>.<span style="color:#a6e22e">ID</span>, <span style="color:#a6e22e">v1</span>.<span style="color:#a6e22e">EventTypeWarning</span>, <span style="color:#a6e22e">events</span>.<span style="color:#a6e22e">FailedPostStartHook</span>, <span style="color:#a6e22e">msg</span>)
+			<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">killContainer</span>(<span style="color:#a6e22e">pod</span>, <span style="color:#a6e22e">kubeContainerID</span>, <span style="color:#a6e22e">container</span>.<span style="color:#a6e22e">Name</span>, <span style="color:#e6db74">&#34;FailedPostStartHook&#34;</span>, <span style="color:#a6e22e">reasonFailedPostStartHook</span>, <span style="color:#66d9ef">nil</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+				<span style="color:#a6e22e">klog</span>.<span style="color:#a6e22e">ErrorS</span>(<span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Errorf</span>(<span style="color:#e6db74">&#34;%s: %v&#34;</span>, <span style="color:#a6e22e">ErrPostStartHook</span>, <span style="color:#a6e22e">handlerErr</span>), <span style="color:#e6db74">&#34;Failed to kill container&#34;</span>, <span style="color:#e6db74">&#34;pod&#34;</span>, <span style="color:#a6e22e">klog</span>.<span style="color:#a6e22e">KObj</span>(<span style="color:#a6e22e">pod</span>),
+					<span style="color:#e6db74">&#34;podUID&#34;</span>, <span style="color:#a6e22e">pod</span>.<span style="color:#a6e22e">UID</span>, <span style="color:#e6db74">&#34;containerName&#34;</span>, <span style="color:#a6e22e">container</span>.<span style="color:#a6e22e">Name</span>, <span style="color:#e6db74">&#34;containerID&#34;</span>, <span style="color:#a6e22e">kubeContainerID</span>.<span style="color:#a6e22e">String</span>())
+			}
+			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">msg</span>, <span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Errorf</span>(<span style="color:#e6db74">&#34;%s: %v&#34;</span>, <span style="color:#a6e22e">ErrPostStartHook</span>, <span style="color:#a6e22e">handlerErr</span>)
+		}
+	}
+
+	<span style="color:#66d9ef">return</span> <span style="color:#e6db74">&#34;&#34;</span>, <span style="color:#66d9ef">nil</span>
+}
+</code></pre></div><h2 id="实现方案">实现方案</h2>
+<p><img src="https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/04/30/16197365667225.jpg" alt=""></p>
+<p><a href="https://github.com/addozhang/k8s-container-sequence-sample/blob/main/cmd/entrypoint/wait.go#L26">cmd/entrypoint/wait.go#L26</a> （这里参考了 Istio 的 pilot-agent 实现 ）</p>
+<p>在 <code>PostStart</code> 中持续的去检查 <code>/ready</code> 断点，可以 hold 住当前容器的创建流程。保证 <code>/ready</code> 返回 <code>200</code> 后，kubelet 才会去创建下一个容器。</p>
+<p>这样就达到了前面截图中演示的效果。</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">for</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Now</span>().<span style="color:#a6e22e">Before</span>(<span style="color:#a6e22e">timeoutAt</span>) {
+	<span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">checkIfReady</span>(<span style="color:#a6e22e">client</span>, <span style="color:#a6e22e">url</span>)
+	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {
+		<span style="color:#a6e22e">log</span>.<span style="color:#a6e22e">Println</span>(<span style="color:#e6db74">&#34;sidecar is ready&#34;</span>)
+		<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+	}
+	<span style="color:#a6e22e">log</span>.<span style="color:#a6e22e">Println</span>(<span style="color:#e6db74">&#34;sidecar is not ready&#34;</span>)
+	<span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Sleep</span>(<span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Duration</span>(<span style="color:#a6e22e">periodMillis</span>) <span style="color:#f92672">*</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Millisecond</span>)
+}
+<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Errorf</span>(<span style="color:#e6db74">&#34;sidecar is not ready in %d second(s)&#34;</span>, <span style="color:#a6e22e">timeoutSeconds</span>)
+</code></pre></div><h2 id="参考">参考</h2>
+<ul>
+<li><a href="https://banzaicloud.com/blog/k8s-sidecars/">Sidecar container lifecycle changes in Kubernetes 1.18</a></li>
+<li><a href="https://medium.com/@marko.luksa/delaying-application-start-until-sidecar-is-ready-2ec2d21a7b74">Delaying application start until sidecar is ready</a></li>
+</ul>
+
+        </div>
+        <!-- tags -->
+        <div class="mb-3">
+          <h5 class="d-inline-block mr-3">Tags:</h5>
+          <ul class="list-inline d-inline-block">
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/kubernetes"> 
+            Kubernetes</a>
+            <a>
+            <li class="list-inline-item"><a class="text-color" href="/tags/istio"> , 
+            Istio</a>
+            
+          </ul>
+        </div>
+        <!-- previous -->
+        
+<div class="col-12">
+<ul class="pager blog-pager">
+
+<li class="previous">
+<a href="https://cloudnative.to/blog/kubernetes-apiserver-etcd/" data-toggle="tooltip" data-placement="top" title="Kubernetes APIServer ETCD 架构设计源码阅读">&larr; 上一篇</a>
+</li>
+ 
+</ul>
+</div>
+
+
+        <!-- previous -->
+
+        <!-- recommend -->
+        
+
+<div class="mb-3">
+  <h2>文章推荐</h2>
+  <ul class="related">
+  
+    <li><a href="/blog/20190910-horizontal-pod-autoscaling-based-on-custom-istio-metrics/">基于自定义Istio指标的Pod水平自动缩放</a></li>
+  
+    <li><a href="/blog/gloo-by-solo-io-is-the-first-alternative-to-istio-on-knative/">Solo.io打造的Gloo——Knative中Istio的替代方案</a></li>
+  
+    <li><a href="/blog/manipulating-istio-and-other-custom-kubernetes-resources-in-golang/">使用Go语言操作Istio和其他Kubernetes CRD</a></li>
+  
+    <li><a href="/blog/kubernetes-apiserver-etcd/">Kubernetes APIServer ETCD 架构设计源码阅读</a></li>
+  
+    <li><a href="/blog/kubernetes-client-controller/">Kubernetes Client Controller 架构设计源码阅读</a></li>
+  
+  </ul>
+</div>
+
+
+        <!-- comments -->
+
+        
+        <div id="gitalk-container"></div>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+        <script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+        <script>
+          window.onload = function() {
+              const gitalk = new Gitalk({
+              clientID: '0f001988910adcfadfb7',
+              clientSecret: '14f7d06ee5e6575c295d18fc11616e8cb60fb84e',
+              repo: 'cloudnativeto.github.io',
+              owner: 'cloudnativeto',
+              admin: ['rootsongjc'],
+              id: hex_md5(hex_md5(window.location.pathname + window.location.hash)), 
+              distractionFreeMode: false 
+            });
+            (function() {
+              if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+                document.getElementById('gitalk-container').innerHTML = 'Gitalk comments not available by default when the website is previewed locally.';
+                return;
+              }
+              gitalk.render('gitalk-container');
+            })();
+          }
+        </script>
+        
+      </div>
+      <!-- sidebar -->
+<aside class="col-lg-4 order-1 order-lg-2">
+    <!-- categories -->
+<div class="bg-pink px-4 py-5 box-shadow mb-5">
+  <h4 class="mb-4">分类</h4>
+  <ul class="list-unstyled">
+    <li class="border-bottom"><a href="/categories/devops" class="d-block pb-3 mt-3 text-capitalize">Devops</a></li>
+    <li class="border-bottom"><a href="/categories/envoy" class="d-block pb-3 mt-3 text-capitalize">Envoy</a></li>
+    <li class="border-bottom"><a href="/categories/istio" class="d-block pb-3 mt-3 text-capitalize">Istio</a></li>
+    <li class="border-bottom"><a href="/categories/kubernetes" class="d-block pb-3 mt-3 text-capitalize">Kubernetes</a></li>
+    <li class="border-bottom"><a href="/categories/serverless" class="d-block pb-3 mt-3 text-capitalize">Serverless</a></li>
+    <li class="border-bottom"><a href="/categories/service-mesh" class="d-block pb-3 mt-3 text-capitalize">Service mesh</a></li>
+    <li class="border-bottom"><a href="/categories/%e4%ba%91%e5%8e%9f%e7%94%9f" class="d-block pb-3 mt-3 text-capitalize">云原生</a></li>
+    <li class="border-bottom"><a href="/categories/%e5%85%b6%e4%bb%96" class="d-block pb-3 mt-3 text-capitalize">其他</a></li>
+    <li class="border-bottom"><a href="/categories/%e5%8f%af%e8%a7%82%e5%af%9f%e6%80%a7" class="d-block pb-3 mt-3 text-capitalize">可观察性</a></li>
+    <li class="border-bottom"><a href="/categories/%e5%bc%80%e6%ba%90%e7%a4%be%e5%8c%ba" class="d-block pb-3 mt-3 text-capitalize">开源社区</a></li>
+    <li class="border-bottom"><a href="/categories/%e6%8c%81%e7%bb%ad%e4%ba%a4%e4%bb%98" class="d-block pb-3 mt-3 text-capitalize">持续交付</a></li>
+    <li class="border-bottom"><a href="/categories/%e7%a8%b3%e5%ae%9a%e6%80%a7" class="d-block pb-3 mt-3 text-capitalize">稳定性</a></li>
+  </ul>
+</div>
+
+  <!-- tags -->
+  
+
+  <!-- profile -->
+  <div class="bg-pink px-4 py-5 box-shadow mb-5 avatar-content">
+    <div class="avatar">
+      <div class="mx-auto avatar-wrp">
+        <img class="rounded-circle avatar-img" src="/images/profile/zhangxiaohui.jpeg">
+      </div>
+      <p class="avatar-name">
+        <strong class="text-dark "><a href="https://atbug.com">张晓辉</a></strong> 
+      </p>
+      <p>资深码农，云原生爱好者。</p>
+    </div>
+  </div>
+  <!-- toc -->
+  
+  <div class="bg-white px-4 py-5 box-shadow mb-5 sticky-top">
+    <h4 class="mb-4">目录</h4>
+    <nav id="TableOfContents">
+  <ul>
+    <li><a href="#背景">背景</a>
+      <ul>
+        <li><a href="#现实">现实</a></li>
+        <li><a href="#期望">期望</a></li>
+      </ul>
+    </li>
+    <li><a href="#tldr">TL;DR</a></li>
+    <li><a href="#kubernetes-源码">Kubernetes 源码</a></li>
+    <li><a href="#实现方案">实现方案</a></li>
+    <li><a href="#参考">参考</a></li>
+  </ul>
+</nav>
+  </div>
+
+</aside>
+<!-- /sidebar -->
+
+    </div>
+  </div>
+</section>
+<!-- /blog details -->
+
+
+
+<footer>
+  
+  <div class="section bg-secondary">
+    <div class="container">
+      <div class="row justify-content-between">
+        
+        <div class="col-lg-5 mb-5 mb-lg-0">
+          
+          <a class="mb-4 d-inline-block" href="/"><img class="img-fluid"
+              src="/images/logo-alt.png" alt="云原生社区" width="60%"></a>
+          <p class="text-light mb-5">云原生社区是一个中立的云原生终端用户社区，由 CNCF 大使、开源意见领袖共同发起成立于 2020 年 5 月 12 日，旨在推广云原生技术，构建开发者生态。</p>
+          <h4 class="text-white mb-4">关注我们</h4>
+          
+          <ul class="list-inline social-icon-alt">
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://twitter.com/cloudnativecn"><i class="fa fa-twitter"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://github.com/cloudnativeto"><i class="fa fa-github"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://mp.weixin.qq.com/s/vWlSdzz2MNdXRr0sd2-LFg"><i class="fa fa-wechat"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="mailto:contact@cloudnative.to"><i class="fa fa-envelope"></i></a>
+            </li>
+            
+            <li class="list-inline-item">
+              <a class="hover-ripple" href="https://cloudnative.to/blog/index.xml"><i class="fa fa-rss"></i></a>
+            </li>
+            
+          </ul>
+        </div>
+        <div class="col-lg-5 mb-5 mb-lg-0">
+            
+            
+            
+            
+            
+            <div class="mb-5 address">
+              <h4 class="text-white mb-4">联系信息</h4>
+              <p class="text-light mb-3"><a href="/city/beijing">北京</a>|<a href="/city/shanghai">上海</a>|<a href="/city/chengdu">成都</a>|<a href="/city/shenzhen">深圳</a>|<a href="/city/hangzhou/">杭州</a>|<a href="/city/guangzhou/">广州</a>|<a href="https://github.com/cloudnativeto/community/issues/55">武汉</a>|<a href="/city/nanjing">南京</a>|<a href="https://github.com/cloudnativeto/community/issues/61">西安</a>|<a href="/city/dalian">大连</a>|<a href="https://github.com/cloudnativeto/community/issues/52">长沙</a>|<a href="https://github.com/cloudnativeto/community/issues/66">苏州</a>|<a href="https://github.com/cloudnativeto/community/issues/67">珠海</a>|<a href="https://github.com/cloudnativeto/community/issues/78">重庆</a>|<a href="https://github.com/cloudnativeto/community/issues/82">济南</a>|<a href="https://github.com/cloudnativeto/community/issues/83">厦门</a>|<a href="https://github.com/cloudnativeto/community/issues/86">无锡</a>|<a href="https://github.com/cloudnativeto/community/issues/91">青岛</a>|<a href="https://github.com/cloudnativeto/community/issues/103">郑州</a>|<a href="https://github.com/cloudnativeto/community/issues/107">合肥</a></p>
+              <p class="text-light mb-3"></p>
+              <p class="text-light mb-3">关注云原生社区微信公众号，加入社区并获取最新资讯。</p>
+              <p class="text-light mb-3"><img src="/images/wechat-qrcode.png" width="128px"></p>
+            </div>
+            
+            
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="bg-secondary-darken py-4">
+    <div class="container">
+      <div class="row">
+        <div class="col-md-6 text-center text-md-left mb-3 mb-md-0">
+          <p class="mb-0 text-white">Copyright © 2021 云原生社区</p>
+        </div>
+        <div class="col-md-6 text-center text-md-right">
+          <ul class="list-inline">
+            
+            <li class="list-inline-item mx-0"><a class="d-inline-block px-3 text-white" href="/policy"
+                class="text-white">声明与政策</a></li>
+            
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+
+<script>
+  var indexURL = "/index.json"
+</script>
+
+
+<!-- JS Plugins -->
+
+<script src="/plugins/jQuery/jquery.min.js"></script>
+
+<script src="/plugins/bootstrap/bootstrap.min.js"></script>
+
+<script src="/plugins/slick/slick.min.js"></script>
+
+<script src="/plugins/google-map/gmap.js"></script>
+
+<script src="/plugins/venobox/venobox.min.js"></script>
+
+<script src="/plugins/filterizr/jquery.filterizr.min.js"></script>
+
+<script src="/plugins/search/fuse.min.js"></script>
+
+<script src="/plugins/search/mark.js"></script>
+
+<script src="/plugins/search/search.js"></script>
+
+<script src="/plugins/bigPicture/bigPicture.js"></script>
+
+<script src="/plugins/hex_md5/hex_md5.js"></script>
+
+
+<!-- Main Script -->
+
+<script src="/js/script.min.js"></script>
+
+<!-- Algolia -->
+<script src="https://cdn.jsdelivr.net/npm/docsearch.js@2.6.3/dist/cdn/docsearch.min.js"></script>
+<script>
+  docsearch({
+    apiKey: '870a8addaf7a712ecc6e33ce9def93b1',
+    indexName: 'DocSearch',
+    appId: '2506Q6I4IV',
+    inputSelector: '#js-algolia-btn',
+    debug: false,
+  });
+</script>
+
+<!-- baidu tongji-->
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?f3dc895ea3bd6186cd835841d365c103";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+<!-- google analitycs -->
+
+<script>
+  (function (i, s, o, g, r, a, m) {
+    i['GoogleAnalyticsObject'] = r;
+    i[r] = i[r] || function () {
+      (i[r].q = i[r].q || []).push(arguments)
+    }, i[r].l = 1 * new Date();
+    a = s.createElement(o),
+      m = s.getElementsByTagName(o)[0];
+    a.async = 1;
+    a.src = g;
+    m.parentNode.insertBefore(a, m)
+  })(window, document, 'script', '//www.google-analytics.com/analytics.js', 'ga');
+  ga('create', 'UA-93485976-4', 'auto');
+  ga('send', 'pageview');
+</script>
+
+
+</body>
+
+</html>
