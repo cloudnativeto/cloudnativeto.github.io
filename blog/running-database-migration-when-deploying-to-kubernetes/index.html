@@ -43,7 +43,7 @@
   <meta property="og:url" content="https://cloudnative.to/blog/running-database-migration-when-deploying-to-kubernetes/" />
   <meta property="og:title" content="在 Kubernetes 上部署应用时如何更新数据库" />
   <meta property="og:description" content="作者分析了如何在部署应用时更新数据库并给出了相应解决办法。" />
-  <meta property="og:image" content="https://cloudnative.to/images/blog/006tKfTcly1g0t1i9oxo4j31400u0npe.jpg" />
+  <meta property="og:image" content="https://cloudnative.to/images/blog/database-k8s.jpg" />
 </head>
 <body>
 <!-- header -->
@@ -188,7 +188,7 @@
       <div class="col-lg-8">
         <!-- post thumb -->
         <div class="position-relative mb-5">
-          <img src="/"  onerror="this.src='\/images\/blog\/006tKfTcly1g0t1i9oxo4j31400u0npe.jpg'" alt="post thumb" class="img-fluid w-100">
+          <img src="/"  onerror="this.src='\/images\/blog\/database-k8s.jpg'" alt="post thumb" class="img-fluid w-100">
            <div class="card-type"><a href="/categories/kubernetes">Kubernetes</a></div>
         </div>
         <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://andrewlock.net/deploying-asp-net-core-applications-to-kubernetes-part-7-running-database-migrations/">Andrew Lock</a></strong>
@@ -198,7 +198,7 @@
           <a href="https://github.com/nicksu-kdkd">苏楚霖</a>
           </strong>
           
-            发表于 <strong class="text-dark">2021年7月10日</strong></div>
+            发表于 <strong class="text-dark">2021年7月15日</strong></div>
         <hr>
         <div class="content">
           <p>本文为翻译文章，<a href="https://andrewlock.net/deploying-asp-net-core-applications-to-kubernetes-part-7-running-database-migrations/">点击查看原文</a>。</p>
@@ -232,14 +232,14 @@
 <li>未创建 categories 表和 category_id 列</li>
 <li>已创建 categories 表和 category_id 列</li>
 </ul>
-<p>那如何应用数据库更新就有了两种选择：</p>
+<p>那如何应用数据库迁移就有了两种选择：</p>
 <p>部署新应用，然后执行数据库变更。这样应用的第一种状态就只需要处理数据库的第一种状态，但是第二种状态的应用则需要处理混合两种状态的数据库</p>
 <p>执行数据库变更，然后部署新应用。这样应用的第一种状态需要处理数据库的两种状态，但是第二种状态的应用则可以确保所需的表已经添加。</p>
-<p><img src="./pics/database-migrations.png" alt="database-migration"></p>
+<p><img src="./pics/database-migrations.png" alt="数据库迁移"></p>
 <p>以上两种方式都适用于数据库变更，但是我偏向于后者。因为数据库的变更通常是整个部署流程中最麻烦的一步，因此我希望能优先处理这一步，如果发生什么问题，整个部署流程会终止，那新版本的应用也就不会部署上去了。</p>
 <p>实际操作中，数据库新的 schema 应该是可以适配于旧版本的应用，也就是说你不能给已存在的表插入 NOT NULL 的列，因为应用并不知道哪一列会无法插入。所以要不就把新加的列设置为必须项，这样在接下来的部署中就会强制插入数据，或者配置一个默认值，来确保这一列是非空的。</p>
 <p>总的来说，只要你了解了这些方法，数据库的变更不应该会给你带来很大的麻烦。当准备数据库变更的时候，问自己 <strong>”如果只是执行数据库的数据变更，会不会破坏现有的应用运行？“</strong>， 如果这个问题的答案是不会的话，那这次变更就不会有什么麻烦。</p>
-<h2 id="什么时候执行数据库更新">什么时候执行数据库更新</h2>
+<h2 id="什么时候执行数据库迁移">什么时候执行数据库迁移</h2>
 <p>现在我们同意在新应用启动之前执行数据库的数据更新，但是这还是不够具体清晰，因为我看到了三种不同的做法：</p>
 <ul>
 <li>应用启动时执行数据库 schema 更新</li>
@@ -247,8 +247,8 @@
 <li>使用 Kuberentes Job 和 初始化容器（init container）来执行数据库 schema 更新</li>
 </ul>
 <p>每种做法都各有利弊，接下来让我们逐个讨论。</p>
-<p>让我们接着上面的例子，假设你的博客应用部署在 Kubernetes 里面，你会有一个 ingress, 一个 service 和一个 deployment, 就像我在<a href="https://andrewlock.net/deploying-asp-net-core-applications-to-kubernetes-part-1-an-introduction-to-kubernetes/">这篇文章</a>提到过的. Deployment 会确保在任何时候都有三个应用的副本来处理网页的流量。</p>
-<p><img src="./pics/blog-engine.png" alt="blog-engine"></p>
+<p>让我们接着上面的例子，假设你的博客应用部署在 Kubernetes 里面，你会有一个 ingress，一个 service 和一个 deployment，就像我在<a href="https://andrewlock.net/deploying-asp-net-core-applications-to-kubernetes-part-1-an-introduction-to-kubernetes/">这篇文章</a>提到过的。Deployment 会确保在任何时候都有三个应用的副本来处理网页的流量。</p>
+<p><img src="./pics/blog-engine.png" alt="数据库引擎"></p>
 <p>你需要在部署新版本应用的时候，执行数据库 schema 更新，让我们分析一下几个不同方案。</p>
 <h3 id="应用启动时执行数据库-schema-更新">应用启动时执行数据库 schema 更新</h3>
 <p>第一个方案是在应用启动的时候执行数据库 schema 更新，可以通过调用 EF Core 的 <code>DbContext.Database.Migrate()</code>:</p>
@@ -271,11 +271,11 @@
 </ul>
 <p>第一点是一个很明显的问题，如果我们有三个副本，当我们尝试滚动更新应用的时候会导致的结果就是几个应用同时去修改数据库，这个在我所知道的工具中并不是一个支持的功能，而且伴随而来的是数据崩溃的风险。</p>
 <p>当然并非没有办法去确认只有一个副本会修改数据库，但是我并不打算介绍任何一种，因为我不愿意因为任何一种原因导致应用有机会破坏我的数据库。</p>
-<p>第二点其实是安全相关的，数据库更新是一项很危险的操作，因为它有机会导致数据丢失或者毁坏。比较安全的做法是日常应用运行时跟数据库更新时使用不同的数据库账户， 这样能减少应用运行时意外（或者恶意）的数据丢失的发生机率。 如果应用没有权限执行 <code>DROP</code> 表的动作，那就几乎没有这种意外发生的机会了。</p>
+<p>第二点其实是安全相关的，数据库迁移是一项很危险的操作，因为它有机会导致数据丢失或者毁坏。比较安全的做法是日常应用运行时跟数据库迁移时使用不同的数据库账户， 这样能减少应用运行时意外（或者恶意）的数据丢失的发生机率。 如果应用没有权限执行 <code>DROP</code> 表的动作，那就几乎没有这种意外发生的机会了。</p>
 <p>如果你的应用除了运行业务代码外还要执行数据库变更的操作，那无法避免的是它一定需要特殊权限。这时候最好的做法就是确保只有在需要执行数据库 schema 更新的时候才使用那些特权账号，当然最最安全的做法就是不允许它使用特权账户。</p>
 <h3 id="将数据库-schema-更新作为部署流程的一部分">将数据库 schema 更新作为部署流程的一部分</h3>
 <p>另外一个常见的做法是将数据库 schema 更新作为部署流程的一部分， 比如说 Octopus Deploy 的部署方案。它解决了我上面描述的两个问题，能确保 Octopus 不会并发的去修改数据库 schema, 而且当数据库的变更完成后，才会部署应用的代码。因为这两个部署的步骤被拆分开了，使得不同的权限账户的使用变得更加方便容易。</p>
-<p><img src="./pics/deployment-process.png" alt="octopus deploy"></p>
+<p><img src="./pics/deployment-process.png" alt="Octopus 部署"></p>
 <p>可能大家会问，Octopus 是如何执行数据库的 schema 更新了，怎么确认这些更新完成了呢？上面的例子里，Octopus 需要一个更新脚本并直接执行这个脚本。好的一面是这样很容易执行你的更新任务，而且不需要在你的应用代码里去解决这些更新的问题。但是它却让你高度依赖 Octopus ，这可能会是你不想看到的一点。</p>
 <p>实际上，我自己实用的办法是使用一个简单的 .NET Core CLI 应用作为数据库工具来使用，或者说我简直把它当成一个数据库通用工具来使用，比如说使用 Jeremy D Miller 的 Oakton, 这样甚至可以利用来执行一些常见命令。</p>
 <blockquote>
@@ -285,30 +285,30 @@
 <p>你看，Octopus 可以比较好的解决这个问题，如果你刚好正在使用这个项目，很明显，它将会是你的首选方案了。</p>
 <p>接下来是一个完全基于 Kubernetes 的方案，也就是我现在采用的方案。</p>
 <h3 id="使用-kuberentes-job-和初始化容器来执行数据库-schema-更新">使用 Kuberentes Job 和初始化容器来执行数据库 schema 更新</h3>
-<p>我喜欢的 Kubernetes 原生的解决方案，使用 Job 和初始化容器</p>
+<p>我喜欢的 Kubernetes 原生的解决方案，使用 Job 和初始化容器。</p>
 <h4 id="job">Job</h4>
 <p>Kubernetes Job 会运行一个或者多个 pod 来处理工作负载，如果 pod 出错了，可以重试执行，如果 pod 正常结束，则 Job 顺利完成。</p>
 <p>这正是我们想要用来做数据库数据更新的办法，创建一个 job 来执行数据库的 CLI 工具，出现网络问题时可以有选择的重试。因为它是一个 Kubernetes 原生概念，因此我们可以利用 Helm 的功能來模板化管理，将它包含在我们应用的 helm chart 里面。 从下面的图片可以看到，我给 test-app 添加了一个 CLI 项目，主要是一个 job.yaml。</p>
-<p><img src="./pics/charts.png" alt="charts"></p>
+<p><img src="./pics/charts.png" alt="Helm chart"></p>
 <p>这个方案难在如何在应用启动之前确保 Job 已经完成，我是通过使用 Kubernetes 的初始化容器來解決这个问题的。</p>
 <h4 id="初始化容器-init-container">初始化容器 (Init Container)</h4>
-<p>如果你还记得这一系列文章里的第一篇，我讲过 Pod 是 Kubernetes 里包含一个或者多个容器的最小的调度单位。大部分情况下，Pod 会有一个主容器提供应用的主要功能，可能还会有一个或者多个 sidecar 容器提供一些附加的功能，比如说 metrics 或者 service-mesh。</p>
+<p>如果你还记得这一系列文章里的第一篇，我讲过 Pod 是 Kubernetes 里包含一个或者多个容器的最小的调度单位。大部分情况下，Pod 会有一个主容器提供应用的主要功能，可能还会有一个或者多个 sidecar 容器提供一些附加的功能，比如说 metrics 或者 service mesh。</p>
 <p>我们也可以选择在 Pod 里使用初始化容器，这样 Kubernetes 部署 pod 的时候，就会先运行所有的初始化容器。只有当所有的初始化容器都正常运作并退出时，主容器才会开始运行，通常这样的功能会被用于下载或者做一些主容器要求的预先配置，这样可以让你的主容器只负责运行业务代码而不须关注环境配置。</p>
 <h4 id="使用-job-和初始化容器来处理数据库数据更新">使用 Job 和初始化容器来处理数据库数据更新</h4>
-<p>当我刚开始探索初始化容器的时候，我尝试过直接使用初始化容器来负责数据库数据更新，但是这又碰到了那个问题，在应用运行的时候无法避免的出现了同时间几个应用副本都去修改数据库的问题。因此我决定使用两步走的方案：使用初始化容器来延迟主容器启动直至确认数据库更新的 Job 顺利完成。</p>
+<p>当我刚开始探索初始化容器的时候，我尝试过直接使用初始化容器来负责数据库数据更新，但是这又碰到了那个问题，在应用运行的时候无法避免的出现了同时间几个应用副本都去修改数据库的问题。因此我决定使用两步走的方案：使用初始化容器来延迟主容器启动直至确认数据库迁移的 Job 顺利完成。</p>
 <p>主要步骤看起来像是这样：</p>
 <ul>
-<li>应用的 Helm chart 包含了应用的部署和数据库数据更新的 Job</li>
-<li>每个应用的 Pod 都会包含一个初始化容器，这个初始化容器会一直休眠直至相关的 Job 成功完成。当初始化容器发现 Job 完成时，它自己会正常退出，这样主容器才会开始运行</li>
-<li>作为滚动更新的一部分，数据库更新的 Job 一旦部署会马上执行，新版本的应用也会被创建出来但是不会运行，因为数据库数据更新的 Job 还在运行，初始化容器也就还处于休眠状态中，这样新版本的 Pod 就会被推迟运行。而且旧版本的 Pod 不会受到影响，还能继续处理业务流量。</li>
-<li>当数据库数据更新完成时，Job 就会正常结束</li>
+<li>应用的 Helm chart 包含了应用的部署和数据库数据更新的 Job。</li>
+<li>每个应用的 Pod 都会包含一个初始化容器，这个初始化容器会一直休眠直至相关的 Job 成功完成。当初始化容器发现 Job 完成时，它自己会正常退出，这样主容器才会开始运行。</li>
+<li>作为滚动更新的一部分，数据库迁移的 Job 一旦部署会马上执行，新版本的应用也会被创建出来但是不会运行，因为数据库数据更新的 Job 还在运行，初始化容器也就还处于休眠状态中，这样新版本的 Pod 就会被推迟运行。而且旧版本的 Pod 不会受到影响，还能继续处理业务流量。</li>
+<li>当数据库数据更新完成时，Job 就会正常结束。</li>
 <li>当初始化容器发现相关的 Job 正常结束了，它自己也就会退出。这样应用的容器才会开始启动并处理业务流量。</li>
-<li>旧版本的 pod 会根据滚动更新的策略被移除</li>
+<li>旧版本的 pod 会根据滚动更新的策略被移除。</li>
 </ul>
-<p><img src="./pics/jobs-and-init-containers-1.png" alt="jobs-init-1">
-<img src="./pics/jobs-and-init-containers-2.png" alt="jobs-init-2"></p>
+<p><img src="./pics/jobs-and-init-containers-1.png" alt="Job init">
+<img src="./pics/jobs-and-init-containers-2.png" alt="Job int"></p>
 <p>就像我说过的，这个方案我已经成功的使用了好几年，因此我觉得它是一个合适的解决方案。我在下一篇文章会详细的解释如何实施这个方案。</p>
-<p>在我们完成本次探讨之前，我想再聊聊最后的一个做法：使用 Helm Chart Hooks</p>
+<p>在我们完成本次探讨之前，我想再聊聊最后的一个做法：使用 Helm Chart Hooks。</p>
 <h4 id="helm-chart-hooks">Helm Chart Hooks</h4>
 <p>字面上来看，<a href="https://helm.sh/docs/topics/charts_hooks/">Helm Chart Hooks</a> 看起来好像可以实现我们想要的东西，它可以让我们在执行主要部署任务时，提前运行一个 Job 作为部署这个 helm chart 的一部分。</p>
 <p>在我第一次尝试使用这个方法时，这正就是我的做法。 我们可以将一个 Kubernetes 的 Job 通过添加 annotation 来转化成为 Helm Hook，看下面这个例子：</p>
@@ -320,7 +320,7 @@
     <span style="color:#75715e"># This is what defines this resource as a hook</span>
     <span style="color:#66d9ef">&#34;helm.sh/hook&#34;: </span>pre-install
 </code></pre></div><p>只要添加上这一行就能确保 Helm 不会将这一部分作为主要的安装或者升级流程，相反，它会在部署主应用之前先运行 job ，并等待这个 job 完成。只要这个 job 顺利完成， 这整个 chart 就会开始安装，并对你的应用执行滚动更新。如果 Job 失败了，这个 chart 不会继续安装，正在运行的应用也不会受影响。</p>
-<p>我刚开始测试这个方案的时候是可以的，但是有个意外。 如果数据库的更新耗时较长超过了 Helm 的 timeout 时间， Helm 会 timeout退出, 这样整个部署就不会继续，但是并不知道数据库更新到底成功了还是失败了。</p>
+<p>我刚开始测试这个方案的时候是可以的，但是有个意外。 如果数据库的更新耗时较长超过了 Helm 的 timeout 时间， Helm 会 timeout退出，这样整个部署就不会继续，但是并不知道数据库迁移到底成功了还是失败了。</p>
 <p>事实上生产环境通常有更多的数据量更更高的负载，因此对于数据库的变更很大机率会变得很慢，结果会导致上面的意外发生，所以最终我们还是选择了前面描述的初始化容器的方式。</p>
 <blockquote>
 <p>我也有段时间没有了解过 Helm Chart Hooks 了，有可能这个问题已经解决了，但是我并没有在文档中见到相关描述。</p>
@@ -347,13 +347,9 @@
 <ul class="pager blog-pager">
 
 <li class="previous">
-<a href="https://cloudnative.to/blog/kubernetes-autoscaling-strategy/" data-toggle="tooltip" data-placement="top" title="如何选择最佳的 Kubernetes 集群自动伸缩策略">&larr; 上一篇</a>
+<a href="https://cloudnative.to/blog/discovery-selectors/" data-toggle="tooltip" data-placement="top" title="使用发现选择器来为你的 Istio 服务网格配置命名空间">&larr; 上一篇</a>
 </li>
  
-<li class="next">
-<a href="https://cloudnative.to/blog/discovery-selectors/" data-toggle="tooltip" data-placement="top" title="使用发现选择器来为你的 Istio 服务网格配置命名空间">下一篇 &rarr;</a>
-</li>
-
 </ul>
 </div>
 
@@ -444,7 +440,7 @@
     <li><a href="#经典问题-不断更新的数据库">经典问题： 不断更新的数据库</a></li>
     <li><a href="#简单的-schema-更新策略">简单的 schema 更新策略</a></li>
     <li><a href="#安全的执行数据库-schema-更新">安全的执行数据库 schema 更新</a></li>
-    <li><a href="#什么时候执行数据库更新">什么时候执行数据库更新</a>
+    <li><a href="#什么时候执行数据库迁移">什么时候执行数据库迁移</a>
       <ul>
         <li><a href="#应用启动时执行数据库-schema-更新">应用启动时执行数据库 schema 更新</a></li>
         <li><a href="#将数据库-schema-更新作为部署流程的一部分">将数据库 schema 更新作为部署流程的一部分</a></li>
