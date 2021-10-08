@@ -334,7 +334,7 @@ listening on eth0, link-type EN10MB <span style="color:#f92672">(</span>Ethernet
 	   +
 	REAL SERVER
 </code></pre><p>lvs 做了 DNAT 并没有做 SNAT ，所以我们利用 iptables 做 SNAT ：</p>
-<pre><code>$ iptables -t nat -A POSTROUTING -m IPVS --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
+<pre><code>$ iptables -t nat -A POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
 </code></pre><p>访问看看还是不通，抓包看还是没生效，nat 是依赖 <code>conntrack</code> 的，而 IPVS 默认不会记录 conntrack，我们需要开启 IPVS 的 conntrack 才可以让 MASQUERADE 生效。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash"><span style="color:#75715e"># 让 Netfilter 的 conntrack 状态管理功能也能应用于 IPVS 模块</span>
 $ echo <span style="color:#ae81ff">1</span> &gt;  /proc/sys/net/ipv4/vs/conntrack
@@ -354,7 +354,7 @@ $ curl 169.254.11.2/www/test
 <h3 id="利用-ipset-和-iptable-的-mark">利用 ipset 和 iptable 的 mark</h3>
 <p><img src="iptables_netfilter.png" alt="iptables_netfilter"></p>
 <p>iptables 的五链四表如上图所示，我们先删掉原有的规则：</p>
-<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ iptables -t nat -D POSTROUTING -m IPVS --vaddr 169.254.11.2 --vport <span style="color:#ae81ff">80</span> -j MASQUERADE
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">$ iptables -t nat -D POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport <span style="color:#ae81ff">80</span> -j MASQUERADE
 </code></pre></div><p>平时自己家里使用了 openwrt ，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 <code>INPUT</code> 规则：</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">-A INPUT -i eth0 -m comment --comment <span style="color:#e6db74">&#34;!fw3&#34;</span> -j zone_lan_input
 ...
@@ -454,7 +454,7 @@ $ cat /var/log/iptables.log
 Sep <span style="color:#ae81ff">27</span> 23:17:51 centos7 kernel: **log-test**IN<span style="color:#f92672">=</span> OUT<span style="color:#f92672">=</span>lo SRC<span style="color:#f92672">=</span>169.254.11.2 DST<span style="color:#f92672">=</span>169.254.11.2 LEN<span style="color:#f92672">=</span><span style="color:#ae81ff">60</span> TOS<span style="color:#f92672">=</span>0x00 PREC<span style="color:#f92672">=</span>0x00 TTL<span style="color:#f92672">=</span><span style="color:#ae81ff">64</span> ID<span style="color:#f92672">=</span><span style="color:#ae81ff">44864</span> DF PROTO<span style="color:#f92672">=</span>TCP SPT<span style="color:#f92672">=</span><span style="color:#ae81ff">50794</span> DPT<span style="color:#f92672">=</span><span style="color:#ae81ff">80</span> WINDOW<span style="color:#f92672">=</span><span style="color:#ae81ff">43690</span> RES<span style="color:#f92672">=</span>0x00 SYN URGP<span style="color:#f92672">=</span><span style="color:#ae81ff">0</span> 
 Sep <span style="color:#ae81ff">27</span> 23:17:52 centos7 kernel: **log-test**IN<span style="color:#f92672">=</span> OUT<span style="color:#f92672">=</span>lo SRC<span style="color:#f92672">=</span>169.254.11.2 DST<span style="color:#f92672">=</span>169.254.11.2 LEN<span style="color:#f92672">=</span><span style="color:#ae81ff">60</span> TOS<span style="color:#f92672">=</span>0x00 PREC<span style="color:#f92672">=</span>0x00 TTL<span style="color:#f92672">=</span><span style="color:#ae81ff">64</span> ID<span style="color:#f92672">=</span><span style="color:#ae81ff">2010</span> DF PROTO<span style="color:#f92672">=</span>TCP SPT<span style="color:#f92672">=</span><span style="color:#ae81ff">50796</span> DPT<span style="color:#f92672">=</span><span style="color:#ae81ff">80</span> WINDOW<span style="color:#f92672">=</span><span style="color:#ae81ff">43690</span> RES<span style="color:#f92672">=</span>0x00 SYN URGP<span style="color:#f92672">=</span><span style="color:#ae81ff">0</span> 
 </code></pre></div><p>需要添加下面规则：</p>
-<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">iptables -t nat -A OUTPUT -m comment --comment <span style="color:#e6db74">&#34;zgz service portals&#34;</span> -j DOCKER-SERVICES
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-bash" data-lang="bash">iptables -t nat -A OUTPUT -m comment --comment <span style="color:#e6db74">&#34;zgz service portals&#34;</span> -j ZGZ-SERVICES
 </code></pre></div><h3 id="keepalived-的自动化实现">keepalived 的自动化实现</h3>
 <p>到目前为止都是手动挡，而且没健康检查，其实我们可以利用 keepalived 做个自动挡的。</p>
 <h4 id="安装-keepalived-2">安装 keepalived 2</h4>
