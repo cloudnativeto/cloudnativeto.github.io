@@ -3,7 +3,7 @@
 <html lang="zh-cn"><head>
   <meta charset="utf-8">
   
-  <title>Istio 安全源码分析——零信任身份认证与通信安全 | 云原生社区</title>
+  <title>Istio 安全源码分析——认证体系与通信安全 | 云原生社区</title>
   
 
   <!-- mobile responsive meta -->
@@ -41,7 +41,7 @@
   <meta name="twitter:site" content="Cloud Native Community|云原生社区" />
   <meta name="twitter:creator" content="@CloudNativeCN" />
   <meta property="og:url" content="https://cloudnative.to/blog/istio-zero-trust-source-code-reading/" />
-  <meta property="og:title" content="Istio 安全源码分析——零信任身份认证与通信安全" />
+  <meta property="og:title" content="Istio 安全源码分析——认证体系与通信安全" />
   <meta property="og:description" content="本文分析 Istio 安全认证体系与加密通信的源码，让读者对零信任的实践有清晰的认识，这些知识能帮助构建零信任认证与通信体系。" />
   <meta property="og:image" content="https://cloudnative.to/images/blog/istio-zero-trust-heading.png" />
 </head>
@@ -158,7 +158,7 @@
   <div class="container">
     <div class="row">
       <div class="col-12">
-        <h2 class="text-white mb-3 text-capitalize">Istio 安全源码分析——零信任身份认证与通信安全</h2>
+        <h2 class="text-white mb-3 text-capitalize">Istio 安全源码分析——认证体系与通信安全</h2>
         <!-- breadcrumb -->
         
         <p class="text-white">本文分析 Istio 安全认证体系与加密通信的源码，让读者对零信任的实践有清晰的认识，这些知识能帮助构建零信任认证与通信体系。</p>
@@ -180,13 +180,12 @@
           <img src="/"  onerror="this.src='\/images\/blog\/istio-zero-trust-heading.png'" alt="post thumb" class="img-fluid w-100">
            <div class="card-type"><a href="/categories/service-mesh">Service Mesh</a></div>
         </div>
-        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://github.com/mayocream">黄涵（Mayo Cream）</a></strong>
+        <div class="card-meta mb-2">作者  <strong class="text-dark"><a href="https://github.com/mayocream">Mayo Cream</a></strong>
           
             发表于 <strong class="text-dark">2021年10月27日</strong></div>
         <hr>
         <div class="content">
-          <p>这篇文章是我在公司内部探索与实践私有 CA 与双向 TLS 认证体系时，学习 Istio 安全认证架构的笔记，最初于去年末发表于团队内部，初稿看起来文字空洞乏力，所以我对原文做了较大的调整，补充了更多细节，同时增添了与零信任有关的内容。
-本文分析 Istio 安全认证体系与加密通信的源码，让读者对零信任的实践有清晰的认识，这些知识能帮助构建零信任认证与通信体系。</p>
+          <p>本文分析 Istio 安全认证体系与加密通信的源码，介绍 Istio 是如何构建集群内部 PKI 证书基础设施和实施安全通信的。</p>
 <p>分析过程的代码注释在我的 Github 仓库 <a href="https://github.com/mayocream/istio/tree/citadel-review">mayocream/istio</a> 的 citadel-review 分支。</p>
 <h2 id="1-身份模型">1. 身份模型</h2>
 <p>零信任架构下，需要严格区分工作负载的识别和信任，而签发 X.509 证书是推荐的一种认证方式<sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>。在 Kubernetes 集群中，服务间是通过 DNS 名称互相访问的，而网络流量可能被 DNS 欺骗、BGP/路由劫持、ARP 欺骗等手段劫持，为了将服务名称（DNS 名称）与服务身份强关联起来，Istio 使用置于 X.509 证书中的安全命名（Secure naming）机制<sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup>。</p>
@@ -207,8 +206,7 @@
 由于 Istio 仅仅使用了 SPIFFE ID，没有必要引入这个 SDK，还值得一提的是该 SDK 引入了 grpc 包，如果你和我一样踩过 grpc 包引用版本冲突的问题，还花费了一下午的时间来解决，这次一定要保持警惕。</p>
 <p>Istio 将自己实现的 SPIFFE 相关的代码存放在 pkg 目录下的 spiffe 目录。</p>
 <h4 id="数据结构">数据结构</h4>
-<p>这里再提一次数据格式是形如 <code>spiffe://&lt;trust_domain&gt;/ns/&lt;namespace&gt;/sa/&lt;service_account&gt;</code> 的 URI 字符串。这类身份标识因系统设计不同，定义的格式也各不相同，例如蚂蚁内部使用的身份标识格式是 <code>spiffe://&lt;domain&gt;/cluster/&lt;cluster&gt;/&lt;required_attr_1_name&gt;/&lt;required_attr_1_value&gt;/&lt;required_attr_2_name&gt;/&lt;required_attr_2_value&gt;</code><sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup>。
-而敝司使用 <code>spiffe://&lt;site_id&gt;/&lt;cluster_id&gt;/&lt;unique_id&gt;</code> 格式，怎么样还是简洁点看起来舒服吧。</p>
+<p>这里再提一次数据格式是形如 <code>spiffe://&lt;trust_domain&gt;/ns/&lt;namespace&gt;/sa/&lt;service_account&gt;</code> 的 URI 字符串。这类身份标识因系统设计不同，定义的格式也各不相同，例如蚂蚁内部使用的身份标识格式是 <code>spiffe://&lt;domain&gt;/cluster/&lt;cluster&gt;/&lt;required_attr_1_name&gt;/&lt;required_attr_1_value&gt;/&lt;required_attr_2_name&gt;/&lt;required_attr_2_value&gt;</code><sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup>。</p>
 <p>定义 SPIFFE 的数据结构及其解析方式。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Identity</span> <span style="color:#66d9ef">struct</span> {
     <span style="color:#a6e22e">TrustDomain</span>    <span style="color:#66d9ef">string</span>
@@ -1825,7 +1823,7 @@ Istiod 将充当注册机构（RA）角色，负责对工作负载进行身份�
         <img class="rounded-circle avatar-img" src="https://github.com/mayocream.png">
       </div>
       <p class="avatar-name">
-        <strong class="text-dark "><a href="https://github.com/mayocream">黄涵（Mayo Cream）</a></strong> 
+        <strong class="text-dark "><a href="https://github.com/mayocream">Mayo Cream</a></strong> 
       </p>
       <p>Kubernetes Member, CNCF Security TAG Member, OSS Contributor.</p>
     </div>
