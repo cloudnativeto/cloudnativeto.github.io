@@ -229,19 +229,21 @@
 }
 </code></pre></div><p>下面讲述下 Product 服务是如何按照设置的权重调用 Reviews 服务。</p>
 <p><img src="Product-reviews.jpg" alt="Product服务调用Reviews服务"></p>
-<p>1.Productpage 发起对 Reviews 的调用：http://reviews:9080/reviews
-2. 请求被 pod 的 iptable 规则拦截，转发到 15001 固定端口，这里注入 Sidecar 的 pod 里的 iptable 规则均是通过 Istio-init container 进行修改的
-3. Envoy 的 Virtual Listener 在 15001 端口上监听，收到了该请求
-4. 请求被 Virtual Listener 根据原目标 IP 和端口转发到 0.0.0.0_9080 这个 listener
-5. 根据 0.0.0.0_9080 listener 的 filter 配置，该请求采用 9080 route 进行分发。在这里我们看到有个特殊的 9080 route，在此应用中 9080 route 对应了 3 个 virtual host，分别是 details、ratings 和 reviews，服务会根据 host name 来对请求进行路由分发
-6. 9080 route 的配置中，host name 为 reviews:9080 请求对应的 cluster 如上面的三个版本，通过权重从 v1\v2\v3 选择一个 outbound|9080|v1|reviews.default.svc.cluster.local
-7. outbound|9080|v1|reviews.default.svc.cluster.local cluster 为动态资源，通过 eds 查询得到其 endpoint 为 192.168.206.21:9080，如果 kubernetes 中的服务信息有变化，会通过 XDS 进行配置的下发，保证信息一致
-8. 请求被转发到 Reviews 服务所在的 pod，被 iptable 规则拦截，转发到 15001 端口。
-9. Envoy 的 Virtual Listener 在 15001 端口上监听，收到了该请求。
-10. 请求被 Virtual Listener 根据请求原目标地址 IP（192.168.206.21）和端口（9080）转发到 192.168.206.21_9080 这个 listener。
-11. 根据 192.168.206.21_9080 listener 的 http_connection_manager filter 配置，该请求对应的 cluster 为 inbound|9080|v1|reviews.default.svc.cluster.local 。
-12. inbound|9080|v1|reviews.default.svc.cluster.local cluster 配置的 host 为 127.0.0.1:9080。
-13. 请求被转发到 127.0.0.1:9080，即 Reviews 服务进行处理。</p>
+<ol>
+<li>Productpage 发起对 Reviews 的调用：http://reviews:9080/reviews</li>
+<li>请求被 pod 的 iptable 规则拦截，转发到 15001 固定端口，这里注入 Sidecar 的 pod 里的 iptable 规则均是通过 Istio-init container 进行修改的</li>
+<li>Envoy 的 Virtual Listener 在 15001 端口上监听，收到了该请求</li>
+<li>请求被 Virtual Listener 根据原目标 IP 和端口转发到 0.0.0.0_9080 这个 listener</li>
+<li>根据 0.0.0.0_9080 listener 的 filter 配置，该请求采用 9080 route 进行分发。在这里我们看到有个特殊的 9080 route，在此应用中 9080 route 对应了 3 个 virtual host，分别是 details、ratings 和 reviews，服务会根据 host name 来对请求进行路由分发</li>
+<li>9080 route 的配置中，host name 为 reviews:9080 请求对应的 cluster 如上面的三个版本，通过权重从 v1\v2\v3 选择一个 outbound|9080|v1|reviews.default.svc.cluster.local</li>
+<li>outbound|9080|v1|reviews.default.svc.cluster.local cluster 为动态资源，通过 eds 查询得到其 endpoint 为 192.168.206.21:9080，如果 kubernetes 中的服务信息有变化，会通过 XDS 进行配置的下发，保证信息一致</li>
+<li>请求被转发到 Reviews 服务所在的 pod，被 iptable 规则拦截，转发到 15001 端口。</li>
+<li>Envoy 的 Virtual Listener 在 15001 端口上监听，收到了该请求。</li>
+<li>请求被 Virtual Listener 根据请求原目标地址 IP（192.168.206.21）和端口（9080）转发到 192.168.206.21_9080 这个 listener。</li>
+<li>根据 192.168.206.21_9080 listener 的 http_connection_manager filter 配置，该请求对应的 cluster 为 inbound|9080|v1|reviews.default.svc.cluster.local 。</li>
+<li>inbound|9080|v1|reviews.default.svc.cluster.local cluster 配置的 host 为 127.0.0.1:9080。</li>
+<li>请求被转发到 127.0.0.1:9080，即 Reviews 服务进行处理。</li>
+</ol>
 <p>通过以上处理，Productpage 服务便可以调用 Reviews 服务，实现路由策略按照配置进行管理分发，Reviews 服务返回值给 Productpage 服务同样需要再走一次类似的链路，由此可见引入了新的技术，虽然简化了流量治理的流程，但是却增加了网络的压力，目前在这块也有相关 eBPF 的技术实现，通过一键开启 eBPF 代替 iptables，实现 Istio 的加速，具体实现原理可研究下<a href="https://mp.weixin.qq.com/s/Kvz4g0lPf74CnjjpClHhEA">一行代码：开启 eBPF，代替 iptables，加速 Istio</a>。</p>
 <h3 id="istio-路由管理配置">Istio 路由管理配置</h3>
 <p>Istio 中的路由管理包含以下几种常见的配置：</p>
