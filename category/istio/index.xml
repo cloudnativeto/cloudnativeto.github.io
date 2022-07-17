@@ -1,0 +1,814 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Istio | 云原生社区</title>
+    <link>https://cloudnative.to/category/istio/</link>
+      <atom:link href="https://cloudnative.to/category/istio/index.xml" rel="self" type="application/rss+xml" />
+    <description>Istio</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 27 Jun 2022 11:00:00 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/media/sharing.png</url>
+      <title>Istio</title>
+      <link>https://cloudnative.to/category/istio/</link>
+    </image>
+    
+    <item>
+      <title>Istio 网格中访问外部服务方法</title>
+      <link>https://cloudnative.to/blog/istio-access-external-services/</link>
+      <pubDate>Mon, 27 Jun 2022 11:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-access-external-services/</guid>
+      <description>&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;在生产环境使用 Istio 的时候，可能最需要考虑的问题一个是安全问题一个是性能问题，在这里和大家一起探讨下一个安全问题，如何在 Istio 网格中访问外部服务。Istio 提供了两种模式来配置对外部请求的访问策略，并通过配置项 outboundTrafficPolicy.mode 来指定。 默认的模式是 ALLOW_ANY，也就是允许在网格内请求所有外部的未知服务；另外一个模式是 REGISTRY_ONLY，表示只允许请求注册到服务网格注册表中的服务。默认的 ALLOW_ANY 模式虽然使用方便，但是存在一定的安全隐患，建议的做法是切换到 REGISTRY_ONLY 模式。那么在 REGISTRY_ONLY 模式下如何访问外部服务？实现机制是什么呢？在这里针对这两个问题和大家一起探讨下。&lt;/p&gt;
+&lt;h2 id=&#34;方案调研&#34;&gt;方案调研&lt;/h2&gt;
+&lt;p&gt;目前我们安装部署 Istio 使用的是helm，可以在安装中添加相应的配置 &lt;code&gt;--set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 修改 outboundTrafficPolicy.mode 的值；如果 Istio 已经安装好，通过 &lt;code&gt;kubectl edit cm istio -n istio-system&lt;/code&gt; 可以动态修改此值。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mesh&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|-&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    defaultConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      discoveryAddress: istiod.istio-system.svc:15012
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      proxyMetadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        DNS_AGENT: &amp;#34;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        zipkin:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          address: zipkin.istio-system:9411
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    outboundTrafficPolicy:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      mode: REGISTRY_ONLY&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置完 REGISTRY_ONLY 后，我们在 pod 中无法访问外部服务&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-默认访问外部服务&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio 默认访问外部服务&#34; srcset=&#34;
+               /blog/istio-access-external-services/callexternal_hu69d75bbe0382cdc8e5d78f86cd5674f4_9327_8dfe96da1caf6e794e93aa6fdc11f27b.webp 400w,
+               /blog/istio-access-external-services/callexternal_hu69d75bbe0382cdc8e5d78f86cd5674f4_9327_0408ccc4319a0bdaad131dda315e0c38.webp 760w,
+               /blog/istio-access-external-services/callexternal_hu69d75bbe0382cdc8e5d78f86cd5674f4_9327_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-access-external-services/callexternal_hu69d75bbe0382cdc8e5d78f86cd5674f4_9327_8dfe96da1caf6e794e93aa6fdc11f27b.webp&#34;
+               width=&#34;401&#34;
+               height=&#34;65&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio 默认访问外部服务
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;那么在 REGISTRY_ONLY 模式下，如何才能访问外部服务呢？首先我们通过&lt;a href=&#34;https://jimmysong.io/blog/sidecar-injection-iptables-and-traffic-routing/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下图&lt;/a&gt; 看下 Istio 在什么时机可以访问外部服务，在这种时机下怎么修改配置才能访问到外部服务？&lt;/p&gt;
+&lt;p&gt;图中描述了 product 服务访问 review 服务，这里我们假设 review 服务会继续调用 36.152.44.96 这个外部服务。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-流量流转&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio 流量流转&#34; srcset=&#34;
+               /blog/istio-access-external-services/iptables_hu86504f5a042598ef8c145fac1e74df79_132496_ed2a77c06a41f442e00dce6e996e3f49.webp 400w,
+               /blog/istio-access-external-services/iptables_hu86504f5a042598ef8c145fac1e74df79_132496_298942710eb3df928c155b8a1d46121d.webp 760w,
+               /blog/istio-access-external-services/iptables_hu86504f5a042598ef8c145fac1e74df79_132496_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-access-external-services/iptables_hu86504f5a042598ef8c145fac1e74df79_132496_ed2a77c06a41f442e00dce6e996e3f49.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;462&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio 流量流转
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当 reviews 应用需要访问 36.152.44.96 这个外部服务时，会在 reviews 的应用容器中往上游发送请求信息，下面按照图中的顺序介绍如何访问外部请求。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;reviews 服务访问外部服务，这一步对 reviews 服务来说属于出口流量，被 iptables 规则拦截转发至出口流量 OUTPUT 链。&lt;/li&gt;
+&lt;li&gt;OUTPUT 链转发流量至 ISTIO_OUTPUT 链。&lt;/li&gt;
+&lt;li&gt;在 ISTIO_OUTPUT 链中默认有九个规则，决定 reviews 服务访问外部服务的流量发往何处，在这里我们可以自定义一个规则 &lt;code&gt;-A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;，使访问 36.152.44.96 这个外部服务的流量跳出当前链，调用 &lt;code&gt;POSTROUTING 链&lt;/code&gt;，直接访问外部服务；如果使用默认规则，流量被转发至 ISTIO_REDIRECT 链。&lt;/li&gt;
+&lt;li&gt;ISTIO_REDIRECT链直接重定向至 Envoy监听的15001出口流量端口。&lt;/li&gt;
+&lt;li&gt;外部服务的流量策略并不在 Istio 服务网格中，如果不进行相关配置把外部服务注册到服务网格内，经过 Envoy 一系列出口流量治理动作后将会返回错误信息。因此这里我们需要配置 &lt;code&gt;ServiceEntry&lt;/code&gt;，把外部服务纳入服务网格中，然后通过 Envoy 的流量治理后可以继续发送外部请求，访问外部请求时又会被 iptables 拦截转发至出口流量 OUTPUT 链。&lt;/li&gt;
+&lt;li&gt;OUTPUT 链转发流量至 ISTIO_OUTPUT 链。&lt;/li&gt;
+&lt;li&gt;在这里会匹配到 ISTIO_OUTPUT 链的第四条规则 &lt;code&gt;-A ISTIO_OUTPUT -m owner --uid-owner 1337 -j RETURN&lt;/code&gt;，流量直接 RETURN 到下一个链 &lt;code&gt;POSTROUTING 链&lt;/code&gt;，经 POSTROUTING 链流出访问外部服务。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;我们看到通过第11步、第13步两种方式修改配置都可以使 Istio 内部的服务访问外部服务，具体应该怎么做呢？&lt;/p&gt;
+&lt;h2 id=&#34;通过iptables规则访问&#34;&gt;通过iptables规则访问&lt;/h2&gt;
+&lt;p&gt;如果想在第11步直接跳出 ISTIO_OUT 链调用 POSTROUTING 链，需要添加一个自定义的 iptables 规则 &lt;code&gt;-A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;，我们知道 iptables 规则是在 istio-init 里定义的，istio-init 启动时执行的是 istio-iptables 命令，我们在 manifests 的 &lt;code&gt;injection-template.yaml&lt;/code&gt; 文件里看到 istio-iptables 默认的部分配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-i&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;{{ annotation .ObjectMeta `traffic.sidecar.istio.io/includeOutboundIPRanges` .Values.global.proxy.includeIPRanges }}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-x&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;{{ annotation .ObjectMeta `traffic.sidecar.istio.io/excludeOutboundIPRanges` .Values.global.proxy.excludeIPRanges }}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-b&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;{{ annotation .ObjectMeta `traffic.sidecar.istio.io/includeInboundPorts` `*` }}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-d&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;{{- &lt;span class=&#34;l&#34;&gt;if excludeInboundPort (annotation .ObjectMeta `status.sidecar.istio.io/port` .Values.global.proxy.statusPort) (annotation .ObjectMeta `traffic.sidecar.istio.io/excludeInboundPorts` .Values.global.proxy.excludeInboundPorts) }}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;15090,15021,{{ excludeInboundPort (annotation .ObjectMeta `status.sidecar.istio.io/port` .Values.global.proxy.statusPort) (annotation .ObjectMeta `traffic.sidecar.istio.io/excludeInboundPorts` .Values.global.proxy.excludeInboundPorts) }}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;{{- &lt;span class=&#34;l&#34;&gt;else }}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;15090,15021,15020&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;-i&lt;/code&gt; 默认为&lt;code&gt;*&lt;/code&gt;，所有出站流量都会被重定向到 Envoy 代理&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-x&lt;/code&gt; 默认为空，当-i参数为&lt;code&gt;*&lt;/code&gt;时，用来指明哪些地址不用重定向 Envoy 代理，直接进行转发&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-b&lt;/code&gt; 默认为&lt;code&gt;*&lt;/code&gt;，逗号分隔的端口，指定端口的流量将重定向到 Envoy&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-d&lt;/code&gt; 默认为15090,15021,15020，逗号分隔的端口，指定哪些端口的流量不用重定向到 Envoy&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;根据上面配置我们可以在 Istio 服务中通过 global.proxy.* 进行全局配置，还可以在服务的 deployment 里通过 &lt;code&gt;traffic.sidecar.istio.io/*&lt;/code&gt; 配置相应的参数。我们现在的目的是需要把访问 36.152.44.96 的请求不重定向到 Envoy 代理，直接进行转发，因此我们在 deployment 里添加 &lt;code&gt;traffic.sidecar.istio.io/excludeOutboundIPRanges: 36.152.44.0/24&lt;/code&gt;，执行完后我们 describe pod 的详细信息，获取到 pod 中的部分配置如下，可以看到设置生效，36.152.44.0/24 不会重定向到 Envoy 中&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;l&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;*&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;l&#34;&gt;x&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;36.152.44.0&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/24&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;l&#34;&gt;b&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;*&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;l&#34;&gt;d&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15090&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15021&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;15020&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;继续查看 pod 中的 iptables 规则，可以看到在原来的 ISTIO_OUTPUT 九条 iptables 规则中插入了一个自定义的规则 &lt;code&gt;A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -s 127.0.0.6/32 -o lo -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT ! -d 127.0.0.1/32 -o lo -m owner --uid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j ISTIO_IN_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -o lo -m owner ! --uid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -m owner --uid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT ! -d 127.0.0.1/32 -o lo -m owner --gid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j ISTIO_IN_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -o lo -m owner ! --gid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -m owner --gid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -d 127.0.0.1/32 -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -j ISTIO_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;通过serviceentry访问&#34;&gt;通过ServiceEntry访问&lt;/h2&gt;
+&lt;p&gt;Istio 在 15001 端口使用 VirtualOutboundListener 处理出向请求，Iptable 将 Envoy 所在 Pod 的对外请求拦截后发向本地的 15001 端口，该监听器接收后并不进行业务处理，而是根据请求的目的端口分发给其他独立的监听器处理。 我们访问的外部服务为 36.152.44.96:80，因此 Envoy 根据目的端口匹配到 &lt;code&gt;0.0.0.0_80&lt;/code&gt; 这个 Outbound listener，并转交给该 listener。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy_listener配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener配置&#34; srcset=&#34;
+               /blog/istio-access-external-services/envoy_listener_hu69f41d6f63c1ee06eaf082b293dc63a8_56186_1556ceb6d816b8d8dd8a1c08fd18e656.webp 400w,
+               /blog/istio-access-external-services/envoy_listener_hu69f41d6f63c1ee06eaf082b293dc63a8_56186_1261506ed25d47b449a1d8059574b4a4.webp 760w,
+               /blog/istio-access-external-services/envoy_listener_hu69f41d6f63c1ee06eaf082b293dc63a8_56186_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-access-external-services/envoy_listener_hu69f41d6f63c1ee06eaf082b293dc63a8_56186_1556ceb6d816b8d8dd8a1c08fd18e656.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;566&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy_listener配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当 0.0.0.0_80 接收到出向请求后，并不会直接发送到目的 cluster，其实通过查看 0.0.0.0_80 的 listener 的信息，我们也找不到目的 cluster 或 endpoint，在这个 listener 中配置了一个路由规则80，在该路由规则中会根据不同的请求目的地进行路由匹配处理。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy_listener配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener配置&#34; srcset=&#34;
+               /blog/istio-access-external-services/envoy_route_hu80628b528c7f406a050c6363d11a85b1_12695_7b76c06ef62d16add888d069ae7dc81a.webp 400w,
+               /blog/istio-access-external-services/envoy_route_hu80628b528c7f406a050c6363d11a85b1_12695_7ad51255fbb006021078385ccbf25e4b.webp 760w,
+               /blog/istio-access-external-services/envoy_route_hu80628b528c7f406a050c6363d11a85b1_12695_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-access-external-services/envoy_route_hu80628b528c7f406a050c6363d11a85b1_12695_7b76c06ef62d16add888d069ae7dc81a.webp&#34;
+               width=&#34;595&#34;
+               height=&#34;223&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy_listener配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;通过 name 为80的路由规则我们没找到符合 36.152.44.96 的请求，因此会被 listener 里的 &lt;code&gt;default_filter_match&lt;/code&gt; 处理，进入到 BlackHoleCluster 集群里，请求被丢弃。
+这里我们简单介绍下 Envoy 中的两个特殊 cluster：&lt;code&gt;BlackHoleCluster&lt;/code&gt; 和 &lt;code&gt;PassthroughCluster&lt;/code&gt;，
+&lt;code&gt;BlackHoleCluster&lt;/code&gt; 中没有配置任何处理请求的host。请求进入该 cluster 后将被丢弃掉，而不是发向一个 host，如果 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt;，默认情况下请求的外部服务都会直接进入 BlackHoleCluster 中丢掉。&lt;code&gt;PassthroughCluster&lt;/code&gt; 的 type 被设置为 &lt;code&gt;ORIGINAL_DST&lt;/code&gt;，表明任何发向该 cluster 的请求都会被直接发送到其请求中的原始目的地，如果 &lt;code&gt;outboundTrafficPolicy.mode=ALLOW_ANY&lt;/code&gt;，Envoy 不会对请求进行重新路由直接发送到原始目的地。&lt;/p&gt;
+&lt;p&gt;在 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 模式下，为了流量不进入 &lt;code&gt;BlackHoleCluster&lt;/code&gt; 中，我们需要添加 ServiceEntry，把外部请求注册到服务网格中，以便Envoy可以找到外部服务的 route 进行流量处理。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceEntry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;baidu-ip&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;www.baidu.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;addresses&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;m&#34;&gt;36.152.44.96&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;location&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;MESH_EXTERNAL&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;baidu-http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resolution&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NONE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置完 ServiceEntry 后我们再次查询 review 的 route 信息，可以看到36.152.44.96已经被加入 route 中了，直接在pod中访问外部服务36.152.44.96可以得到正确的请求。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-添加完envoy&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;添加完Envoy&#34; srcset=&#34;
+               /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_ce0f033281cae1dada4685f015cee970.webp 400w,
+               /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_002256f4ec4c9295ba4147fc08c2d85e.webp 760w,
+               /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_ce0f033281cae1dada4685f015cee970.webp&#34;
+               width=&#34;647&#34;
+               height=&#34;429&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      添加完Envoy
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过对 Istio 访问外部服务的方案进行调研，我们学习了 Istio 是如何通过 iptables 处理进入网格中的流量，也大体了解了 Envoy 处理 Outbound 流量的流程。以上的调研基于 Istio 1.8 版本，内容可能存在错误或不准确的地方，欢迎大家交流指正。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>浅析 Istio——可观测性</title>
+      <link>https://cloudnative.to/blog/istio-observability/</link>
+      <pubDate>Sat, 25 Jun 2022 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-observability/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;可观测性一词诞生于几十年前的控制理论，指系统可以由其外部输出推断其内部状态的程度。近年来，随着微服务、容器化、serverless 等多种技术架构的出现，应用的构建部署与实施运行都发生了巨大转变，服务链路错综复杂、微服务与分布式趋势增强、环境容器化等一系列变化促使可观测性在云原生体系中占据着重要的作用。通常，可观测性分为 Metrics (指标)、Tracing (追踪)、Logging (日志)三部分。&lt;/p&gt;
+&lt;p&gt;Logging 是在特定时间发生的事件的文本记录，包括说明事件发生时间的时间戳和提供上下⽂的有效负载。Metrics 是通过数据的聚合，对特定时间内的行为进行衡量，指标数据是可累加的，可以观察系统的状态和趋势。Tracing面向请求，表示请求通过分布式系统的端到端的调用旅程，可以分析出请求中的异常点或故障的原因。&lt;/p&gt;
+&lt;p&gt;Istio 为网格内所有的服务通信生成详细的遥测数据。这种遥测技术让 Isito 提供了服务行为的可观察性，使运维人员能够排查故障、维护和优化应用程序，而不会给服务的开发人员带来任何额外的负担。 在 Istio1.7 版本之前，安装 Istio 时也会默认安装可观测性插件 Kiali、Prometheus、Jaeger 等。而在 Istio1.7 及其后面的版本，将不再安装这些可观测性插件。需要手动使用以下命令进行安装：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kuebctl apply -f sample/addons/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;metrics&#34;&gt;Metrics&lt;/h2&gt;
+&lt;h3 id=&#34;prometheus-抓取-isito-配置&#34;&gt;Prometheus 抓取 Isito 配置&lt;/h3&gt;
+&lt;p&gt;Istio 使用 Prometheus 采集 Metrics， envoy 数据面标暴露端口为 15020 、暴露路径为 stats/prometheus 。Istiod 控制面指标暴露端口为 15014 ，路径为 metrics。Istio 会为 envoy 和 istiod 添加 annotation，然后 Prometheus 通过这些 annotation 进行服务发现，来实时抓取注入了 envoy 的服务，以及 istiod 的指标信息。&lt;/p&gt;
+&lt;p&gt;在服务在注入 envoy 时，会为 pod 自动添加以下 annotation (该功能可以通过 &amp;ndash;set meshConfig.enablePrometheusMerge=false 来禁用，默认开启)：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;prometheus.io/path: /metrics
+prometheus.io/port: 9100
+prometheus.io/scrape: true
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;在创建 istiod 时，也会为为 istiod 的 pod 添加添加以下 annotation：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;prometheus.io/port: 15014
+prometheus.io/scrape: true
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;Prometheus 通过 kuberneters_sd_configs 配置服务发现对 Istio 指标信息进行抓取。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kubernetes_sd_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;role&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;pod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;relabel_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;keep&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_annotation_prometheus_io_scrape&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;(https?)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_annotation_prometheus_io_scheme&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;target_label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;__scheme__&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;(.+)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_annotation_prometheus_io_path&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;target_label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;__metrics_path__&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;([^:]+)(?::\d+)?;(\d+)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replacement&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;$1:$2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__address__&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_annotation_prometheus_io_port&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;target_label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;__address__&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;labelmap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_label_(.+)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_namespace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;target_label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes_namespace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;replace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_name&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;target_label&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes_pod_name&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;action&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;drop&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Pending|Succeeded|Failed|Completed&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;source_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;__meta_kubernetes_pod_phase&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;__meta_kubernetes_pod_annotation表示 pod 中 annotation 的值，与 Istio 组件中 annotation 对应。Prometheus 默认采集指标信息的端口为 9090，默认采集指标信息的路径为 /metrics ，与 Istio 提供的指标信息不同，因此需要通过 relabel_configs 进行重新标记，以暴露为 Istio 指标实际的端口与路径。同时也会保持 pod 中的原有 label 信息，以及对 pod 的状态进行筛选。&lt;/p&gt;
+&lt;p&gt;此外，对于独立部署 Prometheus 的情况，可以根据以上内容对 Prometheus 进行配置。&lt;/p&gt;
+&lt;h3 id=&#34;自定义metrics&#34;&gt;自定义Metrics&lt;/h3&gt;
+&lt;p&gt;在实际情况中，Istio 自身提供的指标可能不能够满足需求，需要对已有指标进行修改，又或者需要添加新的指标信息时，Istio 支持自定义 metrics。&lt;/p&gt;
+&lt;p&gt;Istio 使用 EnvoyFilter 来自定义 Istio Pilot 生成的 Envoy 配置。使用 EnvoyFilter 可以修改某些字段的值，添加特定的过滤器，监听器等。在一个 namespace 下可以存在多个 EnvoyFilter，将按创建顺序依次处理所有 EnvoyFilter。在 EnvoyFilter 中可以进行 INBOUND、OUTBOUND、GATEWAY 三个维度的过滤设置。&lt;/p&gt;
+&lt;p&gt;下面的示例将在 istio_request_total 这一指标中，添加 request.host 以及 destination.port 两个维度的信息，同时在 bookinfo 的 review 服务中，根据 request 的请求信息，添加 request_operation 的维度信息。&lt;/p&gt;
+&lt;p&gt;首先创建一个 EnvoyFilter 过滤器，根据 bookinfo 中 reviews 请求的 path 以及 method，对 istio_operationId 分别提供了 ListReviews、GetReview、CreateReview 三种不同类型的值。WorkloadSelector 对应用此补丁配置的 Pods/VMs 组进行选择，如果省略此参数会将此补丁应用在同一 namespace 下所有的工作负载。configPathchs 用于定义一个或多个具有匹配条件的补丁。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EnvoyFilter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-attributegen-filter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;workloadSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configPatches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;applyTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP_FILTER&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;SIDECAR_INBOUND&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;proxy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;proxyVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;1\.12.*&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filterChain&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.http_connection_manager&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subFilter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio.stats&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;INSERT_BEFORE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio.attributegen&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/udpa.type.v1.TypedStruct&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/google.protobuf.StringValue&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                      {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                        &amp;#34;attributes&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                          {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                            &amp;#34;output_attribute&amp;#34;: &amp;#34;istio_operationId&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                            &amp;#34;match&amp;#34;: [
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;value&amp;#34;: &amp;#34;ListReviews&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;condition&amp;#34;: &amp;#34;request.url_path == &amp;#39;/reviews&amp;#39; &amp;amp;&amp;amp; request.method == &amp;#39;GET&amp;#39;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              },
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;value&amp;#34;: &amp;#34;GetReview&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;condition&amp;#34;: &amp;#34;request.url_path.matches(&amp;#39;^/reviews/[[:alnum:]]*$&amp;#39;) &amp;amp;&amp;amp; request.method == &amp;#39;GET&amp;#39;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              },
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;value&amp;#34;: &amp;#34;CreateReview&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                                &amp;#34;condition&amp;#34;: &amp;#34;request.url_path == &amp;#39;/reviews/&amp;#39; &amp;amp;&amp;amp; request.method == &amp;#39;POST&amp;#39;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                              }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                            ]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                          }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                        ]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                      }&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;                      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;vm_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;runtime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.wasm.runtime.null&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;code&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;local&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;inline_string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.wasm.attributegen&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在 stats-filter-1.12.yaml 添加以下配置(示例使用 Istio 版本为 1.12)，为request_total指标添加istio_operation、request_host、destination_port这三个维度信息。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio.stats&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#39;@type&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/udpa.type.v1.TypedStruct&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/google.protobuf.StringValue&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            { 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              &amp;#34;metrics&amp;#34;: [ 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              { 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                &amp;#34;name&amp;#34;: &amp;#34;requests_total&amp;#34;, 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                &amp;#34;dimensions&amp;#34;: 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  &amp;#34;request_operation&amp;#34;: &amp;#34;istio_operationId&amp;#34; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  &amp;#34;destination_port&amp;#34;: string(destination.port) 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                  &amp;#34;request_host&amp;#34;: request.host
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                } 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              }] 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            }&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;            
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最后在 meshconfig 下开启 extraStatTags，将 istio_operationId、request_host、destination_port 信息写入。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mesh&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|-&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      defaultConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        extraStatTags:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        - destination_port
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        - request_host
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        - request_operation&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查询 istio_request_total 指标可以看到如下指标维度，表示配置成功。&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;istio_requests_total{app=&amp;#34;reviews&amp;#34;,destination_port=&amp;#34;9080&amp;#34;,request_host=&amp;#34;reviews:9080&amp;#34;,request_operation=&amp;#34;GetReview&amp;#34;,......}
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;prometheus-federation对istio多集群的支持&#34;&gt;Prometheus Federation对Istio多集群的支持&lt;/h3&gt;
+&lt;p&gt;在 Istio 多集群场景下，每个集群会部署独立的 Prometheus 收集自身的指标信息，在需要将多集群指标进行聚合以及提供统一的 Prometheus 访问地址时，会使用 Prometheus Federation 将多集群数据聚合到一个独立的 Prometheus 实例上。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-prometheus-联邦结构&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Prometheus 联邦结构&#34; srcset=&#34;
+               /blog/istio-observability/prometheus-federation_hu04a848ba6596bbd75eb797211fe86a5b_37796_246b20bdee9f277a981ccb3226aa0274.webp 400w,
+               /blog/istio-observability/prometheus-federation_hu04a848ba6596bbd75eb797211fe86a5b_37796_642ef738d58d68e67955a7add3360b4e.webp 760w,
+               /blog/istio-observability/prometheus-federation_hu04a848ba6596bbd75eb797211fe86a5b_37796_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-observability/prometheus-federation_hu04a848ba6596bbd75eb797211fe86a5b_37796_246b20bdee9f277a981ccb3226aa0274.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;281&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Prometheus 联邦结构
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在聚合 Prometheus 实例中添加类似配置即可：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;scrape_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;job_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;federate&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scrape_interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;15s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;honor_labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metrics_path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;/federate&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;params&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#39;match[]&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;{job=&amp;#34;&amp;lt;job_name&amp;gt;&amp;#34;}&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;static_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;targets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;source-prometheus-1:9090&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;source-prometheus-2:9090&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;source-prometheus-3:9090&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;tracing&#34;&gt;Tracing&lt;/h2&gt;
+&lt;p&gt;Istio 推荐的分布式追踪工具 Jaeger、Zipkin 都通过 OpenTracing 规范进行实现。在分布式追踪里，存在 Trace 和 Span 两个重要概念：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Span：分布式追踪的基本组成单元，表示一个分布式系统中的单独的工作单元，每一个 Span 可以包含其它 Span 的引用。多个 Span 在一起构成了 Trace。&lt;/li&gt;
+&lt;li&gt;Trace：微服务中记录的完整的请求执行过程，一个完整的 Trace 由一个或多个 Span 组成。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio 代理能够自动发送 Span，但是需要附加如下 HTTP 请求头信息，这样才能把多个 Span 正确的关联到同一个追踪上。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;x-request-id&lt;/li&gt;
+&lt;li&gt;x-b3-traceid&lt;/li&gt;
+&lt;li&gt;x-b3-spanid&lt;/li&gt;
+&lt;li&gt;x-b3-parentspanid&lt;/li&gt;
+&lt;li&gt;x-b3-sampled&lt;/li&gt;
+&lt;li&gt;x-b3-flags&lt;/li&gt;
+&lt;li&gt;x-ot-span-context&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;自定义tracing配置&#34;&gt;自定义Tracing配置&lt;/h3&gt;
+&lt;p&gt;Istio可以对不同的pod进行不同全链路追踪的配置。通过给POD添加名为proxy.istio.io/config的annotation，来配置该Pod的追踪采样率、自定义tag等。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;proxy.istio.io/config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        sampling: 10
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          custom_tags:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            my_tag_header:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              header:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                name: host&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;也可以通过 meshconfig 进行全局的 tracing 配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mesh&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|-&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      defaultConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        tracing:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          sampling: 1.0
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          max_path_tag_length: 256
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;          custom_tags:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;            clusterID:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;              environment:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;                name: ISTIO_META_CLUSTER_ID&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;需要注意的是，以上配置必须重启服务才能生效，这是因为 config 作用的时间点是 Istio 注入 sidecar 的时候，这样配置的 tracing，对于 Envoy 来说，是放在了 bootstrap 配置里面，不能在线变更和修改。&lt;/p&gt;
+&lt;h2 id=&#34;logging&#34;&gt;Logging&lt;/h2&gt;
+&lt;p&gt;Istio 可以检测到网格内的服务通信的流转情况，并生成详细的遥测数据日志。默认情况下，Istio 通过 meshConfig.accessLogFile=/dev/stdout 开启了 Envoy 访问日志，日志信息可以经过 stdout 标准输出。此外，也可以使用 accessLogEncoding 和 accessLogFormat 设置日志格式。&lt;/p&gt;
+&lt;p&gt;Envoy 日志可以使用 kubectl logs 命令进行查看，但是当 Pod 被销毁后，旧的日志将不复存在，如果要查看历史的的日志数据，需要使用 EFK、Loki 等工具对日志进行持久化。&lt;/p&gt;
+&lt;h2 id=&#34;istio可视化&#34;&gt;Istio可视化&lt;/h2&gt;
+&lt;p&gt;Kiali 是 Istio 服务网格可视化工具，提供了服务拓补图、全链路跟踪、指标遥测、配置校验、健康检查等功能。Kiali 需要 Prometheus 为其提供指标信息，还可以配置 Jaeger 和 Grafana ，实现分布式追踪和监控数据可视化。&lt;/p&gt;
+&lt;p&gt;默认情况下，Kiali 使用 prometheus.isito-system:9090 作为其 Prometheus 数据源。当不使用 Istio 提供的 sample/addon，独立部署 Prometheus 时，需要在 Kiali 的 configmap 中添加以下配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;external_services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prometheus&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;&amp;lt;prometheus实际地址&amp;gt;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;此外，如果需要在 Kali 中加入分布式追踪和监控数据可视化的功能，也可以在 external_services 下配置 Jaeger 和 Grafana 的实际地址。&lt;/p&gt;
+&lt;h3 id=&#34;kiali多集群支持&#34;&gt;Kiali多集群支持&lt;/h3&gt;
+&lt;p&gt;Kiali 默认开启 Istio 多集群支持，若需要关闭此支持，可以进行如下设置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kiali_feature_flags&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;clustering&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;      
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enabled&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通常，每个 istiod 控制面上会部署一个 Kiali。在 Isito 多集群主从模式下，只有主机群上部署了 Kiali，从集群上对应用的访问，此时通过 Kiali 是不能够查询到对应流量信息的。需要为主从集群的 Prometheus 进行联邦配置，这样才能够查询到从集群自身的指标流量信息。&lt;/p&gt;
+&lt;h2 id=&#34;参考文献&#34;&gt;参考文献&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://lib.jimmysong.io/istio-handbook/config-networking/envoy-filter/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EnvoyFilter - lib.jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/metrics/classify-metrics/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Classifying Metrics Based on Request or Response - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhuanlan.zhihu.com/p/513448061&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 服务网格与全链路追踪的全方位攻略 - zhuanlan.zhihu.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/A13581861752/article/details/124311885&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;可观测性（一）- blog.csdn.net&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio 1.14 发布</title>
+      <link>https://cloudnative.to/blog/istio-1-14-release/</link>
+      <pubDate>Thu, 02 Jun 2022 08:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-1-14-release/</guid>
+      <description>&lt;p&gt;端午节前夕，Istio 1.14 发布。&lt;/p&gt;
+&lt;p&gt;这是 2022 年的第二个 Istio 版本。我们要感谢整个 Istio 社区对 Istio 1.14.0 发布的帮助。特别感谢发布经理 Lei Tang（谷歌）和 Greg Hanson（Solo.io），以及测试和发布工作组负责人 Eric Van Norman（IBM）的持续帮助和指导。&lt;/p&gt;
+&lt;p&gt;Istio 1.14.0 正式支持 Kubernetes 1.21 至 1.24 版本。&lt;/p&gt;
+&lt;p&gt;以下是该版本的一些亮点。&lt;/p&gt;
+&lt;h3 id=&#34;对-spire-运行时的支持&#34;&gt;对 SPIRE 运行时的支持&lt;/h3&gt;
+&lt;p&gt;SPIRE 是 SPIFFE 规范的一个生产就绪的实现，它提供可插拔的多因子验证和 SPIFFE 联邦。我们使用 Envoy SDS API 对与外部证书颁发机构的集成方式进行了修改，以实现对 SPIRE 的支持。感谢惠普企业的团队对这项工作的贡献！SPIRE 通过使用不同的认证机制的组合，实现了强认证身份的引入。它为在 Kubernetes、AWS、GCP、Azure、Docker 中运行的工作负载提供了各种节点和工作负载证明，并通过面向插件的架构，它还可以使用自定义证明。该项目与定制的密钥管理系统有一个可插拔的集成，用于存储 CA 私钥，并通过上游证书机构插件实现与现有 PKI 的集成。SPIRE 实现了 SPIFFE 联邦，使工作负载能够通过 Federation API 以可配置和灵活的方式信任不同信任域中的对等体。&lt;/p&gt;
+&lt;p&gt;更多信息，请查看惠普企业和 Solo.io 团队的 &lt;a href=&#34;https://istio.io/latest/docs/ops/integrations/spire/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档&lt;/a&gt; 和这个 &lt;a href=&#34;https://www.youtube.com/watch?v=WOPoNqfrhb4&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;视频&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;添加自动-sni-支持&#34;&gt;添加自动 SNI 支持&lt;/h3&gt;
+&lt;p&gt;一些服务器要求在请求中包含 SNI。这项新功能可以自动配置 SNI，而无需用户手动配置或使用 EnvoyFilter 资源。欲了解更多信息，请查看 &lt;a href=&#34;https://github.com/istio/istio/pull/38604&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PR 38604&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/istio/istio/pull/38238&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PR 38238&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;增加对配置-istio-工作负载的-tls-版本的支持&#34;&gt;增加对配置 Istio 工作负载的 TLS 版本的支持&lt;/h3&gt;
+&lt;p&gt;TLS 版本对安全很重要。这项新功能增加了对配置 Istio 工作负载的最小 TLS 版本的支持。欲了解更多信息，请查看 &lt;a href=&#34;https://istio.io/latest/docs/tasks/security/tls-configuration/workload-min-tls-version/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;遥测改进&#34;&gt;遥测改进&lt;/h3&gt;
+&lt;p&gt;我们对 &lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/telemetry/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Telemetry API&lt;/a&gt; 进行了一系列改进，包括支持 OpenTelemetry 访问记录、基于 &lt;code&gt;WorkloadMode&lt;/code&gt; 的过滤等。&lt;/p&gt;
+&lt;h3 id=&#34;升级到-114&#34;&gt;升级到 1.14&lt;/h3&gt;
+&lt;p&gt;当你升级时，我们希望听到你的声音！请花几分钟时间填写这个简短的 &lt;a href=&#34;https://forms.gle/yEtCbt45FZ3VoDT5A&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;调查&lt;/a&gt;，让我们了解我们做的怎么样。&lt;/p&gt;
+&lt;p&gt;你也可以在 &lt;a href=&#34;https://discuss.istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Discuss Istio&lt;/a&gt; 加入对话，或者加入我们的 Slack。你想直接为 Istio 做出贡献吗？找到并加入我们的工作组，帮助我们改进。&lt;/p&gt;
+&lt;h3 id=&#34;istiocon-总结&#34;&gt;IstioCon 总结&lt;/h3&gt;
+&lt;p&gt;IstioCon 今年是第二届会议，于 4 月 25-29 日举行。我们有近 4000 名注册参与者，满意度为 4.5/5。会议以英文和中文举行，有来自世界各地 120 个国家的人加入。在 2022 年 4 月，即会议召开的当月，istio.io 上 81% 的用户是第一次访问。我们将在 &lt;a href=&#34;https://events.istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;events.istio.io&lt;/a&gt; 上分享更详细的活动报告。&lt;/p&gt;
+&lt;h3 id=&#34;cncf-新闻&#34;&gt;CNCF 新闻&lt;/h3&gt;
+&lt;p&gt;我们很高兴看到我们宣布将 &lt;a href=&#34;https://istio.io/latest/blog/2022/istio-has-applied-to-join-the-cncf/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 捐献给 CNCF&lt;/a&gt; 后的反应。我们正在努力开发应用程序，希望在未来几个月内有更多的内容可以分享。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>一种灵活注入 Istio Sidecar 的方案探索</title>
+      <link>https://cloudnative.to/blog/istio-sidecar-injection-method/</link>
+      <pubDate>Sun, 29 May 2022 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-sidecar-injection-method/</guid>
+      <description>&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;我们团队对 Istio 进行相关研究与探索，并在生产环境进行了相应的应用，初期我们使用 Istio 主要做产品的灰度发布，同时我们团队也有相关研发人员基于 Istio，进行生产环境业务流量管理及可观测性追踪的研究。在做 Istio 灰度发布的实践中，遇到的第一个问题就是怎么在已经大规模部署产品的 Kubernetes 集群里，选择性的注入 Sidecar。下面详细的介绍下我们遇到的问题以及解决思路，供大家参考。&lt;/p&gt;
+&lt;h2 id=&#34;遇到的问题&#34;&gt;遇到的问题&lt;/h2&gt;
+&lt;p&gt;我们知道如果想把一个服务纳入 Istio 的网格中，需要在 pod 中注入 Sidecar 进行流量的劫持处理，通用的做法就是在 namespace 上打上 istio-injection=enabled 标签，这样只要在此 namespace 下创建或重启 pod 都会导致 pod 被注入 Sidecar，当然为了不让指定 pod 注入 Sidecar，可以在 pod 的 annotations 里加上 &lt;code&gt;sidecar.istio.io/inject: &amp;quot;false&amp;quot;&lt;/code&gt;。线上产品是以 namespace 进行隔离的，并且产品 namespace 下正常运行的 pod 数较多，这样引入 Istio 后一个个修改不需要注入 Sidecar 的 pod 配置并重启，肯定不是一个好的方案。那么有什么比较好的策略呢？&lt;/p&gt;
+&lt;h2 id=&#34;方案调研&#34;&gt;方案调研&lt;/h2&gt;
+&lt;p&gt;Kubernetes 提供了自定义资源类型和自定义控制器来扩展功能，还提供了动态准入控制 Webhook，其实我理解这个动态准入控制就是一个回调，在 Istio 的配置里可以看到回调的 url 路径 /inject，Kubernetes 通过 Webhook 来实现准入控制，分为两种：验证性质的准入 Webhook (Validating Admission Webhook) 和修改性质的准入 Webhook (Mutating Admission Webhook)，Istio 主要使用的是 Mutating Admission Webhook，在资源持久化到 ETCD 之前进行资源的修改，增加 Init Container 和 Sidecar Container。但是 Istio 在进行资源修改前，需要满足一些条件，这些条件可以通过配置进行修改。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-注入流程&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio 注入流程&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/inject_hu31a47d5b3cd270e0ad302dd96a096621_49178_662bde57f817d485fe59497e23dc2cf3.webp 400w,
+               /blog/istio-sidecar-injection-method/inject_hu31a47d5b3cd270e0ad302dd96a096621_49178_9d7152506973feb6cdc51a69b4531424.webp 760w,
+               /blog/istio-sidecar-injection-method/inject_hu31a47d5b3cd270e0ad302dd96a096621_49178_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/inject_hu31a47d5b3cd270e0ad302dd96a096621_49178_662bde57f817d485fe59497e23dc2cf3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;160&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio 注入流程
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先我们看下 Istio 的 &lt;code&gt;mutatingwebhookconfiguration&lt;/code&gt; 配置&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-mutatingwebhookconfiguration-配置信息&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;mutatingwebhookconfiguration 配置信息&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/webhook_hua1ae02b47a63c8fef0f77d9049c74510_18398_5c17316cd5458397a861b04706c8abba.webp 400w,
+               /blog/istio-sidecar-injection-method/webhook_hua1ae02b47a63c8fef0f77d9049c74510_18398_ee7632c68ea51c5d05965ca801941d9d.webp 760w,
+               /blog/istio-sidecar-injection-method/webhook_hua1ae02b47a63c8fef0f77d9049c74510_18398_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/webhook_hua1ae02b47a63c8fef0f77d9049c74510_18398_5c17316cd5458397a861b04706c8abba.webp&#34;
+               width=&#34;378&#34;
+               height=&#34;347&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      mutatingwebhookconfiguration 配置信息
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;通过配置我们看到，&lt;code&gt;namespaceSelector&lt;/code&gt; 会去 match 标签为 &lt;code&gt;istio-injection: enabled&lt;/code&gt; 的 namespace，并且根据请求规则，去匹配所有 pod 的创建 CREATE 请求。当 apiserver 收到一个符合规则的请求时，apiserver 会给 Webhook 服务发送一个通过审核的请求，Istio 中的这个 Webhook 服务是 Istiod 的 service，请求地址为 /inject。从代码 &lt;a href=&#34;https://github.com/istio/istio/blob/release-1.8/pkg/kube/inject/webhook.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;/pkg/kube/inject/webhook.go&lt;/a&gt;，中我们查看 Istio 是如何处理自动注入的，在 Discovery Server 中注册了两个用来处理自动注入的请求 handler，&lt;code&gt;p.Mux.HandleFunc (&amp;quot;/inject&amp;quot;, wh.serveInject)&lt;/code&gt;、&lt;code&gt;p.Mux.HandleFunc (&amp;quot;/inject/&amp;quot;, wh.serveInject)&lt;/code&gt;，&lt;code&gt;wh.serveInject&lt;/code&gt; 就是实现自动注入的主要逻辑。在这里我们不详细讲解自动注入的代码逻辑。只讲解下，在满足什么样的条件才会进行自动注入。&lt;/p&gt;
+&lt;p&gt;通过查看自动注入的代码，我们可以得到如下注入条件的流程图 1&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-自动注入流程图-1&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;自动注入流程图 1&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/image1_huabb3c4ea237663c5c07778f98e08dfab_62356_6cb320ecf9267a72dc40ceab83bec1d3.webp 400w,
+               /blog/istio-sidecar-injection-method/image1_huabb3c4ea237663c5c07778f98e08dfab_62356_f2b02e5ded02caf55b6943c697b2e3a9.webp 760w,
+               /blog/istio-sidecar-injection-method/image1_huabb3c4ea237663c5c07778f98e08dfab_62356_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/image1_huabb3c4ea237663c5c07778f98e08dfab_62356_6cb320ecf9267a72dc40ceab83bec1d3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;377&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      自动注入流程图 1
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;判断 pod 的 spec 中没有设置 &lt;code&gt;hostNetwork:true&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;判断待注入的 pod 不在系统 namespace 里，如 &lt;code&gt;kube-system&lt;/code&gt;、kube-public&lt;/li&gt;
+&lt;li&gt;设置三个临时变量，&lt;code&gt;useDefault=false&lt;/code&gt;、&lt;code&gt;inject=false&lt;/code&gt;、required=false，判断是否配置 &lt;code&gt;sidecar.istio.io/inject&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;如果 &lt;code&gt;sidecar.istio.io/inject&lt;/code&gt; 的值设置为 y, yes, true, on，则 inject=true&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;sidecar.istio.io/inject&lt;/code&gt; 为其他值，则 &lt;code&gt;useDefault=true&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;判断 &lt;code&gt;neverInjectSelector&lt;/code&gt; 是否有匹配到的条件，如果匹配到则设置 useDefault = false、inject = false&lt;/li&gt;
+&lt;li&gt;判断 &lt;code&gt;alwaysInjectSelector&lt;/code&gt; 是否有匹配到的条件，如果匹配到则设置 useDefault = false、inject = true，&lt;code&gt;alwaysInjectSelector&lt;/code&gt; 优先级高于 neverInjectSelector&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;经过上述判断，我们得到了 &lt;code&gt;useDefault&lt;/code&gt; 、inject 的结果值，后面我们根据 policy 的取值以及上述结果值，判断 pod 是否能够注入 Sidecar，继续查看自动注入的流程图 2&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-自动注入流程图-2&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;自动注入流程图 2&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/image2_hu6806a6893aa2c3a3c35b82e985c71c92_59909_34fb8fa72946a0a6368186a56ac4f513.webp 400w,
+               /blog/istio-sidecar-injection-method/image2_hu6806a6893aa2c3a3c35b82e985c71c92_59909_4db10a73ad8b5206bfd6ab55c1dc0395.webp 760w,
+               /blog/istio-sidecar-injection-method/image2_hu6806a6893aa2c3a3c35b82e985c71c92_59909_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/image2_hu6806a6893aa2c3a3c35b82e985c71c92_59909_34fb8fa72946a0a6368186a56ac4f513.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;251&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      自动注入流程图 2
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;判断 policy 的取值&lt;/li&gt;
+&lt;li&gt;如果 policy 取值为 disabled，并且上述得到的 useDefault=true，则 required=false，不进行注入&lt;/li&gt;
+&lt;li&gt;如果 policy 取值为 disabled，并且上述得到的 useDefault=false，则需要根据 inject 的值判断是否需要注入&lt;/li&gt;
+&lt;li&gt;如果 policy 取值为 enabled，并且上述得到的 useDefault=false，则需要根据 inject 的值判断是否需要注入&lt;/li&gt;
+&lt;li&gt;如果 policy 取值为 enabled，并且上述得到的 useDefault=true，则 required=true，进行注入&lt;/li&gt;
+&lt;li&gt;policy 为其他值，不进行注入&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;在上面的自动注入流程图 1、自动注入流程图 2 中，有几个配置 &lt;code&gt;neverInjectSelector&lt;/code&gt;、&lt;code&gt;alwaysInjectSelector&lt;/code&gt;、policy，这几个值可以根据需求在 &lt;code&gt;istio-sidecar-injector&lt;/code&gt; configmap 进行修改。&lt;/p&gt;
+&lt;h2 id=&#34;生产应用&#34;&gt;生产应用&lt;/h2&gt;
+&lt;p&gt;通过上面的分析，可以看到为了最后满足注入条件，需要多种判断条件。结合我们在生产使用中遇到的问题，尽量少修改配置，在这里我们给产品的 namespace 打上 &lt;code&gt;istio-injection=enabled&lt;/code&gt;，并且通过 &lt;code&gt;kubectl -n istio-system edit configmap istio-sidecar-injector&lt;/code&gt; 修改 policy 的值为 disable。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-configmap-配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Configmap 配置&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/Configmap_hu44751c31fb323462077a1a6803064b5f_24808_637f3e07892ffb769556158db30e6697.webp 400w,
+               /blog/istio-sidecar-injection-method/Configmap_hu44751c31fb323462077a1a6803064b5f_24808_8d3f3abc8ce74be4240a5fde1aa32e57.webp 760w,
+               /blog/istio-sidecar-injection-method/Configmap_hu44751c31fb323462077a1a6803064b5f_24808_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/Configmap_hu44751c31fb323462077a1a6803064b5f_24808_637f3e07892ffb769556158db30e6697.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;244&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Configmap 配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;因为引入 Istio 之前启动的 pod 中没有 &lt;code&gt;sidecar.istio.io/inject&lt;/code&gt; 的值，所以在上面的流程图里会走红色线标志的路径，最后得到 required=false，不会注入 Sidecar。&lt;/p&gt;
+&lt;p&gt;如果希望注入 Sidecar，则需要在 pod 里添加 &lt;code&gt;sidecar.istio.io/inject=true&lt;/code&gt; 注解，这样添加完注解的 pod 会走蓝色线标志的路径，最后 required=inject，而 inject 的值为 true，满足注入条件进行 Sidecar 的注入。&lt;/p&gt;
+&lt;p&gt;下面演示一下经过上述修改后的实际应用效果，我们给 namespace 打上标签，并且配置应用的 Deployment，我们给 foo-v1 添加 sidecar.istio.io/inject: &amp;ldquo;true&amp;rdquo; 的注解，作为对比 foo-v2 不做任何操作，如下&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;apps/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecar.istio.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;apps/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;执行上面的配置后，查询相应的 pod 如下图&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-线上配置修改后测试&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;线上配置修改后测试&#34; srcset=&#34;
+               /blog/istio-sidecar-injection-method/test_hu08f9e90fb43007102512a20399a680fe_25540_9678d0dec24f1c3c4bb325e03ef93cf1.webp 400w,
+               /blog/istio-sidecar-injection-method/test_hu08f9e90fb43007102512a20399a680fe_25540_2b316e29d0c1a3e60d8439bd358f0204.webp 760w,
+               /blog/istio-sidecar-injection-method/test_hu08f9e90fb43007102512a20399a680fe_25540_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-sidecar-injection-method/test_hu08f9e90fb43007102512a20399a680fe_25540_9678d0dec24f1c3c4bb325e03ef93cf1.webp&#34;
+               width=&#34;701&#34;
+               height=&#34;140&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      线上配置修改后测试
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从图中看到，通过正确的配置 Istio 的 Configmap，即使产品所在的 namespace 打上了 &lt;code&gt;istio-injection=enabled&lt;/code&gt; 标签，引入 Istio 之前启动的 pod 也不会因为重启被注入 Sidecar，同时又可以选择性的对新服务进行 Sidecar 的注入，配置的改动量小，应用起来简单方便。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过对 Istio 自动注入的条件进行探索和研究，我们总结了一套满足共享 Kubernetes 引入 Istio 进行服务治理的方法，根据此方法进行生产实施，不会对已有服务造成影响，对新服务可以选择性的自动注入。以上的调研基于 Istio 1.8 版本，内容可能存在错误或不准确的地方，欢迎大家交流指正。&lt;/p&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>
