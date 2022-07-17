@@ -1443,5 +1443,1105 @@
 </description>
     </item>
     
+    <item>
+      <title>SOFAMesh中的多协议通用解决方案x-protocol介绍系列（3）——TCP协议扩展</title>
+      <link>https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/</link>
+      <pubDate>Sun, 14 Oct 2018 14:53:04 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/</guid>
+      <description>&lt;blockquote&gt;
+&lt;p&gt;本文是SOFAMesh中的多协议通用解决方案x-protocol介绍系列文章之一。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（1）——DNS通用寻址方案&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（2）——快速解码转发&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（3）——TCP协议扩展&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;在Istio和Envoy中，对通讯协议的支持，主要体现在HTTP/1.1和HTTP/2上，这两个是Istio/Envoy中的一等公民。而基于HTTP/1.1的REST和基于HTTP/2的gRPC，一个是目前社区最主流的通讯协议，一个是未来的主流，google的宠儿，CNCF御用的RPC方案，这两个组成了目前Istio和Envoy（乃至CNCF所有项目）的黄金组合。&lt;/p&gt;
+&lt;p&gt;而我们SOFAMesh，在第一时间就遇到和Istio/Envoy不同的情况，我们需要支持REST和gRPC之外的众多协议：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;SOFARPC：这是蚂蚁金服大量使用的RPC协议(已开源)&lt;/li&gt;
+&lt;li&gt;HSF RPC：这是阿里集团内部大量使用的RPC协议(未开源)&lt;/li&gt;
+&lt;li&gt;Dubbo RPC: 这是社区广泛使用的RPC协议(已开源)&lt;/li&gt;
+&lt;li&gt;其他私有协议：在过去几个月间，我们收到需求，期望在SOFAMesh上运行其他TCP协议，部分是私有协议&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;为此，我们需要考虑在SOFAMesh和SOFAMosn中增加这些通讯协议的支持，尤其是要可以让我们的客户非常方便的扩展支持各种私有TCP协议：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/x-protocol-tcp-protocol-extension/supported-protocol_hu4b5d390c7844cf8ce6c3b61c782fb02f_53835_96bf233de48cd2acb4637589e4fe3f3e.webp 400w,
+               /blog/x-protocol-tcp-protocol-extension/supported-protocol_hu4b5d390c7844cf8ce6c3b61c782fb02f_53835_4039512cf820b6f8115926323ca2477d.webp 760w,
+               /blog/x-protocol-tcp-protocol-extension/supported-protocol_hu4b5d390c7844cf8ce6c3b61c782fb02f_53835_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/supported-protocol_hu4b5d390c7844cf8ce6c3b61c782fb02f_53835_96bf233de48cd2acb4637589e4fe3f3e.webp&#34;
+               width=&#34;594&#34;
+               height=&#34;485&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;实现分析&#34;&gt;实现分析&lt;/h2&gt;
+&lt;p&gt;我们来大体看一下，在SOFAMesh/Istio中要新增一个通讯协议需要有哪些工作：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/x-protocol-tcp-protocol-extension/tbd_hu7d50621cc2c2d0cbfb0d52e5292ba5ed_74747_001a7162a502f365fedca28651376e34.webp 400w,
+               /blog/x-protocol-tcp-protocol-extension/tbd_hu7d50621cc2c2d0cbfb0d52e5292ba5ed_74747_0214ad754e89123678577c7d0bcedab9.webp 760w,
+               /blog/x-protocol-tcp-protocol-extension/tbd_hu7d50621cc2c2d0cbfb0d52e5292ba5ed_74747_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/tbd_hu7d50621cc2c2d0cbfb0d52e5292ba5ed_74747_001a7162a502f365fedca28651376e34.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;327&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;protocol decoder：负责解析协议，读取协议字段&lt;/li&gt;
+&lt;li&gt;protocol encoder：负责生成请求报文，注意通常会有改动，比如修改某些header&lt;/li&gt;
+&lt;li&gt;在pilot中需要为新协议生成 Virtual Host 等配置，有 inbound 和 outbound 两份，分别下发到Sidecar&lt;/li&gt;
+&lt;li&gt;在Sidecar中，根据下发的 Virtual Host 等配置，进行请求匹配，以决定请求该转发到何处&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：实际下发的配置不止 Virtual Host 配置，为了简单起见，我们仅以 Virtual Host 为例做讲解。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;其中，protocol encoder和protocol decoder是容易理解的，对于新的通讯协议肯定需要有协议编解码层面的工作必须要完成，这块有工作量是很自然的。&lt;/p&gt;
+&lt;p&gt;我们来看看第三块的工作量是什么，inbound 和 outbound 的Virtual Host配置示例如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/x-protocol-tcp-protocol-extension/outbound_hud9b9c178eae581b5514140397bcba88a_138013_5f999d0367ef66529fdd902599b51a33.webp 400w,
+               /blog/x-protocol-tcp-protocol-extension/outbound_hud9b9c178eae581b5514140397bcba88a_138013_075d4a4f0921f3fbd3c769dddbc184f6.webp 760w,
+               /blog/x-protocol-tcp-protocol-extension/outbound_hud9b9c178eae581b5514140397bcba88a_138013_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/outbound_hud9b9c178eae581b5514140397bcba88a_138013_5f999d0367ef66529fdd902599b51a33.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;593&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;outbound 配置中，注意 domains 字段是各种域名和ClusterIP，而 routes 中，match是通过prefix来匹配。我们结合HTTP/1.1，domains字段是用来和请求的Host header进行域名匹配的，比如 &lt;code&gt;Host: istio-telemetry&lt;/code&gt;，这决定了哪些请求是要转发到 istio-telemetry 这个服务的。routes的match用来进行路由匹配的，通过HTTP请求的path进行匹配。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/x-protocol-tcp-protocol-extension/inbound_hu16ee50cfe930c8b969e366dc6e9e5cd3_83832_7ba33ac6272d9ec125ff21c6bf4241a7.webp 400w,
+               /blog/x-protocol-tcp-protocol-extension/inbound_hu16ee50cfe930c8b969e366dc6e9e5cd3_83832_4ea401904937228e9ecc73455d654b50.webp 760w,
+               /blog/x-protocol-tcp-protocol-extension/inbound_hu16ee50cfe930c8b969e366dc6e9e5cd3_83832_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/inbound_hu16ee50cfe930c8b969e366dc6e9e5cd3_83832_7ba33ac6272d9ec125ff21c6bf4241a7.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;526&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;inbound 配置类似，只是inbound更简单，domains匹配&lt;code&gt;*&lt;/code&gt;就可以。&lt;/p&gt;
+&lt;p&gt;从上面的例子中可以看到，Istio和Envoy的设计有非常浓重的HTTP协议的味道，各种语义都是和HTTP直接相关。而当我们进行TCP协议的转发时，就需要将请求的协议字段进行映射，映射到HTTP的相应语义。&lt;/p&gt;
+&lt;p&gt;比如，最基本的Destination，原始语义是请求的目的地，在前面的文章中我们指出过这是请求转发最关键的字段。在HTTP协议中，通常是通过Host header和Path表示，对于REST而言还有重要的Method字段。&lt;/p&gt;
+&lt;p&gt;下面的格式是其他各种协议对这个Destination原始语义的实际实现方式：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;协议&lt;/th&gt;
+&lt;th&gt;实现&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;原始语义&lt;/td&gt;
+&lt;td&gt;请求的目的地(Destination)&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;HTTP/1.1&lt;/td&gt;
+&lt;td&gt;Host header，Method，Path&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;HTTP/2&lt;/td&gt;
+&lt;td&gt;Header帧中的伪header &lt;code&gt;:authority&lt;/code&gt;，&lt;code&gt;:path&lt;/code&gt;和&lt;code&gt;:method&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Bolt协议&lt;/td&gt;
+&lt;td&gt;header map中key为”service”的字段&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;HSF协议&lt;/td&gt;
+&lt;td&gt;协议头中的服务接口名和服务方法名&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Dubbo协议&lt;/td&gt;
+&lt;td&gt;data字段（payload）中的path/method&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;这些通讯协议在下发规则和进行请求匹配时，就需要进行协调：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;定义好 Virtual Host 配置中的 domains 字段和 route 中的 match 用到的字段在当前通讯协议中的实际语义&lt;/li&gt;
+&lt;li&gt;在 protocol encoder 中读取请求的协议字段，和上面的字段对应&lt;/li&gt;
+&lt;li&gt;然后进行请求路由规则匹配（参照HTTP/1.1中的domain和route match的匹配）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;而这些都是需要以代码的方式进行实现，以满足新通讯协议的要求。正规的做法，是每次新增一个通讯协议就将上述的工作内容重复一遍。这会直接导致大量的高度类似的重复代码。&lt;/p&gt;
+&lt;h2 id=&#34;x-protocol的实现&#34;&gt;x-protocol的实现&lt;/h2&gt;
+&lt;p&gt;在上述需要在协议扩展时修改的四个内容中，有一块是特别的：生成 Virtual Host 配置的工作是在Pilot中实现的，而其他三个是在Sidecar （Envoy或MOSN）中。考虑到 protocol encoder 和 protocol decoder 的工作是必不可少的，必然会修改Sidecar来增加实现代码，因此简化开发的第一个想法就是：能不能做到不修改Pilot？&lt;/p&gt;
+&lt;p&gt;基本思路就是固定好原始语义，避免每个通讯协议都映射一遍。从前面我们列出来的各个协议的映射情况看，对于RPC协议而言，一般目的地信息都是服务名(有些是接口名)+方法名居多，因此可以考虑直接将服务名和方法名固定下来：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;RPC协议在 Virtual Host 配置中就固定为服务名对应 domains 字段，方法名对应 route 中的 match 用到的字段，这样只要修改一次然后各个RPC协议公用此配置，以后就不用再重复修改Pilot。&lt;/li&gt;
+&lt;li&gt;protocol encoder 在解析通讯协议完成之后，就直接将协议中对应服务名和方法名的字段提取出来，后面的匹配处理过程就可以公用一套通用实现，这样路由匹配这块也可以不用在重复开发。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;因此，在x-protocol中，如果需要引入一个新的通讯协议，需要的工作内容只有必不可少的protocol encoder 和 protocol decoder，和实现以下几个接口：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/x-protocol-tcp-protocol-extension/xprotocol-interfaces_hubd616638a7c4cda2e92c6e1356d3dc05_121697_32ec12f1beda6cf1f0f350b3cb3961dd.webp 400w,
+               /blog/x-protocol-tcp-protocol-extension/xprotocol-interfaces_hubd616638a7c4cda2e92c6e1356d3dc05_121697_14405b6a5e44af921f4231125dc7043c.webp 760w,
+               /blog/x-protocol-tcp-protocol-extension/xprotocol-interfaces_hubd616638a7c4cda2e92c6e1356d3dc05_121697_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/xprotocol-interfaces_hubd616638a7c4cda2e92c6e1356d3dc05_121697_32ec12f1beda6cf1f0f350b3cb3961dd.webp&#34;
+               width=&#34;503&#34;
+               height=&#34;517&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;X-protocol 在支持新通讯协议上的做法并无新奇之处，只是由于需求特殊有众多通讯协议需要支持，在开发时发现大量重复工作，因此我们选择了一条可以让后面更舒服一点的道路。&lt;/p&gt;
+&lt;p&gt;目前这个方案在SOFAMesh中采用，我们将进一步检验实际效果，也会和合作的小伙伴时验证，看他们在自行扩展新协议时是否足够理想。这个方案理论上应该可以同样适用于Istio、Envoy体系，随着社区对Istio的接受程度的提高，在Istio上支持各种TCP通讯协议的需求会越来越多，有理由相信Istio后续可能也会出现类似的方案。毕竟，每次都改一大堆类似的东西，不是一个好做法。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>SOFAMesh中的多协议通用解决方案x-protocol介绍系列（2）——快速解码转发</title>
+      <link>https://cloudnative.to/blog/x-protocol-rapid-decode-forward/</link>
+      <pubDate>Wed, 10 Oct 2018 11:45:26 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/x-protocol-rapid-decode-forward/</guid>
+      <description>&lt;blockquote&gt;
+&lt;p&gt;本文是SOFAMesh中的多协议通用解决方案x-protocol介绍系列文章之一。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（1）——DNS通用寻址方案&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（2）——快速解码转发&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（3）——TCP协议扩展&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;在Istio和Envoy中，对通讯协议的支持，主要体现在HTTP/1.1和HTTP/2上，而我们SOFAMesh，则需要支持以下几个RPC协议：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;SOFARPC：这是蚂蚁金服大量使用的RPC协议（已开源）&lt;/li&gt;
+&lt;li&gt;HSF RPC：这是阿里集团内部大量使用的RPC协议（未开源）&lt;/li&gt;
+&lt;li&gt;Dubbo RPC: 这是社区广泛使用的RPC协议（已开源）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;更适合的平衡点性能和功能&#34;&gt;更适合的平衡点：性能和功能&lt;/h3&gt;
+&lt;p&gt;对于服务间通讯解决方案，性能永远是一个值得关注的点。而SOFAMesh在项目启动时就明确要求在性能上要有更高的追求，为此，我们不得不在Istio标准实现之外寻求可以获取更高性能的方式，比如支持各种RPC协议。&lt;/p&gt;
+&lt;p&gt;期间有两个发现：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Istio在处理所有的请求转发如REST/gRPC时，会解码整个请求的header信息，拿到各种数据，提取为Attribute，然后以此为基础，提供各种丰富的功能，典型如Content Based Routing。&lt;/li&gt;
+&lt;li&gt;而在测试中，我们发现：解码请求协议的header部分，对CPU消耗较大，直接影响性能。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;因此，我们有了一个很简单的想法：是不是可以在转发时，不开启部分功能，以此换取转发过程中的更少更快的解码消耗？毕竟，不是每个服务都需要用到Content Based Routing这样的高级特性，大部分服务只使用 Version Based Routing，尤其是使用RPC通讯协议的服务，没有HTTP那么表现力丰富的header，对Content Based Routing的需求要低很多。&lt;/p&gt;
+&lt;p&gt;此外，对于部分对性能有极高追求的服务，不开启高级特性而换取更高的性能，也是一种满足性能要求的折中方案。考虑到系统中总存在个别服务对性能非常敏感，我们觉得Service Mesh提供一种性能可以接近直连的方案会是一个有益的补充。为了满足这些特例而不至于因此整体否决Service Mesh方案，我们需要在Service Mesh的大框架下提供一个折中方案。&lt;/p&gt;
+&lt;h2 id=&#34;请求转发&#34;&gt;请求转发&lt;/h2&gt;
+&lt;p&gt;在我们进一步深入前，我们先来探讨一下实现请求转发的技术细节。&lt;/p&gt;
+&lt;p&gt;有一个关键问题：当Envoy/SOFA MOSN这样的代理程序，接收到来自客户端的TCP请求时，需要获得哪些信息，才可以正确的转发请求到上游的服务器端？&lt;/p&gt;
+&lt;h3 id=&#34;最关键的信息destination&#34;&gt;最关键的信息：destination&lt;/h3&gt;
+&lt;p&gt;首先，毫无疑问的，必须拿到destination/目的地，也就是客户端请求必须通过某种方式明确的告之代理该请求的destination，这样代理程序才能根据这个destionation去找到正确的目标服务器，然后才有后续的连接目标服务器和转发请求等操作。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zu0jen9j30vs0d475q_hu9f0c3f794f1b39435da5a9e2ced97ad4_55269_c112d8b80500d16f6c4a88362193f251.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zu0jen9j30vs0d475q_hu9f0c3f794f1b39435da5a9e2ced97ad4_55269_dd6d1fbf6a675f4852386e4d04790289.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zu0jen9j30vs0d475q_hu9f0c3f794f1b39435da5a9e2ced97ad4_55269_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zu0jen9j30vs0d475q_hu9f0c3f794f1b39435da5a9e2ced97ad4_55269_c112d8b80500d16f6c4a88362193f251.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;314&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Destination信息的表述形式可能有：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. IP地址&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;可能是服务器端实例实际工作的IP地址和端口，也可能是某种转发机制，如Nginx/HAProxy等反向代理的地址或者Kubernetes中的ClusterIP。&lt;/p&gt;
+&lt;p&gt;举例：“192.168.1.1:8080”是实际IP地址和端口，“10.2.0.100:80”是ngxin反向代理地址，“172.168.1.105:80”是Kubernetes的ClusterIP。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. 目标服务的标识符&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;可用于名字查找，如服务名，可能带有各种前缀后缀。然后通过名字查找/服务发现等方式，得到地址列表（通常是IP地址+端口形式）。&lt;/p&gt;
+&lt;p&gt;举例：“userservice”是标准服务名， “com.alipay/userservice”是加了域名前缀的服务名， “service.default.svc.cluster.local”是k8s下完整的全限定名。&lt;/p&gt;
+&lt;p&gt;Destination信息在请求报文中的携带方式有：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. 通过通讯协议传递&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;这是最常见的形式，标准做法是通过header头，典型如HTTP/1.1下一般使用 host header，举例如“Host: userservice”。HTTP/2下，类似的使用“:authority” header。&lt;/p&gt;
+&lt;p&gt;对于非HTTP协议，通常也会有类似的设计，通过协议中某些字段来承载目标地址信息，只是不同协议中这个字段的名字各有不同。如SOFARPC，HSF等。&lt;/p&gt;
+&lt;p&gt;有些通讯协议，可能会将这个信息存放在payload中，比如后面我们会介绍到的dubbo协议，导致需要反序列化payload之后才能拿到这个重要信息。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. 通过TCP协议传递&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;这是一种非常特殊的方式，通过在TCP option传递，上一节中我们介绍Istio DNS寻址时已经详细介绍过了。&lt;/p&gt;
+&lt;h3 id=&#34;tcp拆包&#34;&gt;TCP拆包&lt;/h3&gt;
+&lt;p&gt;如何从请求的通讯协议中获取destination？这涉及到具体通讯协议的解码，其中第一个要解决的问题就是如何在连续的TCP报文中将每个请求内容拆分开，这里就涉及到经典的TCP沾包、拆包问题。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuc1molj30vw0ayaax_huac2d5e1ad3ab35d69f68868f41314cd2_27400_f386bb847534eecd9acda4df69fbddef.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuc1molj30vw0ayaax_huac2d5e1ad3ab35d69f68868f41314cd2_27400_56ef6e37244ac3cb4bd9efd8dde7751a.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuc1molj30vw0ayaax_huac2d5e1ad3ab35d69f68868f41314cd2_27400_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuc1molj30vw0ayaax_huac2d5e1ad3ab35d69f68868f41314cd2_27400_f386bb847534eecd9acda4df69fbddef.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;261&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;转发请求时，由于涉及到负载均衡，我们需要将请求发送给多个服务器端实例。因此，有一个非常明确的要求：就是必须以单个请求为单位进行转发。即单个请求必须完整的转发给某台服务器端实例，负载均衡需要以请求为单位，不能将一个请求的多个报文包分别转发到不同的服务器端实例。所以，拆包是请求转发的必备基础。&lt;/p&gt;
+&lt;p&gt;由于篇幅和主题限制，我们不在这里展开TCP沾包、拆包的原理。后面针对每个具体的通讯协议进行分析时再具体看各个协议的解决方案。&lt;/p&gt;
+&lt;h3 id=&#34;多路复用的关键参数requestid&#34;&gt;多路复用的关键参数：RequestId&lt;/h3&gt;
+&lt;p&gt;RequestId用来关联request和对应的response，请求报文中携带一个唯一的id值，应答报文中原值返回，以便在处理response时可以找到对应的request。当然在不同协议中，这个参数的名字可能不同（如streamid等）。&lt;/p&gt;
+&lt;p&gt;严格说，RequestId对于请求转发是可选的，也有很多通讯协议不提供支持，比如经典的HTTP1.1就没有支持。但是如果有这个参数，则可以实现多路复用，从而可以大幅度提高TCP连接的使用效率，避免出现大量连接。稍微新一点的通讯协议，基本都会原生支持这个特性，比如SOFARPC、Dubbo、HSF，还有HTTP/2就直接內建了多路复用的支持。&lt;/p&gt;
+&lt;p&gt;HTTP/1.1不支持多路复用（http1.1有提过支持幂等方法的pipeline机制但是未能普及），用的是经典的ping-pong模式：在请求发送之后，必须独占当前连接，等待服务器端给出这个请求的应答，然后才能释放连接。因此HTTP/1.1下，并发多个请求就必须采用多连接，为了提升性能通常会使用长连接+连接池的设计。而如果有了requestid和多路复用的支持，客户端和Mesh之间理论上就可以只用一条连接（实践中可能会选择建立多条）来支持并发请求：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zujxeh7j313x0dwtaz_hu66f57cb2738cf11b4a7472f20cd482c4_84062_67767ff83d835a87a644fbf681f05504.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zujxeh7j313x0dwtaz_hu66f57cb2738cf11b4a7472f20cd482c4_84062_7b62b1394361094b9753d1c5af682b30.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zujxeh7j313x0dwtaz_hu66f57cb2738cf11b4a7472f20cd482c4_84062_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zujxeh7j313x0dwtaz_hu66f57cb2738cf11b4a7472f20cd482c4_84062_67767ff83d835a87a644fbf681f05504.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;265&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;而Mesh与服务器（也可能是对端的Mesh）之间，也同样可以受益于多路复用技术，来自不同客户端而去往同一个目的地的请求可以混杂在同一条连接上发送。通过RequestId的关联，Mesh可以正确将reponse发送到请求来自的客户端。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuxvz4lj310r0dzwgj_hu3d7dedf9a92b6b92c0e3e0b3bf4c9c5f_76118_764e1cb64fa8920272c005d391e6558f.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuxvz4lj310r0dzwgj_hu3d7dedf9a92b6b92c0e3e0b3bf4c9c5f_76118_6f2e411c39499be0e19734ff33f2b6a0.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuxvz4lj310r0dzwgj_hu3d7dedf9a92b6b92c0e3e0b3bf4c9c5f_76118_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zuxvz4lj310r0dzwgj_hu3d7dedf9a92b6b92c0e3e0b3bf4c9c5f_76118_764e1cb64fa8920272c005d391e6558f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;289&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;由于篇幅和主题限制，我们不在这里展开多路复用的原理。后面针对每个具体的通讯协议进行分析时再具体看各个协议的支持情况。&lt;/p&gt;
+&lt;h3 id=&#34;请求转发参数总结&#34;&gt;请求转发参数总结&lt;/h3&gt;
+&lt;p&gt;上面的分析中，我们可以总结到，对于Sidecar，要正确转发请求：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;必须获取到destination信息，得到转发的目的地，才能进行服务发现类的寻址&lt;/li&gt;
+&lt;li&gt;必须要能够正确的拆包，然后以请求为单位进行转发，这是负载均衡的基础&lt;/li&gt;
+&lt;li&gt;可选的RequestId，这是开启多路复用的基础&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;因此，这里我们的第一个优化思路就出来了：尽量只解码获取这三个信息，满足转发的基本要求。其他信息如果有性能开销则跳过解码，所谓“快速解码转发”。基本原理就是牺牲信息完整性追求性能最大化。&lt;/p&gt;
+&lt;p&gt;而结合上一节中我们引入的DNS通用寻址方案，我们是可以从请求的TCP options中得到ClusterIP，从而实现寻址。这个方式可以实现不解码请求报文，尤其是header部分解码destination信息开销大时。这是我们的第二个优化思路：跳过解码destination信息，直接通过ClusterIP进行寻址。&lt;/p&gt;
+&lt;p&gt;具体的实现则需要结合特定通讯协议的实际情况进行。&lt;/p&gt;
+&lt;h2 id=&#34;主流通讯协议&#34;&gt;主流通讯协议&lt;/h2&gt;
+&lt;p&gt;现在我们开始，以Proxy、Sidecar、Service Mesh的角度来看看目前主流的通讯协议和我们前面列举的需要在SOFAMesh中支持的几个协议。&lt;/p&gt;
+&lt;h3 id=&#34;sofarpcbolt协议&#34;&gt;SOFARPC/bolt协议&lt;/h3&gt;
+&lt;p&gt;SOFARPC 是一款基于 Java 实现的 RPC 服务框架，详细资料可以查阅 官方文档。SOFARPC 支持 bolt，rest，dubbo 协议进行通信。REST、dubbo后面单独展开，这里我们关注bolt协议。&lt;/p&gt;
+&lt;p&gt;bolt 是蚂蚁金服集团开放的基于 Netty 开发的网络通信框架，其协议格式是变长，即协议头+payload。具体格式定义如下，以request为例（response类似）：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zv3sqhij312j0833zq_hu6340bce4925169de04e94fd9d5c61230_45016_3ac6b6ad06d1766f766fd402215a6f5f.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zv3sqhij312j0833zq_hu6340bce4925169de04e94fd9d5c61230_45016_edaa3a16c13167b9886faf6efb709fae.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zv3sqhij312j0833zq_hu6340bce4925169de04e94fd9d5c61230_45016_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zv3sqhij312j0833zq_hu6340bce4925169de04e94fd9d5c61230_45016_3ac6b6ad06d1766f766fd402215a6f5f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;160&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们只关注和请求转发直接相关的字段：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;TCP拆包&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;bolt协议是定长+变长的复合结构，前面22个字节长度固定，每个字节和协议字段的对应如图所示。其中classLen、headerLen和contentLen三个字段指出后面三个变长字段className、header、content的实际长度。和通常的变长方案相比只是变长字段有三个。拆包时思路简单明了：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;先读取前22个字节，解出各个协议字段的实际值，包括classLen，headerLen和contentLen&lt;/li&gt;
+&lt;li&gt;按照classLen、headerLen和contentLen的大小，继续读取className、header、content&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;Destination&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Bolt协议中的header字段是一个map，其中有一个key为“service”的字段，传递的是接口名/服务名。读取稍微麻烦一点点，需要先解码整个header字段，这里对性能有影响。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;RequestId&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Blot协议固定字段中的&lt;code&gt;requestID&lt;/code&gt;字段，可以直接读取。&lt;/p&gt;
+&lt;p&gt;SOFARPC中的bolt协议，设计的比较符合请求转发的需要，TCP拆包，读取RequestID，都没有性能问题。只是Destination的获取需要解码整个header，性能开销稍大。&lt;/p&gt;
+&lt;p&gt;总结：适合配合DNS通用解码方案，跳过对整个header部分的解码，从而提升性能。当然由于这个header本身也不算大，优化的空间有限，具体提升需要等对比测试的结果出来。&lt;/p&gt;
+&lt;h3 id=&#34;hsf协议&#34;&gt;HSF协议&lt;/h3&gt;
+&lt;p&gt;HSF协议是经过精心设计工作在4层的私有协议，由于该协议没有开源，因此不便直接暴露具体格式和字段详细定义。&lt;/p&gt;
+&lt;p&gt;不过基本的设计和bolt非常类似：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;采用变长格式，即协议头+payload&lt;/li&gt;
+&lt;li&gt;在协议头中可以直接拿到服务接口名和服务方法名作为Destination&lt;/li&gt;
+&lt;li&gt;有RequestID字段&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;基本和bolt一致，考虑到Destination可以直接读取，比bolt还要方便一些，HSF协议可以说是对请求转发最完美的协议。&lt;/p&gt;
+&lt;p&gt;总结：目前的实现方案也只解码了这三个关键字段，速度足够快，不需要继续优化。&lt;/p&gt;
+&lt;h3 id=&#34;dubbo协议&#34;&gt;Dubbo协议&lt;/h3&gt;
+&lt;p&gt;Dubbo协议也是类似的协议头+payload的变长结构，其协议格式如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvfi4g9j30oh03gmxj_hu0b8dc765a7e27095af575f7fcfa0c7b7_16331_3296c35060c747183623284e386cf571.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvfi4g9j30oh03gmxj_hu0b8dc765a7e27095af575f7fcfa0c7b7_16331_420e1d1f471374f59375a0979ca16129.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvfi4g9j30oh03gmxj_hu0b8dc765a7e27095af575f7fcfa0c7b7_16331_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvfi4g9j30oh03gmxj_hu0b8dc765a7e27095af575f7fcfa0c7b7_16331_3296c35060c747183623284e386cf571.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;107&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;其中long类型的&lt;code&gt;id&lt;/code&gt;字段用来把请求request和返回的response对应上，即我们所说的&lt;code&gt;RequestId&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;这样TCP拆包和多路复用都轻松实现，稍微麻烦一点的是：Destination在哪里？Dubbo在这里的设计有点不够理想，在协议头中没有字段可以直接读取到Destination，需要去读取data字段，也就是payload，里面的path字段通常用来保存服务名或者接口名。method字段用来表示方法名。&lt;/p&gt;
+&lt;p&gt;从设计上看，path字段和method字段被存放在payload中有些美中不足。庆幸的是，读取这两个字段的时候不需要完整的解开整个payload，好险，不然，那性能会没法接受的。&lt;/p&gt;
+&lt;p&gt;以hession2为例，data字段的组合是：dubbo version + path + interface version + method + ParameterTypes + Arguments + Attachments。每个字段都是一个byte的长度+字段值的UTF bytes。因此读取时并不复杂，速度也足够快。&lt;/p&gt;
+&lt;p&gt;基本和HSF一致，就是Destination的读取稍微麻烦一点，放在payload中的设计让人吓了一跳，好在有惊无险。整体说还是很适合转发的。&lt;/p&gt;
+&lt;p&gt;总结：同HSF，不需要继续优化。&lt;/p&gt;
+&lt;h3 id=&#34;http11&#34;&gt;HTTP/1.1&lt;/h3&gt;
+&lt;p&gt;HTTP/1.1的格式应该大家都熟悉，而在这里，不得不指出，HTTP/1.1协议对请求转发是非常不友好的（甚至可以说是恶劣！）：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;HTTP请求在拆包时，需要先按照HTTP header的格式，一行一行读取，直到出现空行表示header结束&lt;/li&gt;
+&lt;li&gt;然后必须将整个header的内容全部解析出来，才能取出&lt;code&gt;Content-Length header&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;通过&lt;code&gt;Content-Length&lt;/code&gt; 值，才能完成对body内容的读取，实现正确拆包&lt;/li&gt;
+&lt;li&gt;如果是chunked方式，则更复杂一些&lt;/li&gt;
+&lt;li&gt;Destination通常从&lt;code&gt;Host&lt;/code&gt; header中获取&lt;/li&gt;
+&lt;li&gt;没有RequestId，完全无法实现多路复用&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这意味着，为了完成最基本的TCP拆包，必须完整的解析全部的HTTP header信息，没有任何可以优化的空间。对比上面几个RPC协议，轻松自如的快速获取几个关键信息，HTTP无疑要重很多。这也造成了在ServiceMesh下，HTTP/1.1和REST协议的性能总是和其他RPC方案存在巨大差异。&lt;/p&gt;
+&lt;p&gt;对于注定要解码整个header部分，完全没有优化空间可言的HTTP/1.1协议来说，Content Based Routing 的解码开销是必须付出的，无论是否使用 Content Based Routing 。因此，快速解码的构想，对HTTP/1.1无效。&lt;/p&gt;
+&lt;p&gt;总结：受HTTP/1.1协议格式限制，上述两个优化思路都无法操作。&lt;/p&gt;
+&lt;h3 id=&#34;http2和grpc&#34;&gt;HTTP/2和gRPC&lt;/h3&gt;
+&lt;p&gt;作为HTTP/1.1的接班人，HTTP/2则表现的要好很多。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：当然HTTP/2的协议格式复杂多了，由于篇幅和主题的限制，这里不详细介绍HTTP/2的格式。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;首先HTTP/2是以帧的方式组织报文的，所有的帧都是变长，固定的9个字节+可变的payload，Length字段指定payload的大小：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvsjz65j30jg0650tg_hu66681c5396a650417d0611390f2bac2b_32603_1743756b27c37e88b116da49acea6985.webp 400w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvsjz65j30jg0650tg_hu66681c5396a650417d0611390f2bac2b_32603_3d235647056ea0157bbbcb9e9ce59bd6.webp 760w,
+               /blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvsjz65j30jg0650tg_hu66681c5396a650417d0611390f2bac2b_32603_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/006tNbRwly1fw2zvsjz65j30jg0650tg_hu66681c5396a650417d0611390f2bac2b_32603_1743756b27c37e88b116da49acea6985.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;221&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;HTTP2的请求和应答，也被称为Message，是由多个帧构成，在去除控制帧之外，Message通常由Header帧开始，后面接CONTINUATION帧和Data帧（也可能没有，如GET请求）。每个帧都可以通过头部的Flags字段来设置END_STREAM标志，表示请求或者应答的结束。即TCP拆包的问题在HTTP/2下是有非常标准而统一的方式完成，完全和HTTP/2上承载的协议无关。&lt;/p&gt;
+&lt;p&gt;HTTP/2通过Stream內建多路复用，这里的&lt;code&gt;Stream Identifier&lt;/code&gt; 扮演了类似前面的&lt;code&gt;RequestId&lt;/code&gt;的角色。&lt;/p&gt;
+&lt;p&gt;而Destination信息则通过Header帧中的伪header &lt;code&gt;:authority&lt;/code&gt; 来传递，类似HTTP/1.1中的&lt;code&gt;Host&lt;/code&gt; header。不过HTTP/2下header会进行压缩，读取时稍微复杂一点，也存在需要解压缩整个header帧的性能开销。考虑到拆包和获取RequestId都不需要解包（只需读取协议头，即HTTP/2帧的固定字段），速度足够快，因此存在很大的优化空间：不解码header帧，直接通过DNS通用寻址方案，这样性能开销大为减少，有望获得极高的转发速度。&lt;/p&gt;
+&lt;p&gt;总结：HTTP/2的帧设计，在请求转发时表现的非常友好。唯独Destination信息放在header中，会造成必须解码header帧。好在DNS通用寻址方案可以弥补，实现快速解码和转发。&lt;/p&gt;
+&lt;h2 id=&#34;service-mesh时代的rpc理想方案&#34;&gt;Service Mesh时代的RPC理想方案&lt;/h2&gt;
+&lt;p&gt;在文章的最后，我们总结并探讨一下，对于Service Mesh而言，什么样的RPC方案是最理想的？&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;必须可以方便做TCP拆包，最好在协议头中就简单搞定，标准方式如固定协议头+length字段+可变payload。HSF协议、 bolt协议和dubbo协议表现完美，HTTP/2采用帧的方式，配合END_STREAM标志，方式独特但有效。HTTP/1.1则是反面典型。&lt;/li&gt;
+&lt;li&gt;必须可以方便的获取destination字段，同样最好在协议头中就简单搞定。HSF协议表现完美，dubbo协议藏在payload中但终究还是可以快速解码有惊无险的过关，bolt协议和HTTP/2协议就很遗憾必须解码header才能拿到，好在DNS通用寻址方案可以弥补，但终究丢失了服务名和方法名信息。HTTP/1.1依然是反面典型。&lt;/li&gt;
+&lt;li&gt;最好有RequestId字段，同样最好在协议头中就简单搞定。这方面HSF协议、dubbo协议、bolt协议表现完美，HTTP/2协议更是直接內建支持。HTTP/1.1继续反面典型。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;因此，仅以方便用最佳性能进行转发，对Service Mesh、sidecar友好而言，最理想的RPC方案是：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;传统的变长协议&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;固定协议头+length字段+可变payload，然后在固定协议头中直接提供RequestId和destination。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;基于帧的协议&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;以HTTP/2为基础，除了请求结束的标志位和RequestId外，还需要通过帧的固定字段来提供destination信息。&lt;/p&gt;
+&lt;p&gt;或许，在未来，在Service Mesh普及之后，对Service Mesh友好成为RPC协议的特别优化方向，我们会看到表现完美更适合Service Mesh时代的新型RPC方案。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>SOFAMesh中的多协议通用解决方案x-protocol介绍系列（1）——DNS通用寻址方案</title>
+      <link>https://cloudnative.to/blog/x-protocol-common-address-solution/</link>
+      <pubDate>Mon, 08 Oct 2018 14:58:03 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/x-protocol-common-address-solution/</guid>
+      <description>&lt;blockquote&gt;
+&lt;p&gt;本文是SOFAMesh中的多协议通用解决方案x-protocol介绍系列文章之一。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（1）——DNS通用寻址方案&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-rapid-decode-forward/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（2）——快速解码转发&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://cloudnative.to/blog/x-protocol-tcp-protocol-extension/&#34;&gt;SOFAMesh中的多协议通用解决方案x-protocol介绍系列（3）——TCP协议扩展&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;在2018年上半年，蚂蚁金服决定基于 Istio 订制自己的 ServiceMesh 解决方案，在6月底对外公布了 SOFAMesh，详情请见之前的文章: &lt;a href=&#34;https://skyao.io/publication/201806-service-mesh-explore/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;大规模微服务架构下的Service Mesh探索之路&lt;/a&gt; 。&lt;/p&gt;
+&lt;p&gt;在 SOFAMesh 的开发过程中，针对遇到的实际问题，我们给出了一套名为 x-protocol 的解决方案，定位是云原生、高性能、低侵入性的通用 Service Mesh 落地方案，依托 Kubernetes 基座，利用其原生的服务注册和服务发现机制，支持各种私有 RPC 协议低成本、易扩展的接入，快速享受 Service Mesh 所带来的红利。&lt;/p&gt;
+&lt;p&gt;具体解决的问题包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;多通讯协议支持问题，减少开发工作量，简单快捷的接入新协议&lt;/li&gt;
+&lt;li&gt;尽量提升性能，提供更灵活的性能与功能的平衡点选择，满足特定高性能场景&lt;/li&gt;
+&lt;li&gt;兼容现有SOA体系，提供通过接口进行访问的方式，实现不修改业务代码也能顺利接入 Service Mesh&lt;/li&gt;
+&lt;li&gt;支持单进程多服务的传统SOA程序，可以在微服务改造之前，先受益于 Service Mesh 带来的强大功能&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在本系列文章中，我们将对此进行详细的讲解，首先是“DNS通用寻址方案”。&lt;/p&gt;
+&lt;h2 id=&#34;背景和需求&#34;&gt;背景和需求&lt;/h2&gt;
+&lt;h3 id=&#34;soa的服务模型&#34;&gt;SOA的服务模型&lt;/h3&gt;
+&lt;p&gt;在SOFAMesh计划支持的RPC框架中，SOFARPC、HSF、Dubbo都是一脉相承的SOA体系，也都支持经典的SOA服务模型，通常称为”单进程多服务”，或者叫做”单进程多接口”。（备注：由于服务一词使用过于频繁，下文都统一称为接口以便区分）&lt;/p&gt;
+&lt;p&gt;SOA标准的服务注册，服务发现和调用流程如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201809-xprotocol-common-address-solution/images/soa-standard-process.jpg&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在单个SOA应用进程内，存在多个接口&lt;/li&gt;
+&lt;li&gt;服务注册时，以接口为单位进行多次独立的服务注册&lt;/li&gt;
+&lt;li&gt;当客户端进行调用时，按照接口进行服务发现，然后发起调用&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;当我们试图将这些SOA架构的应用搬迁到ServiceMesh时，就会遇到服务模型的问题：微服务是单服务模型，也就是一个进程里面只承载一个服务。以Kubernetes的服务注册为例，在单进程单服务的模型下，服务名和应用名可以视为一体，Kubernetes的自动服务注册会将应用名作为服务注册的标示。&lt;/p&gt;
+&lt;p&gt;这就直接导致了SOA模型和微服务模型的不匹配问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;SOA以接口为单位做服务注册和服务发现，而微服务下是服务名&lt;/li&gt;
+&lt;li&gt;SOA是”单进程多接口”，而微服务是”单进程单服务”&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;一步接一步的需求&#34;&gt;一步接一步的需求&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;先上车后补票&lt;/p&gt;
+&lt;p&gt;最理想的做法当然是先进行微服务改造，实现微服务拆分。但是考虑到现有应用数量众多，我们可能更愿意在大规模微服务改造之前，先想办法让这些应用可以运行在ServiceMesh下，提前受益于Service Mesh带来的强大功能。因此，我们需要找到一个合适的方案，让ServiceMesh支持没有做微服务改造依然是”单进程多接口”形式的传统SOA应用，所谓”先上车后补票”。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;不修改代码&lt;/p&gt;
+&lt;p&gt;考虑到原有的SOA应用，相互之间错综复杂的调用关系，最好不要修改代码，即保持客户端依然通过接口名来访问的方式。当然，SOA架构的客户端SDK可能要进行改动，将原有的通过接口名进行服务发现再自行负载均衡进行远程调用的方式，精简为标准的Servicemesh调用（即走Sidecar），因此修改SDK依赖包和重新打包应用是不可避免。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;支持带特殊字符的接口名&lt;/p&gt;
+&lt;p&gt;Kubernetes的服务注册，Service名是不能携带”.“号的。而SOA架构下，接口名有时出于管理方便，有可能是加了域名前缀，如”com.alipay.demo.interface-2”。为了实现不修改原有代码，就只能想办法支持这种带特殊字符的接口名。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;参考kubernetes和istio&#34;&gt;参考Kubernetes和Istio&lt;/h2&gt;
+&lt;p&gt;在进一步讨论解决方案之前，我们先来看一下kubernetes和Istio中的标准请求寻址方式。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：过程稍显复杂，涉及到Kubernetes/Istio的一些底层细节。但是了解这个过程对后续的理解非常重要，也可以帮助大家了解Kubernetes和Kubernetes的工作原理，强烈推荐阅读。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;kubernetes下的dns寻址方式&#34;&gt;Kubernetes下的DNS寻址方式&lt;/h3&gt;
+&lt;p&gt;在Kubernetes下，如图所示，假定我们部署了一个名为userservice的应用，有三个实例，分别在三个pod中。则应用部署之后，Kubernetes会为这个应用分配ClusterIP和域名，并在DNS中生成一条DNS记录，将域名映射到ClusterIP：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kubernetes下的dns寻址方式&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes下的DNS寻址方式&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1crhhoj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_15613344dc5be49873e3d6ec05161780.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1crhhoj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_134fba3c143d902958318d84a0c40e57.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1crhhoj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u1crhhoj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_15613344dc5be49873e3d6ec05161780.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;354&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Kubernetes下的DNS寻址方式
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当部署在Kubernetes下的某个充当客户端的应用发起请求时，如图中的HTTP GET请求，目标URL地址为 “&lt;a href=&#34;http://userservice/id/1000221&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://userservice/id/1000221&lt;/a&gt;&amp;quot;。请求的寻址方式和过程如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;首先进行域名解析，分别尝试解析”userservice”/“userservie.default.svc.cluster.local”等域名，得到ClusterIP&lt;/li&gt;
+&lt;li&gt;然后客户端发出请求的报文，目标地址为ClusterIP，源地址为当前客户端所在的pod IP（简单起见，端口先忽略）&lt;/li&gt;
+&lt;li&gt;请求报文随即被kube-proxy拦截，kube-proxy根据ClusterIP，拿到ClusterIP对应的多个实际服务实例所在的pod ip，取其中一个，修改目标地址为这个pod IP&lt;/li&gt;
+&lt;li&gt;请求报文最终就被发送到服务实例所在的pod IP&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;应答回来的方式类似，userservice发出的应答报文会被kube-proxy拦截并修改为发送到客户端所在的pod IP。&lt;/p&gt;
+&lt;p&gt;我们详细看一下请求和应答全称的四个请求包的具体内容（简单起见继续忽略端口）：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kubernetes-dns寻址&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes DNS寻址&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1t6ucmj31an0hs79k_hu940ecb223adbf7d6d7e250daba854838_190420_bbd6ac14ad3cd33fcb3219108cca4c60.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1t6ucmj31an0hs79k_hu940ecb223adbf7d6d7e250daba854838_190420_02c6e1fbcab93444469b968111cd85be.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u1t6ucmj31an0hs79k_hu940ecb223adbf7d6d7e250daba854838_190420_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u1t6ucmj31an0hs79k_hu940ecb223adbf7d6d7e250daba854838_190420_bbd6ac14ad3cd33fcb3219108cca4c60.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;289&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Kubernetes DNS寻址
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;重点关注请求和应答报文的源地址和目标地址：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;客户端发出的请求，为”客户端到ClusterIP”&lt;/li&gt;
+&lt;li&gt;kube-proxy拦截到请求后，将请求修改为”客户端到服务器端”&lt;/li&gt;
+&lt;li&gt;服务器端收到请求时，表现为”客户端到服务器端”，ClusterIP被kube-proxy屏蔽&lt;/li&gt;
+&lt;li&gt;服务器端发送应答，因为收到的请求看似来自客户端，因此应答报文为”服务器端到客户端”&lt;/li&gt;
+&lt;li&gt;应答报文被kube-proxy拦截，将应答修改为”ClusterIP到服务器端”&lt;/li&gt;
+&lt;li&gt;客户端收到应答，表现为”ClusterIP到服务器端”，服务器端IP被kube-proxy屏蔽&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;kube-proxy在客户端和服务器端之间拦截并修改请求和应答的报文，联通两者，但各自屏蔽了一些信息：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在客户端看来它是在和ClusterIP交互，userservice的具体服务器端实例对客户端是无感知的&lt;/li&gt;
+&lt;li&gt;在服务器端看来，客户端是直接在和它交互，ClusterIP的存在对服务器端是无感知的&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;更深入一步，看kube-proxy在两个拦截和修改报文中的逻辑处理关系，即kube-proxy是如何在收到应答时正确的找回原有的ClusterIP：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kube-proxy与clusterip&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;kube-proxy与ClusterIP&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2dtdpuj317q0fhtcw_hu767170f1f85ec1ab4ee47b414979e780_155681_0f7b528c0c0a97a73ba2e9df4921f3d9.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2dtdpuj317q0fhtcw_hu767170f1f85ec1ab4ee47b414979e780_155681_c015b96f021d944ef6d9b48ef93a92b5.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2dtdpuj317q0fhtcw_hu767170f1f85ec1ab4ee47b414979e780_155681_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u2dtdpuj317q0fhtcw_hu767170f1f85ec1ab4ee47b414979e780_155681_0f7b528c0c0a97a73ba2e9df4921f3d9.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;269&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      kube-proxy与ClusterIP
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在拦截并修改请求报文之后，kube-proxy会保存报文修改的5元组对应关系（5元组指源IP地址，源端口，协议，目的地IP地址，目的地端口）&lt;/li&gt;
+&lt;li&gt;在收到应答报文后，根据应答报文中的5元组，在保存的5元组对应关系中，找到对应信息，得到原有的ClusterIP和端口，然后修改应答报文&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;总结，通过上述Kubernetes下的寻址方式，客户端只需发送带简单寻址信息的请求（如 “&lt;a href=&#34;http://userservice/id/1000221%22&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://userservice/id/1000221&amp;quot;&lt;/a&gt; 中的”userservice” ），就可以寻址到正确的服务器端。这期间有两个关注点：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;通过DNS，建立了域名和ClusterIP的关系。&lt;/p&gt;
+&lt;p&gt;对于客户端，这是它能看到的内容，非常的简单，域名、DNS是非常容易使用的。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;而通过kube-proxy的拦截和转发，又打通了ClusterIP和服务器端实际的Pod IP&lt;/p&gt;
+&lt;p&gt;对于客户端，这些是看不到的内容，不管有多复杂，都是Kubernetes在底层完成，对客户端，或者说使用者透明。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;以客户端的视角看来，这个DNS寻址方式非常的简单直白：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kube-proxy与dns&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;kube-proxy与DNS&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2vhim9j319d0c8goz_hu8acff34e85e8902181101f5302d33196_123490_6dfe9284b09bc576632150ecc64cf42f.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2vhim9j319d0c8goz_hu8acff34e85e8902181101f5302d33196_123490_973d80fefde33f71916f5f9d0b5f7772.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u2vhim9j319d0c8goz_hu8acff34e85e8902181101f5302d33196_123490_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u2vhim9j319d0c8goz_hu8acff34e85e8902181101f5302d33196_123490_6dfe9284b09bc576632150ecc64cf42f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;205&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      kube-proxy与DNS
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;istio的dns寻址方式&#34;&gt;Istio的DNS寻址方式&lt;/h2&gt;
+&lt;p&gt;Istio的请求寻址方式和普通kubernetes非常相似，原理相同，只是kube-proxy被sidecar取代，然后sidecar的部署方式是在pod内部署，而且客户端和服务器端各有一个sidecar。其他基本一致，除了图中红色文本的部分：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio的dns寻址方式&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio的DNS寻址方式&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u3qux0gj31bg0ijgrw_hudb016e4fed9f5ddd2e7046c2021a8d2c_224282_bacf2e9f4fc2adc3fe6cd1b4edc9685a.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u3qux0gj31bg0ijgrw_hudb016e4fed9f5ddd2e7046c2021a8d2c_224282_765df2880002c635cf55faac66bfef5f.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u3qux0gj31bg0ijgrw_hudb016e4fed9f5ddd2e7046c2021a8d2c_224282_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u3qux0gj31bg0ijgrw_hudb016e4fed9f5ddd2e7046c2021a8d2c_224282_bacf2e9f4fc2adc3fe6cd1b4edc9685a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;297&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio的DNS寻址方式
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;iptables在劫持流量时，除了将请求转发到localhost的Sidecar处外，还额外的在请求报文的TCP options 中将 ClusterIP 保存为 original dest。&lt;/li&gt;
+&lt;li&gt;在 Sidecar （Istio默认是Envoy）中，从请求报文 TCP options 的 original dest 处获取 ClusterIP&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通过TCP options 的 original dest，iptables就实现了在劫持流量到Sidecar的过程中，额外传递了 ClusterIP 这个重要参数。Istio为什么要如此费力的传递这个 ClusterIP 呢？&lt;/p&gt;
+&lt;p&gt;看下图就知道了，这是一个 Virtual Host 的示例， Istio 通过 Pilot 将这个规则发送给 Sidecar/Envoy ，依靠这个信息来匹配路由请求找到处理请求的cluster：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio中的pilot注册信息&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio中的Pilot注册信息&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u495625j30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_33870b26a7d8898807a8f5406a1976aa.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u495625j30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_00afda41b65d40aa48abc9f5fa7d7ccc.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u495625j30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u495625j30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_33870b26a7d8898807a8f5406a1976aa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;593&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio中的Pilot注册信息
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;domains中，除了列出域名外，还有一个特殊的IP地址，这个就是Kubernetes服务的 ClusterIP！因此，Sidecar可以通过前面传递过来的 ClusterIP 在这里进行路由匹配（当然也可以从报文中获取destination然后通过域名匹配）。&lt;/p&gt;
+&lt;p&gt;总结，Istio延续了Kubernetes的寻址方式，客户端同样只需发送带简单寻址信息的请求，就可以寻址到正确的服务器端。这期间同样有两个关注点：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;通过DNS，建立了域名和ClusterIP的关系。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;通过 ClusterIP 和 Pilot 下发给 Virtual Host 的配置，Sidecar 可以完成路由匹配，将ClusterIP和目标服务器关联起来&lt;/p&gt;
+&lt;p&gt;同样，对于客户端，这些是看不到的内容。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;因此，以客户端的视角看来，Istio的这个DNS寻址方式同样的简单直白！&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-客户端请求&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;客户端请求&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5cxd61j30st03wmxk_hueb9d2aa3b3857aca22b5114281301898_19197_e958dff0e97a0bca99b89658ae0d47a4.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5cxd61j30st03wmxk_hueb9d2aa3b3857aca22b5114281301898_19197_eade5e070c6a67680cf189c750420eab.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5cxd61j30st03wmxk_hueb9d2aa3b3857aca22b5114281301898_19197_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u5cxd61j30st03wmxk_hueb9d2aa3b3857aca22b5114281301898_19197_e958dff0e97a0bca99b89658ae0d47a4.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;103&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      客户端请求
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;dns通用寻址方案&#34;&gt;DNS通用寻址方案&lt;/h2&gt;
+&lt;h3 id=&#34;解决问题的思路&#34;&gt;解决问题的思路&lt;/h3&gt;
+&lt;p&gt;在详细讲述了Kubernetes和Istio的DNS寻址方案之后，我们继续回到我们的主题，我们要解决的问题：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;如何在不修改代码，继续使用接口的情况下，实现在Service Mesh上运行现有的Dubbo/HSF/SOFA等传统SOA应用？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-dns通用寻址方案&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;DNS通用寻址方案&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5kyafgj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_8880cc331bfadc73ea91e160ca689da0.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5kyafgj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_b0bed091b05e84bbf2e82776565118b5.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5kyafgj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u5kyafgj30zz0grad5_hu527db2b14071a3bcd7a4a2435809673c_111731_8880cc331bfadc73ea91e160ca689da0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;354&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      DNS通用寻址方案
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这里有一个关键点：Kubernetes的服务注册是以基于Service或者说基于应用(app name)，而我们的客户端代码是基于接口的。因此，在 Virtual Host 进行路由匹配时，是不能通过域名匹配的。当然，这里理论上还有一个思路，就是将接口注册为Kubernetes Service。但是，还记得要支持接口特殊字符的需求吗？带点号的接口名，Kubernetes是不能接受它作为Service Name的，直接堵死了将接口名注册到Kubernetes Service的道路。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio中注册的服务名称&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio中注册的服务名称&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5v7kktj30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_3c393d91872ce033ce82ff89856df931.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5v7kktj30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_dee3ceef5fbb4e0bbcdde55b76f31375.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u5v7kktj30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u5v7kktj30rd0ldgot_hu4204cb8ce9eade41ae09467315de1374_118475_3c393d91872ce033ce82ff89856df931.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;593&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio中注册的服务名称
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这样，我们就只有一条路可以走了：效仿Istio的做法，通过 ClusterIP 匹配！&lt;/p&gt;
+&lt;p&gt;而要将接口名（如”com.alipay.demo.interface-1”）和 ClusterIP 关联，最简单直接的方式就是&lt;strong&gt;打通DNS&lt;/strong&gt; ：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-sidecar注册dns名称&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Sidecar注册DNS名称&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6cxesmj31fn0ffgqm_hu2a370b8e2f63a851e7635b968500b823_178297_ff226092a343f5e1d15c157a628c8791.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6cxesmj31fn0ffgqm_hu2a370b8e2f63a851e7635b968500b823_178297_fa17f8ec3f32ceaf7edd19e2c087bc24.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6cxesmj31fn0ffgqm_hu2a370b8e2f63a851e7635b968500b823_178297_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u6cxesmj31fn0ffgqm_hu2a370b8e2f63a851e7635b968500b823_178297_ff226092a343f5e1d15c157a628c8791.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;227&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Sidecar注册DNS名称
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;只需要在DNS记录中，增加接口到 ClusterIP 的映射，然后就可以完全延续Istio的标准做法！其他的步骤，如域名解析到ClusterIP，iptables拦截并传递ClusterIP，sidecar读取ClusterIP并匹配路由，都完全可以重用原有方案。&lt;/p&gt;
+&lt;h3 id=&#34;具体实现方案&#34;&gt;具体实现方案&lt;/h3&gt;
+&lt;p&gt;实现时，我们选择了使用 CoreDNS 作为Kubernetes的DNS解决方案，然后通过 Service Controller 操作 CoreDNS 的记录来实现DNS解析。&lt;/p&gt;
+&lt;p&gt;为了收集到SOA应用的接口信息，我们还提供了一个 Register Agent 给 Service Controller 收集信息。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-通过coredns注册接口名称&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;通过CoreDNS注册接口名称&#34; srcset=&#34;
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6rzjygj30lb0dc75f_hu02fbabbc25a786738523a9af5785edaf_44911_b065b37d9ee8ace1a8dde046f9494096.webp 400w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6rzjygj30lb0dc75f_hu02fbabbc25a786738523a9af5785edaf_44911_538c25f579d1c99644059aa4bcfc4baa.webp 760w,
+               /blog/x-protocol-common-address-solution/006tNbRwly1fw0u6rzjygj30lb0dc75f_hu02fbabbc25a786738523a9af5785edaf_44911_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/x-protocol-common-address-solution/006tNbRwly1fw0u6rzjygj30lb0dc75f_hu02fbabbc25a786738523a9af5785edaf_44911_b065b37d9ee8ace1a8dde046f9494096.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;476&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      通过CoreDNS注册接口名称
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;详细的实现方案，不在本文中重复讲述，请参阅我们之前的分享文章 &lt;a href=&#34;https://mp.weixin.qq.com/s?__biz=MzUzMzU5Mjc1Nw==&amp;amp;mid=2247484175&amp;amp;idx=1&amp;amp;sn=5cb26b1afe615ac7e06b2ccbee6235b3&amp;amp;chksm=faa0ecd5cdd765c3f285bcb3b23f4f1f3e27f6e99021ad4659480ccc47f9bf25a05107f4fee2&amp;amp;mpshare=1&amp;amp;scene=1&amp;amp;srcid=0828t5isWXmyeWhTeoAoeogw&amp;amp;pass_ticket=DqnjSkiuBZW9Oe68Fjiq%2Bqa6fFCyysQTR7Qgd8%2BX9FfooybAg7NXVAQdLmfG6gRX#rd&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SOFAMesh 的通用协议扩展&lt;/a&gt; 中的DNS寻址方案一节。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：暂时修改 CoreDNS 记录的方式是直接修改 CoreDNS 的底层数据，不够优雅。未来将修改为通过 CoreDNS 的 Dynamic updates API 接口进行，不过 CoreDNS 的这个API还在开发中，需要等待完成。详情见&lt;a href=&#34;https://github.com/coredns/coredns/pull/1822&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt; 。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;单进程多接口问题的解决&#34;&gt;单进程多接口问题的解决&lt;/h3&gt;
+&lt;p&gt;上面的解决方案，在解决通过接口实现访问的同时，也将”单进程多接口”的问题一起解决了：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;原SOA应用上Kubernetes时，可以注册为标准的Kubernetes Service，获取ClusterIP。此时使用应用名注册，和接口无关。&lt;/li&gt;
+&lt;li&gt;通过操作 CoreDNS，我们将该SOA应用的各个接口都添加为 DNS 记录，指向该应用的ClusterIP&lt;/li&gt;
+&lt;li&gt;当客户端代码使用不同的接口名访问时，DNS解析出来的都是同一个ClusterIP，后续步骤就和接口名无关了&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;欠缺微服务改造带来的限制&#34;&gt;欠缺微服务改造带来的限制&lt;/h3&gt;
+&lt;p&gt;需要特别指出的是，DNS通用寻址方案虽然可以解决使用接口名访问和支持单进程多接口的问题，但是这种方案只是完成了“寻址”，也就是打通端到端的访问通道。由于应用没有进行微服务改造，部署上是依然一个应用（体现为一个进程，在Kubernetes上体现为一个Service）中包含多个接口，本质上：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;服务注册依然是以应用名为基础，对应的Kubernetes service和service上的label也是应用级别&lt;/li&gt;
+&lt;li&gt;因此提供的服务治理功能，也是以Kubernetes的Service为基本单位，包括灰度，蓝绿，版本拆分等所有的Version Based Routing功能&lt;/li&gt;
+&lt;li&gt;这意味着，只能进行&lt;strong&gt;应用级别&lt;/strong&gt;的服务治理，而不能继续细分到&lt;strong&gt;接口级别&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这个限制来源于应用没有进行微服务改造，没有按照接口将应用拆分为多个独立的微服务，因此无法得到更小的服务治理粒度。这也就是我们前面说的“先上车后补票”的含义：在微服务改造前，先获得Service Mesh的服务治理的绝大部分功能，再慢慢进行微服务改造。&lt;/p&gt;
+&lt;h2 id=&#34;dns通用寻址方案-1&#34;&gt;DNS通用寻址方案&lt;/h2&gt;
+&lt;p&gt;我们将这个方案称为”DNS通用寻址方案”，是因为这个方案真的非常的通用，体现在以下几个方面：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;对使用者来说，通过域名和DNS解析的方式来访问，是非常简单直白而易于接受的，同时也是广泛使用的，适用于各种语言、平台、框架&lt;/li&gt;
+&lt;li&gt;这个方案延续了Kubernetes和Istio的做法，保持了一致的方式，对用户提供了相同的体验&lt;/li&gt;
+&lt;li&gt;这个寻址方案，不仅仅可以用于Dubbo、SOFA、HSF等RPC框架往Service Mesh的迁移，也可以适用于基于HTTP/REST协议的SOA应用，甚至最传统的web应用（例如tomcat下部署多个war包）迁移到Service Mesh&lt;/li&gt;
+&lt;li&gt;我们也在考虑在未来的Serverless项目中，将Function的寻址也统一到这套方案中，而无需要求每个Function都进行一次服务注册&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;概括的说，有了这套DNS通用寻址方案，不管需要寻址的实体是什么形态，只要它部署在Service Mesh上，满足以下条件：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;有正常注册为Kubernetes Service，分配有ClusterIP&lt;/li&gt;
+&lt;li&gt;为实体（或者更细分的子实体）分配域名或子域名，然后添加到DNS，解析到ClusterIP&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;那么我们的DNS通用寻址方案，就可以工作，从而将请求正确的转发到目的地。而在此基础上，Service Mesh 所有的强大功能都可以为这些实体所用，实现我们前面的目标：在不修改代码不做微服务改造的情况下，也能提前受益于Service Mesh带来的强大服务治理功能。&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>
