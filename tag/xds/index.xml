@@ -1,0 +1,803 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>xds | 云原生社区</title>
+    <link>https://cloudnative.to/tag/xds/</link>
+      <atom:link href="https://cloudnative.to/tag/xds/index.xml" rel="self" type="application/rss+xml" />
+    <description>xds</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Thu, 17 Jan 2019 20:16:18 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/media/sharing.png</url>
+      <title>xds</title>
+      <link>https://cloudnative.to/tag/xds/</link>
+    </image>
+    
+    <item>
+      <title>Service Mesh——后 Kubernetes 时代的微服务</title>
+      <link>https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/</link>
+      <pubDate>Thu, 17 Jan 2019 20:16:18 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/</guid>
+      <description>&lt;p&gt;这不是一篇教程，本文试图带您梳理清楚 Kubernetes、Envoy（xDS 协议）以及 Istio Service Mesh 之间的关系及内在联系。本文介绍了 Kubernetes 中的负载均衡方式，Envoy 的 xDS 协议对于 Service Mesh 的意义以及为什么说有了 Kubernetes 还需要 Istio。&lt;/p&gt;
+&lt;p&gt;Envoy 对于 Service Mesh 或者说  Cloud Native 最大的贡献就是定义了 xDS，Envoy 虽然本质上是一个 proxy，但是它的配置协议被众多开源软件所支持，如 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;、&lt;a href=&#34;https://linkerd.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt;、&lt;a href=&#34;https://aws.amazon.com/app-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;AWS App Mesh&lt;/a&gt;、&lt;a href=&#34;https://github.com/alipay/sofa-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SOFAMesh&lt;/a&gt; 等。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;关于本文标题&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;2018年9月1日，&lt;a href=&#34;https://twitter.com/bibryam&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bilgin Ibryam&lt;/a&gt; 在 InfoQ 发表了一篇文章 &lt;a href=&#34;https://www.infoq.com/articles/microservices-post-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microservices in a Post-Kubernetes Era&lt;/a&gt;，中文版见&lt;a href=&#34;https://www.infoq.cn/article/microservices-post-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;后 Kubernetes 时代的微服务&lt;/a&gt;（译文有些错误，仅供参考）。本文标题中虽然没有明确指明”后 Kubernetes 时代的微服务“是什么，但是从文中可以看出作者的观点是：在后 Kubernetes 时代，服务网格（Service Mesh）技术已完全取代了使用软件库实现网络运维（例如 Hystrix 断路器）的方式。本文索性就借用该标题。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;本文中包含以下内容&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;说明 kube-proxy 的作用。&lt;/li&gt;
+&lt;li&gt;Kubernetes 在微服务管理上的局限性。&lt;/li&gt;
+&lt;li&gt;介绍下 Istio Service Mesh 的功能。&lt;/li&gt;
+&lt;li&gt;介绍下 xDS 包含哪些内容。&lt;/li&gt;
+&lt;li&gt;比较了 Kubernetes、Envoy 和 Istio Service Mesh 中的一些概念。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;本文观点&#34;&gt;本文观点&lt;/h2&gt;
+&lt;p&gt;如果你没有精力阅读下文的所有内容，那么可以先阅读看下下面列出的本文中的一些主要观点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 的本质是应用的生命周期管理，具体说是部署和管理（扩缩容、自动恢复、发布）。&lt;/li&gt;
+&lt;li&gt;Kubernetes 为微服务提供了可扩展、高弹性的部署和管理平台。&lt;/li&gt;
+&lt;li&gt;Service Mesh 的基础是透明代理，通过 sidecar proxy 拦截到微服务间流量后再通过控制平面配置管理微服务的行为。&lt;/li&gt;
+&lt;li&gt;Service Mesh 将流量管理从 Kubernetes 中解耦，Service Mesh 内部的流量无需 &lt;code&gt;kube-proxy&lt;/code&gt; 组件的支持，通过为更接近微服务应用层的抽象，管理服务间的流量、安全性和可观察性。&lt;/li&gt;
+&lt;li&gt;Envoy xDS 定义了 Service Mesh 配置的协议标准。&lt;/li&gt;
+&lt;li&gt;Service Mesh 是对 Kubernetes 中的 service 更上层的抽象，它的下一步是 serverless。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;适用人群&#34;&gt;适用人群&lt;/h2&gt;
+&lt;p&gt;本文假定您已经对 &lt;a href=&#34;https://kubernetes.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt; 有比较全面的了解，同时还使用过 &lt;a href=&#34;https://istio.io/zh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; service mesh，但是对于 Kubernetes、Envoy 及 Istio 之间的关系不甚了解，及 Istio 如何使用 xDS 协议控制所有的 Sidecar 有浓厚的兴趣，那么推荐您继续阅读。&lt;/p&gt;
+&lt;h2 id=&#34;阅读本文之前&#34;&gt;阅读本文之前&lt;/h2&gt;
+&lt;p&gt;推荐大家在阅读本文之前希望您对微服务、容器和 Kubernetes 有一定认识，如果您已经阅读过以下几篇文章将对您理解本文更有帮助，本文中也引用过了下面文章中的部分观点。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;深入解读 Service Mesh 背后的技术细节 by 刘超&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio流量管理实现机制深度解析 by 赵化冰&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://skyao.io/post/201804-servicemesh-architecture-introspection/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh架构反思：数据平面和控制平面的界线该如何划定？by 敖小剑&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持 by 宋净超&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/blog/istio-service-mesh-source-code-pilot-agent-deepin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh 深度学习系列——Istio源码分析之pilot-agent模块分析 by 丁轶群&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;为什么走到这一步&#34;&gt;为什么走到这一步&lt;/h2&gt;
+&lt;p&gt;使用 Service Mesh 并不是说与 Kubernetes 决裂，而是水到渠成的事情。Kubernetes 的本质是通过声明式配置对应用进行生命周期管理，而 Service Mesh 的本质是应用间的流量和安全性管理。假如你已经使用 Kubernetes 构建了稳定的微服务平台，那么如何设置服务间调用的负载均衡和流量控制？&lt;/p&gt;
+&lt;h2 id=&#34;在阅读本文前先问自己几个问题&#34;&gt;在阅读本文前先问自己几个问题&lt;/h2&gt;
+&lt;p&gt;我想听说过 Service Mesh 并试用过 &lt;a href=&#34;https://istio.io/zh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 的人可能都会有以下几个疑问：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;为什么 Istio 一定要绑定 Kubernetes 呢？&lt;/li&gt;
+&lt;li&gt;Kubernetes 和 Service Mesh 分别在云原生中扮演什么角色？&lt;/li&gt;
+&lt;li&gt;Istio 扩展了 Kubernetes 的哪些方面？解决了哪些问题？&lt;/li&gt;
+&lt;li&gt;Kubernetes、Envoy（xDS 协议）与 Istio 之间又是什么关系？&lt;/li&gt;
+&lt;li&gt;到底该不该上 Service Mesh？&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;为什么写这篇文章&#34;&gt;为什么写这篇文章&lt;/h2&gt;
+&lt;p&gt;从 &lt;a href=&#34;http://www.servicemesher.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceMesher 社区&lt;/a&gt;的反馈来看，很多初次接触 Istio 和 Service Mesh 的同学，跟着那个 &lt;a href=&#34;https://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官方文档&lt;/a&gt;可以迅速的搭建和试用 Istio 的各种功能，了解 Service Mesh 能为你做什么，但用户所有的操作都仅是在控制平面完成的，至于 Istio 如何操作数据平面，即每个 Sidecar proxy 的呢？&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/appendix/kubernetes-1.13-changelog.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 1.13&lt;/a&gt; 如期发布了，Kubernetes 依然按照四个月一个版本的速度迭代着，但是我们能看到的重大革新越来越少了，已经过了技术采纳的初级阶段，正在大规模落地，关于 Kubernetes 的书籍、演讲已经扎堆，我不会过多得讲到 Kubernetes。本文不一定能够回答以上所有问题，本文仅为我个人理解，抛砖引玉。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意：这篇文章中涉及大量的数据平面的细节。&lt;/strong&gt;&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes-vs-service-mesh&#34;&gt;Kubernetes vs Service Mesh&lt;/h2&gt;
+&lt;p&gt;下图展示的是 Kubernetes 与 Service Mesh 中的的服务访问关系，本文仅针对 sidecar per-pod 模式，详情请参考&lt;a href=&#34;https://jimmysong.io/istio-handbook/concepts/service-mesh-patterns.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格的实现模式&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kubernetes-vs-service-mesh&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;kubernetes vs service mesh&#34; srcset=&#34;
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz6c7pj4sqj31hk0rejuz_hu94a04d331489fa6ba380ce48efad1a6e_158940_08bad6d3477deeb97375e6b18ccbd513.webp 400w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz6c7pj4sqj31hk0rejuz_hu94a04d331489fa6ba380ce48efad1a6e_158940_0129c64181f62e3333d962b7b327ecbc.webp 760w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz6c7pj4sqj31hk0rejuz_hu94a04d331489fa6ba380ce48efad1a6e_158940_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz6c7pj4sqj31hk0rejuz_hu94a04d331489fa6ba380ce48efad1a6e_158940_08bad6d3477deeb97375e6b18ccbd513.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;389&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      kubernetes vs service mesh
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Kubernetes 集群的每个节点都部署了一个 &lt;code&gt;kube-proxy&lt;/code&gt; 组件，该组件会与 Kubernetes API Server 通信，获取集群中的 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;service&lt;/a&gt; 信息，然后设置 iptables 规则，直接将对某个 service 的请求发送到对应的 Endpoint（属于同一组 service 的 pod）上。&lt;/p&gt;
+&lt;p&gt;Istio Service Mesh 中沿用了 Kubernetes 中的 service 做服务注册，通过 Control Plane 来生成数据平面的配置（使用 CRD 声明，保存在 etcd 中），数据平面的&lt;strong&gt;透明代理&lt;/strong&gt;（transparent proxy）以 sidecar 容器的形式部署在每个应用服务的 pod 中，这些 proxy 都需要请求 Control Plane 来同步代理配置，之所以说是透明代理，是因为应用程序容器完全无感知代理的存在，该过程 kube-proxy 组件一样需要拦截流量，只不过 &lt;code&gt;kube-proxy&lt;/code&gt; 拦截的是进出 Kubernetes 节点的流量，而 sidecar proxy 拦截的是进出该 Pod 的流量，详见&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-routing-of-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy Sidecar 代理的路由转发&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Service Mesh 的劣势&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;因为 Kubernetes 每个节点上都会运行众多的 Pod，将原先 &lt;code&gt;kube-proxy&lt;/code&gt; 方式的路由转发功能置于每个 pod 中，这将导致大量的配置分发、同步和最终一致性问题。为了细粒度的机型流量管理，必将代理一系列新的抽象，增加了用户的心智负担，但随着技术的普及慢慢将得到缓解。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Service Mesh 的优势&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;kube-proxy&lt;/code&gt; 的设置都是全局生效的，无法对每个服务做细粒度的控制，而 Service Mesh 通过 sidecar proxy 的方式将 Kubernetes 中对流量的控制从 service 一层抽离出来，可以做更多的扩展。&lt;/p&gt;
+&lt;h2 id=&#34;kube-proxy-组件&#34;&gt;kube-proxy 组件&lt;/h2&gt;
+&lt;p&gt;在 Kubernetes 集群中，每个 Node 运行一个 &lt;code&gt;kube-proxy&lt;/code&gt; 进程。&lt;code&gt;kube-proxy&lt;/code&gt; 负责为 &lt;code&gt;Service&lt;/code&gt; 实现了一种 VIP（虚拟 IP）的形式。 在 Kubernetes v1.0 版本，代理完全在 userspace 实现。Kubernetes v1.1 版本新增了 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html#iptables-%E4%BB%A3%E7%90%86%E6%A8%A1%E5%BC%8F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;iptables 代理模式&lt;/a&gt;，但并不是默认的运行模式。从 Kubernetes v1.2 起，默认使用 iptables 代理。在 Kubernetes v1.8.0-beta.0 中，添加了 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html#ipvs-%E4%BB%A3%E7%90%86%E6%A8%A1%E5%BC%8F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ipvs 代理模式&lt;/a&gt;。关于 kube-proxy 组件的更多介绍请参考 &lt;a href=&#34;https://cizixs.com/2017/03/30/kubernetes-introduction-service-and-kube-proxy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubernetes 简介：service 和 kube-proxy 原理&lt;/a&gt; 和 &lt;a href=&#34;https://jishu.io/kubernetes/ipvs-loadbalancer-for-kubernetes/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 IPVS 实现 Kubernetes 入口流量负载均衡&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;kube-proxy-的缺陷&#34;&gt;kube-proxy 的缺陷&lt;/h3&gt;
+&lt;p&gt;在上面的链接中作者指出了 &lt;a href=&#34;https://cizixs.com/2017/03/30/kubernetes-introduction-service-and-kube-proxy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kube-proxy 的不足之处&lt;/a&gt;：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;首先，如果转发的 pod 不能正常提供服务，它不会自动尝试另一个 pod，当然这个可以通过 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/guide/configure-liveness-readiness-probes.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;liveness probes&lt;/code&gt;&lt;/a&gt; 来解决。每个 pod 都有一个健康检查的机制，当有 pod 健康状况有问题时，kube-proxy 会删除对应的转发规则。另外，&lt;code&gt;nodePort&lt;/code&gt; 类型的服务也无法添加 TLS 或者更复杂的报文路由机制。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;Kube-proxy 实现了流量在 Kubernetes service 多个 pod 实例间的负载均衡，但是如何对这些 service 间的流量做细粒度的控制，比如按照百分比划分流量到不同的应用版本（这些应用都属于同一个  service，但位于不同的 deployment 上），做金丝雀发布（灰度发布）和蓝绿发布？Kubernetes 社区给出了 &lt;a href=&#34;https://kubernetes.io/docs/concepts/cluster-administration/manage-deployment/#canary-deployments&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Deployment 做金丝雀发布的方法&lt;/a&gt;，该方法本质上就是通过修改 pod 的 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/label.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;label&lt;/a&gt; 来将不同的 pod 划归到 Deployment 的 Service 上。&lt;/p&gt;
+&lt;h2 id=&#34;kubernetes-ingress-vs-istio-gateway&#34;&gt;Kubernetes Ingress vs Istio Gateway&lt;/h2&gt;
+&lt;p&gt;Kubernetes 中的 Ingress 资源对象跟 Istio Service Mesh 中的 Gateway 的功能类似，都是负责集群南北流量（从集群外部进入集群内部的流量）。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;kube-proxy&lt;/code&gt; 只能路由 Kubernetes 集群内部的流量，而我们知道 Kubernetes 集群的 Pod 位于 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/cni.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNI&lt;/a&gt; 创建的外网络中，集群外部是无法直接与其通信的，因此 Kubernetes 中创建了 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/ingress.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress&lt;/a&gt; 这个资源对象，它由位于 Kubernetes &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/practice/edge-node-configuration.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;边缘节点&lt;/a&gt;（这样的节点可以是很多个也可以是一组）的 Ingress controller 驱动，负责管理&lt;strong&gt;南北向流量&lt;/strong&gt;（从集群外部进入 Kubernetes 集群的流量），Ingress 必须对接各种个 Ingress Controller 才能使用，比如 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;nginx ingress controller&lt;/a&gt;、&lt;a href=&#34;https://traefik.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;traefik&lt;/a&gt;。Ingress 只适用于 HTTP 流量，使用方式也很简单，只能对 service、port、HTTP 路径等有限字段匹配来路由流量，这导致它无法路由如 MySQL、redis 和各种私有 RPC 等 TCP 流量。要想直接路由南北向的流量，只能使用 Service 的 LoadBalancer 或 NodePort，前者需要云厂商支持而且可能需要付费，后者需要进行额外的端口管理。有些 Ingress controller 支持暴露 TCP 和 UDP 服务，但是只能使用 Service 来暴露，Ingress 本身是不支持的，例如 &lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/user-guide/exposing-tcp-udp-services/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;nginx ingress controller&lt;/a&gt;，服务的暴露的端口是通过创建 ConfigMap 的方式来配置的。&lt;/p&gt;
+&lt;p&gt;Istio &lt;code&gt;Gateway&lt;/code&gt; 描述的负载均衡器用于承载进出网格边缘的连接。该规范中描述了一系列开放端口和这些端口所使用的协议、负载均衡的 SNI 配置等内容。Gateway 是一种 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/crd.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CRD 扩展&lt;/a&gt;，它同时复用了 Envoy proxy 的能力，详细配置请参考 &lt;a href=&#34;https://istio.io/zh/docs/reference/config/istio.networking.v1alpha3/#gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 官网&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;xds-协议&#34;&gt;xDS 协议&lt;/h2&gt;
+&lt;p&gt;下面这张图大家在了解 Service Mesh 的时候可能都看到过，每个方块代表一个服务的示例，例如 Kubernetes 中的一个 Pod（其中包含了 sidecar proxy），xDS 协议控制了 Istio Service Mesh 中所有流量的具体行为，即将下图中的方块链接到了一起。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-service-mesh-示意图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Service Mesh 示意图&#34; srcset=&#34;
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73xstibij30b409cmyh_hu7ddb908f311bc80c4353d7daf45cc6b0_37251_4def841f108d114c10d3063cacb49a0d.webp 400w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73xstibij30b409cmyh_hu7ddb908f311bc80c4353d7daf45cc6b0_37251_53aef831572d3732c92ded2ff085b2de.webp 760w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73xstibij30b409cmyh_hu7ddb908f311bc80c4353d7daf45cc6b0_37251_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73xstibij30b409cmyh_hu7ddb908f311bc80c4353d7daf45cc6b0_37251_4def841f108d114c10d3063cacb49a0d.webp&#34;
+               width=&#34;400&#34;
+               height=&#34;336&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Service Mesh 示意图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;xDS 协议是由 &lt;a href=&#34;https://envoyproxy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 提出的，在 Envoy v2 版本 API 中最原始的 xDS 协议只指 CDS、EDS、LDS 和 RDS。&lt;/p&gt;
+&lt;p&gt;下面我们以两个 service，每个 service 都有两个实例的例子来看下 Envoy 的 xDS 协议。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-xds-协议&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy xDS 协议&#34; srcset=&#34;
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz7auvvrjnj30s80j8gn6_hudab8cb0c695f2e54e70ad3d827641cd8_82886_960f5e94a3d983fc824e0bf0173fbaef.webp 400w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz7auvvrjnj30s80j8gn6_hudab8cb0c695f2e54e70ad3d827641cd8_82886_791e8f3240e29cb4a799e84ade73b124.webp 760w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz7auvvrjnj30s80j8gn6_hudab8cb0c695f2e54e70ad3d827641cd8_82886_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz7auvvrjnj30s80j8gn6_hudab8cb0c695f2e54e70ad3d827641cd8_82886_960f5e94a3d983fc824e0bf0173fbaef.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;518&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy xDS 协议
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上图中的箭头不是流量在进入 Enovy Proxy 后的路径或路由，而是想象的一种 Envoy 中 xDS 接口处理的顺序并非实际顺序，其实 xDS 之间也是有交叉引用的。&lt;/p&gt;
+&lt;p&gt;Envoy 通过查询文件或管理服务器来动态发现资源。概括地讲，对应的发现服务及其相应的 API 被称作 &lt;em&gt;xDS&lt;/em&gt;。Envoy 通过**订阅（&lt;em&gt;subscription&lt;/em&gt;）**方式来获取资源，订阅方式有以下三种：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;文件订阅&lt;/strong&gt;：监控指定路径下的文件，发现动态资源的最简单方式就是将其保存于文件，并将路径配置在 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/core/config_source.proto#core-configsource&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ConfigSource&lt;/a&gt; 中的 &lt;code&gt;path&lt;/code&gt; 参数中。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;gRPC 流式订阅&lt;/strong&gt;：每个 xDS API 可以单独配置 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/core/config_source.proto#core-apiconfigsource&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;ApiConfigSource&lt;/code&gt;&lt;/a&gt;，指向对应的上游管理服务器的集群地址。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;轮询 REST-JSON 轮询订阅&lt;/strong&gt;：单个 xDS API 可对 REST 端点进行的同步（长）轮询。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以上的 xDS 订阅方式详情请参考 &lt;a href=&#34;https://jimmysong.io/istio-handbook/concepts/envoy-xds-protocol.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议解析&lt;/a&gt;。Istio  使用的 gRPC 流式订阅的方式配置所有的数据平面的 sidecar proxy。&lt;/p&gt;
+&lt;p&gt;关于 xDS 协议的详细分解请参考丁轶群博士的这几篇文章：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/blog/istio-service-mesh-source-code-pilot-agent-deepin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh深度学习系列part1—istio源码分析之pilot-agent模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh深度学习系列part2—istio源码分析之pilot-discovery模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh深度学习系列part3—istio源码分析之pilot-discovery模块分析（续）&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;文章中介绍了 Istio pilot 的总体架构、Envoy 配置的生成、pilot-discovery 模块的功能，以及 xDS 协议中的 CDS、EDS 及 ADS，关于 ADS 详情请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#aggregated-discovery-service&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Enovy 官方文档&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;xds-协议要点&#34;&gt;xDS 协议要点&lt;/h3&gt;
+&lt;p&gt;最后总结下关于 xDS 协议的要点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;CDS、EDS、LDS、RDS 是最基础的 xDS 协议，它们可以分别独立更新的。&lt;/li&gt;
+&lt;li&gt;所有的发现服务（Discovery Service）可以连接不同的 Management Server，也就是说管理 xDS 的服务器可以是多个。&lt;/li&gt;
+&lt;li&gt;Envoy 在原始 xDS 协议的基础上进行了一些列扩充，增加了 SDS（秘钥发现服务）、ADS（聚合发现服务）、HDS（健康发现服务）、MS（Metric 服务）、RLS（速率限制服务）等 API。&lt;/li&gt;
+&lt;li&gt;为了保证数据一致性，若直接使用 xDS 原始 API 的话，需要保证这样的顺序更新：CDS &amp;ndash;&amp;gt; EDS &amp;ndash;&amp;gt; LDS &amp;ndash;&amp;gt; RDS，这是遵循电子工程中的&lt;strong&gt;先合后断&lt;/strong&gt;（Make-Before-Break）原则，即在断开原来的连接之前先建立好新的连接，应用在路由里就是为了防止设置了新的路由规则的时候却无法发现上游集群而导致流量被丢弃的情况，类似于电路里的断路。&lt;/li&gt;
+&lt;li&gt;CDS 设置 Service Mesh 中有哪些服务。&lt;/li&gt;
+&lt;li&gt;EDS 设置哪些实例（Endpoint）属于这些服务（Cluster）。&lt;/li&gt;
+&lt;li&gt;LDS 设置实例上监听的端口以配置路由。&lt;/li&gt;
+&lt;li&gt;RDS 最终服务间的路由关系，应该保证最后更新 RDS。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;envoy&#34;&gt;Envoy&lt;/h2&gt;
+&lt;p&gt;Envoy 是 Istio Service Mesh 中默认的 Sidecar，Istio 在 Enovy 的基础上按照 Envoy 的 xDS 协议扩展了其控制平面，在讲到 Envoy xDS 协议之前还需要我们先熟悉下 Envoy 的基本术语。下面列举了 Envoy 里的基本术语及其数据结构解析，关于 Envoy 的详细介绍请参考 &lt;a href=&#34;http://www.servicemesher.com/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 官方文档&lt;/a&gt;，至于 Envoy 在 Service Mesh（不仅限于 Istio） 中是如何作为转发代理工作的请参考网易云刘超的这篇&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;深入解读 Service Mesh 背后的技术细节 &lt;/a&gt;以及&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持&lt;/a&gt;，本文引用其中的一些观点，详细内容不再赘述。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-proxy-架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy proxy 架构图&#34; srcset=&#34;
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz69bsaqk7j314k0tsq90_hu4ac7d6a928cb91133827f2834ea3253f_281144_2685505ab3790430bad7cfb82d0f24ad.webp 400w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz69bsaqk7j314k0tsq90_hu4ac7d6a928cb91133827f2834ea3253f_281144_1765c6973fb3851773316ccd4a98641a.webp 760w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz69bsaqk7j314k0tsq90_hu4ac7d6a928cb91133827f2834ea3253f_281144_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz69bsaqk7j314k0tsq90_hu4ac7d6a928cb91133827f2834ea3253f_281144_2685505ab3790430bad7cfb82d0f24ad.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;558&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy proxy 架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;基本术语&#34;&gt;基本术语&lt;/h3&gt;
+&lt;p&gt;下面是您应该了解的 Enovy 里的基本术语：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Downstream（下游）&lt;/strong&gt;：下游主机连接到 Envoy，发送请求并接收响应，即发送请求的主机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Upstream（上游）&lt;/strong&gt;：上游主机接收来自 Envoy 的连接和请求，并返回响应，即接受请求的主机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Listener（监听器）&lt;/strong&gt;：监听器是命名网地址（例如，端口、unix domain socket 等)，下游客户端可以连接这些监听器。Envoy 暴露一个或者多个监听器给下游主机连接。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cluster（集群）&lt;/strong&gt;：集群是指 Envoy 连接的一组逻辑相同的上游主机。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/service_discovery.html#arch-overview-service-discovery&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务发现&lt;/a&gt;来发现集群的成员。可以选择通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/health_checking.html#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;主动健康检查&lt;/a&gt;来确定集群成员的健康状态。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/load_balancing.html#arch-overview-load-balancing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;负载均衡策略&lt;/a&gt;决定将请求路由到集群的哪个成员。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Envoy 中可以设置多个 Listener，每个 Listener 中又可以设置 filter chain（过滤器链表），而且过滤器是可扩展的，这样就可以更方便我们操作流量的行为，例如设置加密、私有 RPC 等。&lt;/p&gt;
+&lt;p&gt;xDS 协议是由 Envoy 提出的，现在是 Istio 中默认的 sidecar proxy，但只要实现 xDS 协议理论上都是可以作为 Istio 中的 sidecar proxy 的，例如蚂蚁金服开源的 &lt;a href=&#34;https://github.com/alipay/sofa-mosn&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SOFAMosn&lt;/a&gt; 和 nginx 开源的 &lt;a href=&#34;https://github.com/nginxinc/nginmesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;nginmesh&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;istio-service-mesh&#34;&gt;Istio Service Mesh&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-service-mesh-架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio service mesh 架构图&#34; srcset=&#34;
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73sprcdlj31580u046j_hu9dd42fd0bcfe1caaa7989e71a7959d1a_186746_e3ddffccd2104724f4c58d946b534a00.webp 400w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73sprcdlj31580u046j_hu9dd42fd0bcfe1caaa7989e71a7959d1a_186746_39174edcb2c18f8857809748ba06c9f1.webp 760w,
+               /blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73sprcdlj31580u046j_hu9dd42fd0bcfe1caaa7989e71a7959d1a_186746_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-the-microservices-in-post-kubernetes-era/006tNc79ly1fz73sprcdlj31580u046j_hu9dd42fd0bcfe1caaa7989e71a7959d1a_186746_e3ddffccd2104724f4c58d946b534a00.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;553&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio service mesh 架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio 是一个功能十分丰富的 Service Mesh，它包括如下功能：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;流量管理：这是 Istio 的最基本的功能。&lt;/li&gt;
+&lt;li&gt;策略控制：通过 Mixer 组件和各种适配器来实现，实现访问控制系统、遥测捕获、配额管理和计费等。&lt;/li&gt;
+&lt;li&gt;可观测性：通过 Mixer 来实现。&lt;/li&gt;
+&lt;li&gt;安全认证：Citadel 组件做密钥和证书管理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;istio-中的流量管理&#34;&gt;Istio 中的流量管理&lt;/h3&gt;
+&lt;p&gt;Istio 中定义了如下的 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/custom-resource.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CRD&lt;/a&gt; 来帮助用户进行流量管理：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Gateway&lt;/strong&gt;：Gateway 描述了在网络边缘运行的负载均衡器，用于接收传入或传出的HTTP / TCP连接。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;VirtualService&lt;/strong&gt;：&lt;a href=&#34;https://istio.io/zh/docs/reference/config/istio.networking.v1alpha3/#virtualservice&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualService&lt;/a&gt; 实际上将 Kubernetes 服务连接到 Istio Gateway。它还可以执行更多操作，例如定义一组流量路由规则，以便在主机被寻址时应用。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;DestinationRule&lt;/strong&gt;：&lt;code&gt;DestinationRule&lt;/code&gt; 所定义的策略，决定了经过路由处理之后的流量的访问策略。简单的说就是定义流量如何路由。这些策略中可以定义负载均衡配置、连接池尺寸以及外部检测（用于在负载均衡池中对不健康主机进行识别和驱逐）配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;EnvoyFilter&lt;/strong&gt;：&lt;code&gt;EnvoyFilter&lt;/code&gt; 对象描述了针对代理服务的过滤器，这些过滤器可以定制由 Istio Pilot 生成的代理配置。这个配置初级用户一般很少用到。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ServiceEntry&lt;/strong&gt;：默认情况下 Istio Service Mesh 中的服务是无法发现 Mesh 外的服务的，&lt;code&gt;ServiceEntry&lt;/code&gt; 能够在 Istio 内部的服务注册表中加入额外的条目，从而让网格中自动发现的服务能够访问和路由到这些手工加入的服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;kubernetes-vs-envoy-xds-vs-istio&#34;&gt;Kubernetes vs Envoy xDS vs Istio&lt;/h2&gt;
+&lt;p&gt;在阅读完上文对 Kubernetes 的 &lt;code&gt;kube-proxy&lt;/code&gt; 组件、Envoy xDS 和 Istio 中流量管理的抽象概念之后，下面将带您仅就流量管理方面比较下三者对应的组件/协议（注意，三者不可以完全等同）。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Kubernetes&lt;/th&gt;
+&lt;th&gt;Envoy xDS&lt;/th&gt;
+&lt;th&gt;Istio Service Mesh&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Endpoint&lt;/td&gt;
+&lt;td&gt;Endpoint&lt;/td&gt;
+&lt;td&gt;-&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Service&lt;/td&gt;
+&lt;td&gt;Route&lt;/td&gt;
+&lt;td&gt;VirtualService&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;kube-proxy&lt;/td&gt;
+&lt;td&gt;Route&lt;/td&gt;
+&lt;td&gt;DestinationRule&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;kube-proxy&lt;/td&gt;
+&lt;td&gt;Listener&lt;/td&gt;
+&lt;td&gt;EnvoyFilter&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Ingress&lt;/td&gt;
+&lt;td&gt;Listener&lt;/td&gt;
+&lt;td&gt;Gateway&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Service&lt;/td&gt;
+&lt;td&gt;Cluster&lt;/td&gt;
+&lt;td&gt;ServiceEntry&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;如果说 Kubernetes 管理的对象是 Pod，那么 Service Mesh 中管理的对象就是一个个 Service，所以说使用 Kubernetes 管理微服务后再应用 Service Mesh 就是水到渠成了，如果连 Service 你也不像管了，那就用如 &lt;a href=&#34;https://github.com/knative/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;knative&lt;/a&gt; 这样的 serverless 平台，这就是后话了。&lt;/p&gt;
+&lt;p&gt;Envoy 的功能也不只是做流量转发，以上概念只不过是 Istio 在 Kubernetes 之上新增一层抽象层中的冰山一角，但因为流量管理是服务网格最基础也是最重要的功能，所以本文从这里开始，以后将给大家介绍更多关于服务网格的细节，请关注我的博客 &lt;a href=&#34;https://jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysong.io&lt;/a&gt; 和 &lt;a href=&#34;https://jimmysong.io/istio-handbook/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio-handbook&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/posts/istio-traffic-management-basic-concepts/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 流量管理的基本概念详解 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html#iptables-%E4%BB%A3%E7%90%86%E6%A8%A1%E5%BC%8F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes  kube-proxy 中的 iptables 代理模式 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html#ipvs-%E4%BB%A3%E7%90%86%E6%A8%A1%E5%BC%8F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes kube-proxy 中的 ipvs 代理模式 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/overview/v2_overview.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API 概览 - servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listeners/lds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务（LDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/http_conn_man/rds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务（RDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/cluster_manager/cds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务（CDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/concepts/service.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes service - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/istio-handbook/concepts/envoy-xds-protocol.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议解析 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;深入解读 Service Mesh 背后的技术细节 - cnblogs.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cizixs.com/2017/03/30/kubernetes-introduction-service-and-kube-proxy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubernetes 简介：service 和 kube-proxy 原理 - cizixs.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jishu.io/kubernetes/ipvs-loadbalancer-for-kubernetes/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 IPVS 实现 Kubernetes 入口流量负载均衡 - jishu.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 流量管理实现机制深度解析 - zhaohuabing.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/posts/the-enterprise-path-to-service-mesh-architectures/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;企业级服务网格架构之路解读 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://preliminary.istio.io/zh/help/ops/traffic-management/proxy-cmd/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;调试 Envoy 和 Pilot - istio.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio 的数据平面 Envoy Proxy 配置详解</title>
+      <link>https://cloudnative.to/blog/envoy-proxy-config-deep-dive/</link>
+      <pubDate>Mon, 07 Jan 2019 17:48:01 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/envoy-proxy-config-deep-dive/</guid>
+      <description>&lt;p&gt;Envoy 是 Istio Service Mesh 中默认的 Sidecar，Istio 在 Enovy 的基础上按照 Envoy 的 xDS 协议扩展了其控制平面，在讲到 Envoy xDS 协议之前还需要我们先熟悉下 Envoy 的基本术语。下面列举了 Envoy 里的基本术语及其数据结构解析，关于 Envoy 的详细介绍请参考 &lt;a href=&#34;http://www.servicemesher.com/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 官方文档&lt;/a&gt;，至于 Envoy 在 Service Mesh（不仅限于 Istio） 中是如何作为转发代理工作的请参考网易云刘超的这篇&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;深入解读 Service Mesh 背后的技术细节 &lt;/a&gt;以及&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持&lt;/a&gt;，本文引用其中的一些观点，详细内容不再赘述。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-proxy-架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy proxy 架构图&#34; srcset=&#34;
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy9qkff5nij314k0ts43z_hu62dc4574d0a100467b49527fcfcd18eb_259668_6bbd399f608ddfa14fc4b88dd41661e2.webp 400w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy9qkff5nij314k0ts43z_hu62dc4574d0a100467b49527fcfcd18eb_259668_298102c58aaaefec1cc38aa2f5d70d21.webp 760w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy9qkff5nij314k0ts43z_hu62dc4574d0a100467b49527fcfcd18eb_259668_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/envoy-proxy-config-deep-dive/006tNbRwly1fy9qkff5nij314k0ts43z_hu62dc4574d0a100467b49527fcfcd18eb_259668_6bbd399f608ddfa14fc4b88dd41661e2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;558&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy proxy 架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;基本术语&#34;&gt;基本术语&lt;/h3&gt;
+&lt;p&gt;下面是您应该了解的 Enovy 里的基本术语：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Downstream（下游）&lt;/strong&gt;：下游主机连接到 Envoy，发送请求并接收响应，即发送请求的主机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Upstream（上游）&lt;/strong&gt;：上游主机接收来自 Envoy 的连接和请求，并返回响应，即接受请求的主机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Listener（监听器）&lt;/strong&gt;：监听器是命名网地址（例如，端口、unix domain socket 等)，下游客户端可以连接这些监听器。Envoy 暴露一个或者多个监听器给下游主机连接。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cluster（集群）&lt;/strong&gt;：集群是指 Envoy 连接的一组逻辑相同的上游主机。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/service_discovery.html#arch-overview-service-discovery&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务发现&lt;/a&gt;来发现集群的成员。可以选择通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/health_checking.html#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;主动健康检查&lt;/a&gt;来确定集群成员的健康状态。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/load_balancing.html#arch-overview-load-balancing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;负载均衡策略&lt;/a&gt;决定将请求路由到集群的哪个成员。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;我将在本文的后半部分解释以上术语与 Kubernetes、Istio 中概念之间的联系。&lt;/p&gt;
+&lt;h2 id=&#34;关于-xds-的版本&#34;&gt;关于 xDS 的版本&lt;/h2&gt;
+&lt;p&gt;有一点需要大家注意，就是 Envoy 的 API 有 v1 和 v2 两个版本，从 Envoy 1.5.0 起 v2 API 就已经生产就绪了，为了能够让用户顺利的向 v2 版本的额 API 过度，Envoy 启动的时候设置了一个 &lt;code&gt;--v2-config-only&lt;/code&gt; 的标志，Enovy 不同版本对 v1/v2 API 的支持详情请参考 &lt;a href=&#34;https://groups.google.com/forum/#!topic/envoy-announce/Lb1QZcSclGQ&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v1 配置废弃时间表&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Envoy 的作者 Matt Klein 在 &lt;a href=&#34;http://www.servicemesher.com/blog/the-universal-data-plane-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh 中的通用数据平面 API 设计&lt;/a&gt;这篇文章中说明了 Envoy API v1 的历史及其缺点，还有 v2 的引入。v2 API 是 v1 的演进，而不是革命，它是 v1 功能的超集。&lt;/p&gt;
+&lt;p&gt;在 Istio 1.0 及以上版本中使用的是 &lt;strong&gt;Envoy 1.8.0-dev&lt;/strong&gt; 版本，其支持 v2 的 API，同时在 Envoy 作为 Sidecar proxy 启动的使用使用了例如下面的命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ /usr/local/bin/envoy -c /etc/istio/proxy/envoy-rev0.json --restart-epoch &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; --drain-time-s &lt;span class=&#34;m&#34;&gt;45&lt;/span&gt; --parent-shutdown-time-s &lt;span class=&#34;m&#34;&gt;60&lt;/span&gt; --service-cluster ratings --service-node sidecar~172.33.14.2~ratings-v1-8558d4458d-ld8x9.default~default.svc.cluster.local --max-obj-name-len &lt;span class=&#34;m&#34;&gt;189&lt;/span&gt; --allow-unknown-fields -l warn --v2-config-only
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面是都 Bookinfo 示例中的 rating pod 中的 sidecar 启动的分析，可以看到其中指定了 &lt;code&gt;--v2-config-only&lt;/code&gt;，表明 Istio 1.0+ 只支持 xDS v2 的 API。&lt;/p&gt;
+&lt;h2 id=&#34;istio-sidecar-proxy-配置&#34;&gt;Istio sidecar proxy 配置&lt;/h2&gt;
+&lt;p&gt;假如您使用 &lt;a href=&#34;https://github.com/rootsongjc/kubernetes-vagrant-centos-cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubernetes-vagrant-centos-cluster&lt;/a&gt; 部署了 Kubernetes 集群并开启了 &lt;a href=&#34;https://istio.io/zh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Service Mesh&lt;/a&gt;，再部署 &lt;a href=&#34;https://istio.io/zh/docs/examples/bookinfo/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bookinfo 示例&lt;/a&gt;，那么在 &lt;code&gt;default&lt;/code&gt; 命名空间下有一个名字类似于 &lt;code&gt;ratings-v1-7c9949d479-dwkr4&lt;/code&gt; 的 Pod，使用下面的命令查看该 Pod 的 Envoy sidecar 的全量配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n default &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; ratings-v1-7c9949d479-dwkr4 -c istio-proxy curl http://localhost:15000/config_dump &amp;gt; dump-rating.json
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;将 Envoy 的运行时配置 dump 出来之后你将看到一个长 6000 余行的配置文件。关于该配置文件的介绍请参考 &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/overview/v2_overview.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API 概览&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy 配置&#34; srcset=&#34;
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fyb74brsd5j30xg0lojvt_hubac2cfa4b31d1900fe1f2df343f004ba_156305_fab642d8bc76eaa2b02ac75adc59e54b.webp 400w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fyb74brsd5j30xg0lojvt_hubac2cfa4b31d1900fe1f2df343f004ba_156305_e0a77f6e6bcda3068e07e6652e37cbe2.webp 760w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fyb74brsd5j30xg0lojvt_hubac2cfa4b31d1900fe1f2df343f004ba_156305_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/envoy-proxy-config-deep-dive/006tNbRwly1fyb74brsd5j30xg0lojvt_hubac2cfa4b31d1900fe1f2df343f004ba_156305_fab642d8bc76eaa2b02ac75adc59e54b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;492&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy 配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio 会在为 Service Mesh 中的每个 Pod 注入 Sidecar 的时候同时为 Envoy 注入 Bootstrap 配置，其余的配置是通过 Pilot 下发的，注意整个数据平面即 Service Mesh 中的 Envoy 的动态配置应该是相同的。您也可以使用上面的命令检查其他 sidecar 的 Envoy 配置是否跟最上面的那个相同。&lt;/p&gt;
+&lt;p&gt;使用下面的命令检查 Service Mesh 中的所有有 Sidecar 注入的 Pod 中的 proxy 配置是否同步。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ istioctl proxy-status
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;PROXY                                                 CDS        LDS        EDS               RDS          PILOT                            VERSION
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;details-v1-876bf485f-sx7df.default                    SYNCED     SYNCED     SYNCED &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;100%&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;     SYNCED       istio-pilot-5bf6d97f79-6lz4x     1.0.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;a href=&#34;https://istio.io/zh/docs/reference/commands/istioctl/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istioctl&lt;/a&gt; 这个命令行工具就像 &lt;a href=&#34;https://jimmysong.io/kubernetes-handbook/guide/kubectl-cheatsheet.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubectl&lt;/a&gt; 一样有很多神器的魔法，通过它可以高效的管理 Istio 和 debug。&lt;/p&gt;
+&lt;h2 id=&#34;envoy-proxy-配置解析&#34;&gt;Envoy proxy 配置解析&lt;/h2&gt;
+&lt;p&gt;Istio envoy sidecar proxy 配置中包含以下四个部分。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;bootstrap&lt;/strong&gt;：Envoy proxy 启动时候加载的静态配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;listeners&lt;/strong&gt;：监听器配置，使用 LDS 下发。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;clusters&lt;/strong&gt;：集群配置，静态配置中包括 xds-grpc 和 zipkin 地址，动态配置使用  CDS 下发。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;routes&lt;/strong&gt;：路由配置，静态配置中包括了本地监听的服务的集群信息，其中引用了 cluster，动态配置使用 RDS 下发。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;每个部分中都包含静态配置与动态配置，其中 bootstrap 配置又是在集群启动的时候通过 sidecar 启动参数注入的，配置文件在 &lt;code&gt;/etc/istio/proxy/envoy-rev0.json&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;Enovy 的配置 dump 出来后的结构如下图所示。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy 配置&#34; srcset=&#34;
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2x2zk1hhj30ee0h9jtg_hu7e72cb9a3ce07438d91e7cc05b9cc873_62126_9e692dc5ba73ca1fc5f1e2a54d7abfff.webp 400w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2x2zk1hhj30ee0h9jtg_hu7e72cb9a3ce07438d91e7cc05b9cc873_62126_7bf077c1aab84d9d6576d6ccecc3883b.webp 760w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2x2zk1hhj30ee0h9jtg_hu7e72cb9a3ce07438d91e7cc05b9cc873_62126_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2x2zk1hhj30ee0h9jtg_hu7e72cb9a3ce07438d91e7cc05b9cc873_62126_9e692dc5ba73ca1fc5f1e2a54d7abfff.webp&#34;
+               width=&#34;518&#34;
+               height=&#34;621&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy 配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;由于 bootstrap 中的配置是来自 Envoy 启动时加载的静态文件，主要配置了节点信息、tracing、admin 和统计信息收集等信息，这不是本文的重点，大家可以自行研究。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-bootstrap-配置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;bootstrap 配置&#34; srcset=&#34;
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2xid761zj30c70ai0tj_hu5c1111625d088fdea5074bc5b53f610e_23745_92449bd0663424fa05348f0d884e0135.webp 400w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2xid761zj30c70ai0tj_hu5c1111625d088fdea5074bc5b53f610e_23745_fe033dc6fa72a1f8b41b441ffe980bfb.webp 760w,
+               /blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2xid761zj30c70ai0tj_hu5c1111625d088fdea5074bc5b53f610e_23745_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/envoy-proxy-config-deep-dive/006tNbRwly1fy2xid761zj30c70ai0tj_hu5c1111625d088fdea5074bc5b53f610e_23745_92449bd0663424fa05348f0d884e0135.webp&#34;
+               width=&#34;439&#34;
+               height=&#34;378&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      bootstrap 配置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上图是 bootstrap 的配置信息。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/bootstrap/v2/bootstrap.proto.html#envoy-api-msg-config-bootstrap-v2-bootstrap&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bootstrap&lt;/a&gt; 是 Envoy 中配置的根本来源，&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/bootstrap/v2/bootstrap.proto.html#envoy-api-msg-config-bootstrap-v2-bootstrap&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bootstrap&lt;/a&gt; 消息中有一个关键的概念，就是静态和动态资源的之间的区别。例如 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/lds.proto.html#envoy-api-msg-listener&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Listener&lt;/a&gt; 或 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cds.proto.html#envoy-api-msg-cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cluster&lt;/a&gt; 这些资源既可以从 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/bootstrap/v2/bootstrap.proto.html#envoy-api-field-config-bootstrap-v2-bootstrap-static-resources&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;static_resources&lt;/a&gt; 静态的获得也可以从 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/bootstrap/v2/bootstrap.proto.html#envoy-api-field-config-bootstrap-v2-bootstrap-dynamic-resources&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;dynamic_resources&lt;/a&gt; 中配置的 &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listeners/lds.html#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LDS&lt;/a&gt; 或 &lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/cluster_manager/cds.html#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CDS&lt;/a&gt; 之类的 xDS 服务获取。&lt;/p&gt;
+&lt;h3 id=&#34;listener&#34;&gt;Listener&lt;/h3&gt;
+&lt;p&gt;Listener 顾名思义，就是监听器，监听 IP 地址和端口，然后根据策略转发。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Listener 的特点&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个 Envoy 进程中可以有多个 Listener，Envoy 与 Listener 之间是一对多的关系。&lt;/li&gt;
+&lt;li&gt;每个 Listener 中可以配置一条 filter 链表（filter_chains），Envoy 会根据 filter 顺序执行过滤。&lt;/li&gt;
+&lt;li&gt;Listener 可以监听下游的端口，也可以接收来自其他 listener 的数据，形成链式处理。&lt;/li&gt;
+&lt;li&gt;filter 是可扩展的。&lt;/li&gt;
+&lt;li&gt;可以静态配置，也可以使用 LDS 动态配置。&lt;/li&gt;
+&lt;li&gt;目前只能监听 TCP，UDP 还未支持。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;Listener 的数据结构&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Listener 的数据结构如下，除了 &lt;code&gt;name&lt;/code&gt;、&lt;code&gt;address&lt;/code&gt; 和 &lt;code&gt;filter_chains&lt;/code&gt; 为必须配置之外，其他都为可选的。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;filter_chains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;use_original_dst&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;per_connection_buffer_limit_bytes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;drain_type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;listener_filters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;transparent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;freebind&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;socket_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;tcp_fast_open_queue_length&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;bugfix_reverse_write_filter_order&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是关于上述数据结构中的常用配置解析。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;name&lt;/strong&gt;：该 listener 的 UUID，唯一限定名，默认60个字符，例如 &lt;code&gt;10.254.74.159_15011&lt;/code&gt;，可以使用命令参数指定长度限制。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;address&lt;/strong&gt;：监听的逻辑/物理地址和端口号，例如&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       &lt;span class=&#34;nt&#34;&gt;&amp;#34;socket_address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.254.74.159&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;port_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;15011&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;filter_chains&lt;/strong&gt;：这是一个列表，Envoy 中内置了一些通用的 filter，每种 filter 都有特定的数据结构，Enovy 会根据该配置顺序执行 filter。Envoy 中内置的 filter 有：&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/client_ssl_auth_filter#config-network-filters-client-ssl-auth&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy.client_ssl_auth&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/echo_filter#config-network-filters-echo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy.echo&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/http_conn_man/http_conn_man#config-http-conn-man&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;enovy.http_connection_manager&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/mongo_proxy_filter#config-network-filters-mongo-proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy.mongo_proxy&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/rate_limit_filter#config-network-filters-rate-limit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy.rate_limit&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/redis_proxy_filter#config-network-filters-redis-proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;enovy.redis_proxy&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/network_filters/tcp_proxy_filter#config-network-filters-tcp-proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy.tcp_proxy&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/intro/arch_overview/http_filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http_filters&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.8.0/configuration/thrift_filters/thrift_filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;thrift_filters&lt;/a&gt;等。这些 filter 可以单独使用也可以组合使用，还可以自定义扩展，例如使用 Istio 中的 &lt;a href=&#34;https://istio.io/zh/docs/reference/config/istio.networking.v1alpha3/#envoyfilter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EnvoyFilter 配置&lt;/a&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;use_original_dst&lt;/strong&gt;：这是一个布尔值，如果使用 iptables 重定向连接，则代理接收的端口可能与&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;原始目的地址&lt;/a&gt;的端口不一样。当此标志设置为 true 时，Listener 将重定向的连接切换到与原始目的地址关联的 Listener。如果没有与原始目的地址关联的 Listener，则连接由接收它的 Listener 处理。默认为 false。注意：该参数将被废弃，请使用&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listener_filters/original_dst_filter.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;原始目的地址&lt;/a&gt;的 Listener filter 替代。该参数的主要用途是：Envoy 通过监听 15001 端口将应用的流量截取后再由其他 Listener 处理而不是直接转发出去，详情见 &lt;a href=&#34;https://zhaohuabing.com/post/2018-09-25-istio-traffic-management-impl-intro/#virtual-listener&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Virtual Listener&lt;/a&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 Listener 的详细介绍请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/lds.proto#envoy-api-msg-listener&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API reference - listener&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;route&#34;&gt;Route&lt;/h3&gt;
+&lt;p&gt;我们在这里所说的路由指的是 &lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/http_routing.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP 路由&lt;/a&gt;，这也使得 Envoy 可以用来处理网格边缘的流量。HTTP 路由转发是通过路由过滤器实现的。该过滤器的主要职能就是执行&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v1/route_config/route_config#config-http-conn-man-route-table&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由表&lt;/a&gt;中的指令。除了可以做重定向和转发，路由过滤器还需要处理重试、统计之类的任务。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;HTTP 路由的特点&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;前缀和精确路径匹配规则。&lt;/li&gt;
+&lt;li&gt;可跨越多个上游集群进行基于&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v1/route_config/route#config-http-conn-man-route-table-route-weighted-clusters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;权重/百分比的路由&lt;/a&gt;。&lt;/li&gt;
+&lt;li&gt;基于&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/http_routing.html#arch-overview-http-routing-priority&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;优先级&lt;/a&gt;的路由。&lt;/li&gt;
+&lt;li&gt;基于&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v1/route_config/route#config-http-conn-man-route-table-hash-policy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;哈希&lt;/a&gt;策略的路由。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;Route 的数据结构&lt;/strong&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtual_hosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;internal_only_headers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;validate_clusters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是关于上述数据结构中的常用配置解析。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;name&lt;/strong&gt;：该名字跟 &lt;code&gt;envoy.http_connection_manager&lt;/code&gt; filter 中的 &lt;code&gt;http_filters.rds.route_config_name&lt;/code&gt; 一致，在 Istio Service Mesh 中为 Envoy 下发的配置中的 Route 是以监听的端口号作为名字，而同一个名字下面的 &lt;code&gt;virtual_hosts&lt;/code&gt; 可以有多个值（数组形式）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;virtual_hosts&lt;/strong&gt;：因为 &lt;strong&gt;VirtualHosts&lt;/strong&gt; 是 Envoy 中引入的一个重要概念，我们在下文将详细说明 &lt;code&gt;virtual_hosts&lt;/code&gt; 的数据结构。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;validate_clusters&lt;/strong&gt;：这是一个布尔值，用来设置开启使用 cluster manager 来检测路由表引用的 cluster 是否有效。如果是路由表是通过 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/filter/network/http_connection_manager/v2/http_connection_manager.proto#envoy-api-field-config-filter-network-http-connection-manager-v2-httpconnectionmanager-route-config&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;route_config&lt;/a&gt; 静态配置的则该值默认设置为 true，如果是使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/filter/network/http_connection_manager/v2/http_connection_manager.proto#envoy-api-field-config-filter-network-http-connection-manager-v2-httpconnectionmanager-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;rds&lt;/a&gt; 动态配置的话，则该值默认设置为 false。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 Route 的详细介绍请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/rds.proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API reference - HTTP route configuration&lt;/a&gt;。&lt;/p&gt;
+&lt;h4 id=&#34;routevirtualhost&#34;&gt;route.VirtualHost&lt;/h4&gt;
+&lt;p&gt;VirtualHost 即上文中 Route 配置中的 &lt;code&gt;virtual_hosts&lt;/code&gt;，VirtualHost 是路由配置中的顶级元素。每个虚拟主机都有一个逻辑名称以及一组根据传入请求的 host header 路由到它的域。这允许单个 Listener 为多个顶级域路径树提供服务。基于域选择了虚拟主机后 Envoy  就会处理路由以查看要路由到哪个上游集群或是否执行重定向。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;VirtualHost 的数据结构&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;下面是 VirtualHost 的数据结构，除了 &lt;code&gt;name&lt;/code&gt; 和 &lt;code&gt;domains&lt;/code&gt; 是必须配置项外，其他皆为可选项。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;require_tls&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;virtual_clusters&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;rate_limits&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;cors&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;per_filter_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;include_request_attempt_count&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是关于上述数据结构中的常用配置解析。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;name&lt;/strong&gt;：该 VirtualHost 的名字，一般是 FQDN 加端口，如 &lt;code&gt;details.default.svc.cluster.local:9080&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;domains&lt;/strong&gt;：这是个用来匹配 VirtualHost 的域名（host/authority header）列表，也可以使用通配符，但是通配符不能匹配空字符，除了仅使用 &lt;code&gt;*&lt;/code&gt; 作为 domains，注意列表中的值不能重复和存在交集，只要有一条 domain 被匹配上了，就会执行路由。Istio 会为该值配置所有地址解析形式，包括 IP 地址、FQDN 和短域名等。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;routes&lt;/strong&gt;：针对入口流量的有序路由列表，第一个匹配上的路由将被执行。我们在下文将详细说明 route 的数据结构。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面是一个实际的 VirtualHost 的例子，该配置来自 &lt;a href=&#34;https://istio.io/zh/docs/examples/bookinfo/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bookinfo 应用&lt;/a&gt;的 details 应用的 Sidecar 服务。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;domains&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default:9080&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.254.4.113&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;s2&#34;&gt;&amp;#34;10.254.4.113:9080&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;routes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;prefix&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|9080||details.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;max_grpc_timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;0s&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;operation&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local:9080/*&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;per_filter_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;mixer&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;forward_attributes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;attributes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.uid&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio://default/services/details&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.host&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.namespace&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                            &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;mixer_attributes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                &lt;span class=&#34;nt&#34;&gt;&amp;#34;attributes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.host&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.uid&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;istio://default/services/details&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service.namespace&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;default&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;destination.service&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                        &lt;span class=&#34;nt&#34;&gt;&amp;#34;string_value&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;details.default.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                            &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                            &lt;span class=&#34;nt&#34;&gt;&amp;#34;disable_check_calls&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;关于 route.VirtualHost 的详细介绍请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#envoy-api-msg-route-virtualhost&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API reference - route.VirtualHost&lt;/a&gt;。&lt;/p&gt;
+&lt;h4 id=&#34;routeroute&#34;&gt;route.Route&lt;/h4&gt;
+&lt;p&gt;路由既是如何匹配请求的规范，也是对下一步做什么的指示（例如，redirect、forward、rewrite等）。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;route.Route 的数据结构&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;下面是是 route.Route 的数据结构，除了 &lt;code&gt;match&lt;/code&gt; 之外其余都是可选的。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;match&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;route&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;redirect&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;direct_response&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;decorator&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;per_filter_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;request_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_add&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;response_headers_to_remove&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是关于上述数据结构中的常用配置解析。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;match&lt;/strong&gt;：路由匹配参数。例如 URL prefix（前缀）、path（URL 的完整路径）、regex（规则表达式）等。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;route&lt;/strong&gt;：这里面配置路由的行为，可以是 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#envoy-api-field-route-route-route&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;route&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#envoy-api-field-route-route-redirect&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;redirect&lt;/a&gt; 和 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#envoy-api-field-route-route-direct-response&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;direct_response&lt;/a&gt;，不过这里面没有专门的一个配置项用来配置以上三种行为，而是根据实际填充的配置项来确定的。例如在此处添加 &lt;code&gt;cluster&lt;/code&gt; 配置则暗示路由动作为”route“，表示将流量路由到该 cluster。详情请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#route-routeaction&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;route.RouteAction&lt;/a&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;decorator&lt;/strong&gt;：被匹配的路由的修饰符，表示被匹配的虚拟主机和 URL。该配置里有且只有一个必须配置的项 &lt;code&gt;operation&lt;/code&gt;，例如 &lt;code&gt;details.default.svc.cluster.local:9080/*&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;per_filter_config&lt;/strong&gt;：这是一个 map 类型，&lt;code&gt;per_filter_config&lt;/code&gt; 字段可用于为 filter 提供特定路由的配置。Map 的 key 应与 filleter 名称匹配，例如用于 HTTP buffer filter 的 &lt;code&gt;envoy.buffer&lt;/code&gt;。该字段是特定于 filter 的，详情请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http_filters/http_filters#config-http-filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP filter&lt;/a&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 route.Route 的详细介绍请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/route/route.proto#envoy-api-msg-route-route&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API reference - route.Route&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;cluster&#34;&gt;Cluster&lt;/h3&gt;
+&lt;p&gt;Cluster 是指 Envoy 连接的一组逻辑相同的上游主机。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/service_discovery.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务发现&lt;/a&gt;来发现 cluster 的成员。可以选择通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/health_checking.html#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;主动健康检查&lt;/a&gt;来确定集群成员的健康状态。Envoy 通过&lt;a href=&#34;http://www.servicemesher.com/envoy/intro/arch_overview/load_balancing.html#arch-overview-load-balancing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;负载均衡策略&lt;/a&gt;决定将请求路由到 cluster 的哪个成员。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Cluster 的特点&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;一组逻辑上相同的主机构成一个 cluster。&lt;/li&gt;
+&lt;li&gt;可以在 cluster 中定义各种负载均衡策略。&lt;/li&gt;
+&lt;li&gt;新加入的 cluster 需要一个热身的过程才可以给路由引用，该过程是原子的，即在 cluster 热身之前对于 Envoy 及 Service Mesh 的其余部分来说是不可见的。&lt;/li&gt;
+&lt;li&gt;可以通过多种方式来配置 cluster，例如静态类型、严格限定 DNS、逻辑 DNS、EDS 等。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;Cluster 的数据结构&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Cluster 的数据结构如下，除了 &lt;code&gt;name&lt;/code&gt; 字段，其他都是可选的。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;alt_stat_name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;eds_cluster_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;connect_timeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;per_connection_buffer_limit_bytes&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;lb_policy&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;hosts&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;load_assignment&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;health_checks&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;max_requests_per_connection&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;circuit_breakers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;tls_context&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;common_http_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;http_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;http2_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;extension_protocol_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;dns_refresh_rate&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;dns_lookup_family&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;dns_resolvers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[],&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;outlier_detection&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;cleanup_interval&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;upstream_bind_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;lb_subset_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;ring_hash_lb_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;original_dst_lb_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;least_request_lb_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;common_lb_config&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;transport_socket&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;protocol_selection&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;upstream_connection_options&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;{...}&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;close_connections_on_host_health_failure&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;drain_connections_on_host_removal&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;...&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是关于上述数据结构中的常用配置解析。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;name&lt;/strong&gt;：如果你留意到作为 Sidecar 启动的 Envoy 的参数的会注意到 &lt;code&gt;--max-obj-name-len 189&lt;/code&gt;，该选项用来用来指定 cluster 的名字，例如 &lt;code&gt;inbound|9080||ratings.default.svc.cluster.local&lt;/code&gt;。该名字字符串由 &lt;code&gt;|&lt;/code&gt; 分隔成四个部分，分别是 &lt;code&gt;inbound&lt;/code&gt; 或 &lt;code&gt;outbound&lt;/code&gt; 代表入向流量或出向流量、端口号、subcluster 名称、FQDN，其中 subcluster 名称将对应于 Istio &lt;code&gt;DestinationRule&lt;/code&gt; 中配置的 &lt;code&gt;subnet&lt;/code&gt;，如果是按照多版本按比例路由的话，该值可以是版本号。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;type&lt;/strong&gt;：即&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/service_discovery#arch-overview-service-discovery-types&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务发现类型&lt;/a&gt;，支持的参数有 &lt;code&gt;STATIC&lt;/code&gt;（缺省值）、&lt;code&gt;STRICT_DNS&lt;/code&gt;、&lt;code&gt;LOGICAL_DNS&lt;/code&gt;、&lt;code&gt;EDS&lt;/code&gt;、&lt;code&gt;ORIGINAL_DST&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;hosts&lt;/strong&gt;：这是个列表，配置负载均衡的 IP 地址和端口，只有使用了  &lt;code&gt;STATIC&lt;/code&gt;、&lt;code&gt;STRICT_DNS&lt;/code&gt;、&lt;code&gt;LOGICAL_DNS&lt;/code&gt; 服务发现类型时才需要配置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;eds_cluster_config&lt;/strong&gt;：如果使用 &lt;code&gt;EDS&lt;/code&gt; 做服务发现，则需要配置该项目，其中包括的配置有 &lt;code&gt;service_name&lt;/code&gt; 和 &lt;code&gt;ads&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;关于 Cluster 的详细介绍请参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cds.proto#cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API reference - cluster&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/overview/v2_overview.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy v2 API 概览 - servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/listeners/lds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务（LDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/http_conn_man/rds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务（RDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.servicemesher.com/envoy/configuration/cluster_manager/cds.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务（CDS）- servicemesher.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://jimmysong.io/istio-handbook/concepts/envoy-xds-protocol.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS 协议解析 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.cnblogs.com/163yun/p/8962278.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;深入解读 Service Mesh 背后的技术细节 - cnblogs.com&lt;/a&gt;&lt;a href=&#34;https://jimmysong.io/posts/envoy-sidecar-injection-in-istio-service-mesh-deep-dive/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;理解 Istio Service Mesh 中 Envoy 代理 Sidecar 注入及流量劫持 - jimmysong.io&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>
