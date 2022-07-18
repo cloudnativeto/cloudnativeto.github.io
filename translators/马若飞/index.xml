@@ -1,16 +1,334 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes" ?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title>云原生社区</title>
+    <title>马若飞 | 云原生社区</title>
     <link>https://cloudnative.to/translators/%E9%A9%AC%E8%8B%A5%E9%A3%9E/</link>
       <atom:link href="https://cloudnative.to/translators/%E9%A9%AC%E8%8B%A5%E9%A3%9E/index.xml" rel="self" type="application/rss+xml" />
-    <description>云原生社区</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 22 Apr 2019 13:54:05 +0800</lastBuildDate>
+    <description>马若飞</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 06 May 2019 21:50:05 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/translators/%E9%A9%AC%E8%8B%A5%E9%A3%9E/avatar_hue38add62c87b7486d80c9f3fda25dfc1_12220_270x270_fill_q75_lanczos_center.jpg</url>
-      <title>云原生社区</title>
+      <title>马若飞</title>
       <link>https://cloudnative.to/translators/%E9%A9%AC%E8%8B%A5%E9%A3%9E/</link>
     </image>
+    
+    <item>
+      <title>Istio和Linkerd的CPU基准测试</title>
+      <link>https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/</link>
+      <pubDate>Mon, 06 May 2019 21:50:05 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/@michael_87395/benchmarking-istio-linkerd-cpu-c36287e32781&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;作者是Shopify的工程师，公司在引入Istio作为服务网格的过程中发现消耗的计算成本过高。基于此问题，作者使用了公司内部开发的基准测试工具IRS对Istio和Linkerd的CPU使用情况做了测试和对比。测试结果发现Istio在CPU的使用上要比Linkerd耗费更多的资源。这为Istio的拥趸们敲响了警钟，提醒大家Istio在生产化的道路上还有很多需要优化的地方。&lt;/p&gt;
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;在&lt;a href=&#34;https://www.shopify.ca/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Shopify&lt;/a&gt;，我们正在部署Istio作为服务网格。我们做的很不错但遇到了瓶颈：成本。&lt;/p&gt;
+&lt;p&gt;Istio官方发布的基准测试情况如下：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;在Istio 1.1中一个代理每秒处理1000个请求大约会消耗0.6个vCPU。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;对于服务网格中的第一个边界（连接的两端各有两个代理），1200个内核的代理每秒处理100万个请求。Google的价格计算器估计对于&lt;code&gt;n1-standard-64&lt;/code&gt;机型每月每个核需要40美元，这使得这条单边界的花费超过了5万美元/每月/每100万请求。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://medium.com/@ihcsim&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ivan Sim&lt;/a&gt; 去年写了一个关于服务网格延迟的&lt;a href=&#34;https://medium.com/@ihcsim/linkerd-2-0-and-istio-performance-benchmark-df290101c2bb&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;很棒的文章&lt;/a&gt; ，并保证会持续更新CPU和内存部分，但目前还没有完成：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;看起来values-istio-test.yaml将把CPU请求提升很多。如果我算的没错，控制平面大约有24个CPU，每个代理有0.5个CPU。这比我目前的个人账户配额还多。一旦我增加CPU配额的请求被批准，我将重新运行测试。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;我需要亲眼看看Istio是否可以与另一个开源服务网格相媲美：&lt;a href=&#34;https://linkerd.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id=&#34;安装服务网格&#34;&gt;安装服务网格&lt;/h2&gt;
+&lt;p&gt;首先，我在集群中安装了&lt;a href=&#34;https://supergloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SuperGloo&lt;/a&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ supergloo init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;installing supergloo version 0.3.12
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;using chart uri https://storage.googleapis.com/supergloo-helm/charts/supergloo-0.3.12.tgz
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;configmap/sidecar-injection-resources created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceaccount/supergloo created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceaccount/discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceaccount/mesh-discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrole.rbac.authorization.k8s.io/discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrole.rbac.authorization.k8s.io/mesh-discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrolebinding.rbac.authorization.k8s.io/supergloo-role-binding created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrolebinding.rbac.authorization.k8s.io/discovery-role-binding created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrolebinding.rbac.authorization.k8s.io/mesh-discovery-role-binding created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.extensions/supergloo created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.extensions/discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.extensions/mesh-discovery created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;install successful!
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我使用SuperGloo是因为它非常简单，可以快速引导两个服务网格，而我几乎不需要做任何事情。我们并没有在生产环境中使用SuperGloo，但是它非常适合这样的任务。每个网格实际上有两个命令。我使用了两个集群进行隔离——一个用于Istio，另一个用于Linkerd。&lt;/p&gt;
+&lt;p&gt;然后我用下面的命令安装了两个服务网格。
+首先是Linkerd：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ supergloo install linkerd --name linkerd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;+---------+--------------+---------+---------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; INSTALL &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;     TYPE     &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; STATUS  &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;          DETAILS          &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;+---------+--------------+---------+---------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; linkerd &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; Linkerd Mesh &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; Pending &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;             &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;              &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; version: stable-2.3.0     &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;              &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; namespace: linkerd        &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;              &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; mtls enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;        &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;              &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; auto inject enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;+---------+--------------+---------+---------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后是Istio：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ supergloo install istio --name istio --installation-namespace istio-system --mtls&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt; --auto-inject&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;+---------+------------+---------+---------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; INSTALL &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;    TYPE    &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; STATUS  &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;          DETAILS          &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;+---------+------------+---------+---------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; istio   &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; Istio Mesh &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; Pending &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;             &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; version: 1.0.6            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; namespace: istio-system   &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; mtls enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;        &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; auto inject enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grafana enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;     &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; prometheus enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;  &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;            &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;         &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; jaeger enabled: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;      &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;几分钟后的循环Crash后，控制平面稳定了下来。&lt;/p&gt;
+&lt;h2 id=&#34;安装istio自动注入&#34;&gt;安装Istio自动注入&lt;/h2&gt;
+&lt;p&gt;为了让Istio启用Envoy sidecar，我们使用&lt;code&gt;MutatingAdmissionWebhook&lt;/code&gt;作为注入器。这超出了本文的讨论范围，但简言之，控制器监视所有新的Pod许可，并动态添加sidecar和initContainer，后者具有&lt;code&gt;iptables&lt;/code&gt;的能力。&lt;/p&gt;
+&lt;p&gt;在Shopify，我们自己写了许可控制器来做sidecar注入，但根据基准测试的目的，我使用了Istio自带的。默认情况下命名空间上有&lt;code&gt;istio-injection: enabled&lt;/code&gt;的标签就可以自动注入：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl label namespace irs-client-dev istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;namespace/irs-client-dev labeled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl label namespace irs-server-dev istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;namespace/irs-server-dev labeled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;安装linkerd自动注入&#34;&gt;安装Linkerd自动注入&lt;/h2&gt;
+&lt;p&gt;要安装Linkerd的sidecar注入，我们使用标注（我通过&lt;code&gt;kubectl edit&lt;/code&gt;手动添加）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;linkerd.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;enabled&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ k edit ns irs-server-dev 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;namespace/irs-server-dev edited
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ k get ns irs-server-dev -o yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;apiVersion: v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kind: Namespace
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  annotations:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    linkerd.io/inject: enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  name: irs-server-dev
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  finalizers:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - kubernetes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;status:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  phase: Active
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio弹性模拟器irs&#34;&gt;Istio弹性模拟器(IRS)&lt;/h2&gt;
+&lt;p&gt;我们开发了Istio弹性模拟器来尝试一些在Shopify特有的流量场景。具体地说，我们想要一些可以用来创建任意拓扑结构的东西，来表示服务中可动态配置的特定部分，以模拟特定的工作负载。&lt;/p&gt;
+&lt;p&gt;限时抢购是一个困扰Shopify基础设施的问题。更糟糕的是，Shopify实际上鼓励商家进行更多的限时抢购。对于我们的大客户来说，我们有时会提前得到预先计划好的限时抢购的警告。而其他客户完全是在白天或晚上的任何时候突然出现的。&lt;/p&gt;
+&lt;p&gt;我们希望IRS能够运行表示拓扑和工作负载的“工作流”，它们在过去削弱了Shopify的基础设施。我们引入服务网格的主要原因之一是在网络级别部署可靠和有弹性的功能，而其中重要的部分是证明它能够有效地减轻过去的服务中断。&lt;/p&gt;
+&lt;p&gt;IRS的核心是一个worker，它充当服务网格中的一个节点。可以在启动时静态配置worker，也可以通过REST API动态配置worker。我们使用worker的动态特性创建工作流作为回归测试。&lt;/p&gt;
+&lt;p&gt;一个工作流的例子如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;启动10台服务器作为服务&lt;code&gt;bar&lt;/code&gt;，在100ns之后返回“200/OK”&lt;/li&gt;
+&lt;li&gt;启动10个客户端，给每个&lt;code&gt;bar&lt;/code&gt;服务发送100RPS请求&lt;/li&gt;
+&lt;li&gt;每10秒下线一台服务器，在客户端监控 &lt;code&gt;5xx&lt;/code&gt;的错误&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在工作流的最后，我们可以检查日志和指标来确定测试的通过/失败。通过这种方式，我们既可以了解服务网格的性能，也可以回归测试关于弹性的假设。&lt;/p&gt;
+&lt;p&gt;(&lt;em&gt;注意：我们在考虑开源IRS，但目前还不是时候&lt;/em&gt;)&lt;/p&gt;
+&lt;h2 id=&#34;irs做服务网格基准测试&#34;&gt;IRS做服务网格基准测试&lt;/h2&gt;
+&lt;p&gt;基于这个目的，我们安装了下面一些IRS worker：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;irs-client-loadgen&lt;/code&gt;：3个复制集给 &lt;code&gt;irs-client&lt;/code&gt;发送100RPS请求&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;irs-client&lt;/code&gt;：3个复制集接受请求，等待100ms然后转发请求给 &lt;code&gt;irs-server&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;irs-server&lt;/code&gt;：3个复制集100ms后返回 &lt;code&gt;200/OK&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通过此设置，我们可以测量9个endpoint之间的稳定流量。在&lt;code&gt;irs-client-loadgen&lt;/code&gt;和&lt;code&gt;irs-server&lt;/code&gt;上的sidecar各接收总计100个RPS，而&lt;code&gt;irs-client&lt;/code&gt;则接收200个RPS(入站和出站)。&lt;/p&gt;
+&lt;p&gt;我们通过&lt;a href=&#34;https://www.datadoghq.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DataDog&lt;/a&gt;监控资源使用情况，因此没有维护Prometheus集群。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id=&#34;控制平面&#34;&gt;控制平面&lt;/h2&gt;
+&lt;p&gt;首先来看看控制平面的CPU使用情况。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/1_hucca96fc538a8e5133883777908ec4dc3_138653_b6fbeb309134410287a6f063fff24e25.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/1_hucca96fc538a8e5133883777908ec4dc3_138653_45b92d2647e91c7b2770937d867dc573.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/1_hucca96fc538a8e5133883777908ec4dc3_138653_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/1_hucca96fc538a8e5133883777908ec4dc3_138653_b6fbeb309134410287a6f063fff24e25.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;302&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Linkerd 控制平面： ~22 mcores&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/2_hubceebb887492c368ae3fd3ce87a1b0a7_133152_f4fd58a4419cdb2e90da94690e8dd7d1.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/2_hubceebb887492c368ae3fd3ce87a1b0a7_133152_39031fb2407136fc6512d538bfbc509f.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/2_hubceebb887492c368ae3fd3ce87a1b0a7_133152_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/2_hubceebb887492c368ae3fd3ce87a1b0a7_133152_f4fd58a4419cdb2e90da94690e8dd7d1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;302&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio控制平面：~750 mcores&lt;/p&gt;
+&lt;p&gt;Istio控制平面比Linkerd多使用了大约&lt;strong&gt;35倍的CPU&lt;/strong&gt;。不可否认，这是一个开箱即用的安装，大部分Istio的CPU使用来自遥测，当然它可以被关闭（以牺牲功能为代价）。即使移除Mixer仍然会有超过100个mcore，这仍然比Linkerd多使用了&lt;strong&gt;4倍的CPU&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar代理&#34;&gt;Sidecar代理&lt;/h2&gt;
+&lt;p&gt;接下来，我们看一下sidecar代理的使用情况。这应该与请求速率成线性关系，但是每个sidecar都有一些开销，这会影响曲线的形状。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/3_hudbfde90ad7d8d7504d5ceb3321104e3f_133643_0ff516a04114edb0db696be4c158ceaf.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/3_hudbfde90ad7d8d7504d5ceb3321104e3f_133643_753e08d1a623607b406c7a4a9e4e896b.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/3_hudbfde90ad7d8d7504d5ceb3321104e3f_133643_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/3_hudbfde90ad7d8d7504d5ceb3321104e3f_133643_0ff516a04114edb0db696be4c158ceaf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;300&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Linkerd：~100 mcore 为irs-client，~50 mcore 为irs-client-loadgen&lt;/p&gt;
+&lt;p&gt;这些结果是有道理的，因为客户端代理接收的流量是loadgen代理的两倍：对于来自loadgen的每个出站请求，客户端接收一个入站请求和一个出站请求。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/4_hu715e30cf8e38d4cda561c3b16927d808_133377_959b671eed3fa403a838bcd9e2740709.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/4_hu715e30cf8e38d4cda561c3b16927d808_133377_7f9ba169e86e01c5ffccc5b311c933e2.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/4_hu715e30cf8e38d4cda561c3b16927d808_133377_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/4_hu715e30cf8e38d4cda561c3b16927d808_133377_959b671eed3fa403a838bcd9e2740709.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;302&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio/Envoy：~155 mcore 为irs-client, ~75 mcore 为irs-client-loadgen&lt;/p&gt;
+&lt;p&gt;Istio的sidecar我们看到了同样的结果。&lt;/p&gt;
+&lt;p&gt;总的来说，Istio/Envoy代理比Linkerd多使用了大约 &lt;strong&gt;50%的CPU&lt;/strong&gt; 。&lt;/p&gt;
+&lt;p&gt;我们看到在服务端也是一样的情况：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/5_hu08d6350d163622e6cc512b0d2f53a5fb_99857_ffe8b2053bd561214fed49edb4a10a29.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/5_hu08d6350d163622e6cc512b0d2f53a5fb_99857_c74860542aa1324952b40a235da7d6e5.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/5_hu08d6350d163622e6cc512b0d2f53a5fb_99857_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/5_hu08d6350d163622e6cc512b0d2f53a5fb_99857_ffe8b2053bd561214fed49edb4a10a29.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;301&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Linkerd：~50 mcores 为 irs-server&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/benchmarking-istio-and-linkerd-cpu/6_hua16ed49f6b52066c1064d4dbebdd96d4_104142_c93948ec272a7c36b7af3eda1a97080c.webp 400w,
+               /blog/benchmarking-istio-and-linkerd-cpu/6_hua16ed49f6b52066c1064d4dbebdd96d4_104142_ec2aef9b2e330dfcd9838f81dfc8c56e.webp 760w,
+               /blog/benchmarking-istio-and-linkerd-cpu/6_hua16ed49f6b52066c1064d4dbebdd96d4_104142_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/benchmarking-istio-and-linkerd-cpu/6_hua16ed49f6b52066c1064d4dbebdd96d4_104142_c93948ec272a7c36b7af3eda1a97080c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;302&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio/Envoy：~80 mcores 为 irs-server&lt;/p&gt;
+&lt;p&gt;在服务端，Istio/Envoy代理比Linkerd多使用了大约 &lt;strong&gt;60%的CPU&lt;/strong&gt; 。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;对于这种综合的工作负载，Istio的Envoy代理使用的CPU比Linkerd多了50%以上。Linkerd的控制平面使用了Istio的一小部分，尤其是在考虑“核心”组件时。&lt;/p&gt;
+&lt;p&gt;我们仍在尝试解决如何减轻一些CPU开销——如果您有自己的见解或想法，我们很乐意听取您的意见。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>导致云原生微服务系统开发灾难性的8件事</title>
@@ -42,10 +360,10 @@
 &lt;figure  id=&#34;figure-1&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
     &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;1&#34; srcset=&#34;
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6a7aa96e4da0f461a9e3df293f19e869_6747_ee9b4b79bcdc3754a2564f17d9b668a3.webp 400w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6a7aa96e4da0f461a9e3df293f19e869_6747_1715bd96355e20726ef8a1d2e1d66708.webp 760w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6a7aa96e4da0f461a9e3df293f19e869_6747_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
-               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6a7aa96e4da0f461a9e3df293f19e869_6747_ee9b4b79bcdc3754a2564f17d9b668a3.webp&#34;
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6d135bc7d1595498150eced92daa4f20_6773_125a993660829bb7f52381d6432c21a3.webp 400w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6d135bc7d1595498150eced92daa4f20_6773_0b03c3fbdce483b1fe6bcebc38af63b7.webp 760w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6d135bc7d1595498150eced92daa4f20_6773_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g23ajtc2kej305k057glt_hu6d135bc7d1595498150eced92daa4f20_6773_125a993660829bb7f52381d6432c21a3.webp&#34;
                width=&#34;200&#34;
                height=&#34;187&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
@@ -110,10 +428,10 @@
 &lt;figure  id=&#34;figure-3&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
     &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;3&#34; srcset=&#34;
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu8d3ccc8914692f66753a9001a61dbab5_13060_2c8dc9af0f95e21b3d5e3e1e31cba269.webp 400w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu8d3ccc8914692f66753a9001a61dbab5_13060_98f5bc05854cae287980afdfc7f0eb9c.webp 760w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu8d3ccc8914692f66753a9001a61dbab5_13060_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
-               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu8d3ccc8914692f66753a9001a61dbab5_13060_2c8dc9af0f95e21b3d5e3e1e31cba269.webp&#34;
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu19b41bb134d4b447d27334ebc2fb2ec5_13344_414ca2e7a6671b134b65dc0bd6572142.webp 400w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu19b41bb134d4b447d27334ebc2fb2ec5_13344_4b124bb776fefc7ba08be70b73d71783.webp 760w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu19b41bb134d4b447d27334ebc2fb2ec5_13344_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g24bk7332yj308w07kmy0_hu19b41bb134d4b447d27334ebc2fb2ec5_13344_414ca2e7a6671b134b65dc0bd6572142.webp&#34;
                width=&#34;320&#34;
                height=&#34;272&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
@@ -161,10 +479,10 @@
 &lt;figure  id=&#34;figure-3&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
     &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;3&#34; srcset=&#34;
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hu4f88d9899aac0105ad69e962ff65877b_11965_33536b3c37849e788ef5291a6a176762.webp 400w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hu4f88d9899aac0105ad69e962ff65877b_11965_8d986f3f26d6c597d4279ed2efdb869b.webp 760w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hu4f88d9899aac0105ad69e962ff65877b_11965_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
-               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hu4f88d9899aac0105ad69e962ff65877b_11965_33536b3c37849e788ef5291a6a176762.webp&#34;
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hua4a8cbc0238b7558758143d79ed7babc_12254_5d66b678242143058bac6764dc7a0d18.webp 400w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hua4a8cbc0238b7558758143d79ed7babc_12254_9c8321c798fa5fa6679b1adc31110712.webp 760w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hua4a8cbc0238b7558758143d79ed7babc_12254_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g25q0lfgymj308w07dt9b_hua4a8cbc0238b7558758143d79ed7babc_12254_5d66b678242143058bac6764dc7a0d18.webp&#34;
                width=&#34;320&#34;
                height=&#34;265&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
@@ -195,10 +513,10 @@
 &lt;figure  id=&#34;figure-4&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
     &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;4&#34; srcset=&#34;
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hu048a4785d22717fe768fcfb25d027f4a_16552_595ae770c05023cb99cbc78590b2caf7.webp 400w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hu048a4785d22717fe768fcfb25d027f4a_16552_040da9d11b4ce348a56d1e14b830837d.webp 760w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hu048a4785d22717fe768fcfb25d027f4a_16552_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
-               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hu048a4785d22717fe768fcfb25d027f4a_16552_595ae770c05023cb99cbc78590b2caf7.webp&#34;
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hucf14dec0e08d965afe4f3ae4a26324f9_17391_a705b5fd3aab4cb1942faf0a85127651.webp 400w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hucf14dec0e08d965afe4f3ae4a26324f9_17391_ee5456ddf6f0bb62d6c5ef70aff00a39.webp 760w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hucf14dec0e08d965afe4f3ae4a26324f9_17391_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26lj2v5nsj308w06edgx_hucf14dec0e08d965afe4f3ae4a26324f9_17391_a705b5fd3aab4cb1942faf0a85127651.webp&#34;
                width=&#34;320&#34;
                height=&#34;230&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
@@ -239,10 +557,10 @@
 &lt;figure  id=&#34;figure-6&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
     &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;6&#34; srcset=&#34;
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu701ee0fae9a2c310a2b8ac236e71e7e7_10039_62c0bcc92b6cc608f0f4e0c8fc16aed7.webp 400w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu701ee0fae9a2c310a2b8ac236e71e7e7_10039_33344dbba28bfbfebc31f422d48761ad.webp 760w,
-               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu701ee0fae9a2c310a2b8ac236e71e7e7_10039_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
-               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu701ee0fae9a2c310a2b8ac236e71e7e7_10039_62c0bcc92b6cc608f0f4e0c8fc16aed7.webp&#34;
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu113b8df3f5fb54c237f141c422976ea3_10256_602ea78683aaf1edfb374eea3f2a3512.webp 400w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu113b8df3f5fb54c237f141c422976ea3_10256_5b288f4cdf8b0e5673c32b68ebcef2a1.webp 760w,
+               /blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu113b8df3f5fb54c237f141c422976ea3_10256_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/eight-things-leads-to-developing-catastrophic-cloud-native-microservices-system/006tNc79ly1g26n3fd6mvj308w07omxp_hu113b8df3f5fb54c237f141c422976ea3_10256_602ea78683aaf1edfb374eea3f2a3512.webp&#34;
                width=&#34;320&#34;
                height=&#34;276&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
