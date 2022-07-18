@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>杨传胜 | 云原生社区</title>
+    <link>https://cloudnative.to/author/%E6%9D%A8%E4%BC%A0%E8%83%9C/</link>
+      <atom:link href="https://cloudnative.to/author/%E6%9D%A8%E4%BC%A0%E8%83%9C/index.xml" rel="self" type="application/rss+xml" />
+    <description>杨传胜</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Sun, 31 Mar 2019 11:12:07 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/author/%E6%9D%A8%E4%BC%A0%E8%83%9C/avatar_hue38add62c87b7486d80c9f3fda25dfc1_12220_270x270_fill_q75_lanczos_center.jpg</url>
+      <title>杨传胜</title>
+      <link>https://cloudnative.to/author/%E6%9D%A8%E4%BC%A0%E8%83%9C/</link>
+    </image>
+    
+    <item>
+      <title>熔断与异常检测在 Istio 中的应用</title>
+      <link>https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/</link>
+      <pubDate>Sun, 31 Mar 2019 11:12:07 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://www.yangcs.net/posts/circuit_breaking-and-outlier-detection-in-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;在微服务领域，各个服务需要在网络上执行大量的调用。而网络是很脆弱的，如果某个服务繁忙或者无法响应请求，将有可能引发集群的大规模级联故障，从而造成整个系统不可用，通常把这种现象称为 &lt;span id=&#34;inline-purple&#34;&gt;服务雪崩效应&lt;/span&gt;。为了使服务有一定的冗余，以便在系统故障期间能够保持服务能力，我们可以使用熔断机制。&lt;/p&gt;
+&lt;h2 id=&#34;什么是熔断&#34;&gt;什么是熔断？&lt;/h2&gt;
+&lt;p&gt;熔断（Circuit Breaking）这一概念来源于电子工程中的&lt;strong&gt;断路器&lt;/strong&gt;（Circuit Breaker）。在互联网系统中，当下游服务因访问压力过大而响应变慢或失败，上游服务为了保护系统整体的可用性，可以暂时切断对下游服务的调用。这种牺牲局部，保全整体的措施就叫做&lt;strong&gt;熔断&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;如果不采取熔断措施，我们的系统会怎样呢？我们来看一个栗子。&lt;/p&gt;
+&lt;p&gt;当前系统中有 A、B、C 三个服务，服务 A 是上游，服务 B 是中游，服务 C 是下游。它们的调用链如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126lbd2g3j304r07jq31_hu523e5010938f34d41a10625c646b3457_6542_f9767bbb98b11d1b99c34ccd5501c7a4.webp 400w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126lbd2g3j304r07jq31_hu523e5010938f34d41a10625c646b3457_6542_1d1e685687dd623cb32fd62ed9ecbe99.webp 760w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126lbd2g3j304r07jq31_hu523e5010938f34d41a10625c646b3457_6542_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126lbd2g3j304r07jq31_hu523e5010938f34d41a10625c646b3457_6542_f9767bbb98b11d1b99c34ccd5501c7a4.webp&#34;
+               width=&#34;171&#34;
+               height=&#34;271&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一旦下游服务 C 因某些原因变得不可用，积压了大量请求，服务 B 的请求线程也随之阻塞。线程资源逐渐耗尽，使得服务 B 也变得不可用。紧接着，服务 A 也变为不可用，整个调用链路被拖垮。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mn4vnrj30kv07j3z8_hu98e8810ab1531b0494cde3624b0d1056_22175_db5c674ca8f1b2f550b57f9e6576272b.webp 400w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mn4vnrj30kv07j3z8_hu98e8810ab1531b0494cde3624b0d1056_22175_34c0db7588cc37b5cd756d1f5b2ef4fe.webp 760w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mn4vnrj30kv07j3z8_hu98e8810ab1531b0494cde3624b0d1056_22175_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mn4vnrj30kv07j3z8_hu98e8810ab1531b0494cde3624b0d1056_22175_db5c674ca8f1b2f550b57f9e6576272b.webp&#34;
+               width=&#34;751&#34;
+               height=&#34;271&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;像这种调用链路的连锁故障，就是上文所说的服务雪崩效应。&lt;/p&gt;
+&lt;p&gt;正所谓刮骨疗毒，壮士断腕。在这种时候，就需要我们的熔断机制来挽救整个系统。熔断机制的大体流程如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mv3s9fj30bf0fcgmd_hu9482bcb44ead1148cf8fb92f77ff1c8f_23217_ba7b1eb3a1fa2997428d3a363564d127.webp 400w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mv3s9fj30bf0fcgmd_hu9482bcb44ead1148cf8fb92f77ff1c8f_23217_dcbbbc0638b0f53ceff44dd8fbd0ed29.webp 760w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mv3s9fj30bf0fcgmd_hu9482bcb44ead1148cf8fb92f77ff1c8f_23217_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126mv3s9fj30bf0fcgmd_hu9482bcb44ead1148cf8fb92f77ff1c8f_23217_ba7b1eb3a1fa2997428d3a363564d127.webp&#34;
+               width=&#34;411&#34;
+               height=&#34;552&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这里需要解释两点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;开启熔断：在固定时间窗口内，接口调用超时比率达到一个阈值，会开启熔断。进入熔断状态后，后续对该服务接口的调用不再经过网络，直接执行本地的默认方法，达到服务降级的效果。&lt;/li&gt;
+&lt;li&gt;熔断恢复：熔断不可能是永久的，当经过了规定时间之后，服务将从熔断状态恢复过来，再次接受调用方的远程调用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;istio-中的熔断&#34;&gt;Istio 中的熔断&lt;/h2&gt;
+&lt;p&gt;Istio 是通过 Envoy Proxy 来实现熔断机制的，Envoy 强制在网络层面配置熔断策略，这样就不必为每个应用程序单独配置或重新编程。下面就通过一个示例来演示如何为 Istio 网格中的服务配置熔断的连接数、请求数和异常检测。&lt;/p&gt;
+&lt;p&gt;该示例的架构如图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126o9utc8j30k208eaax_hu8a62c07f990d98e0978fbe9e5e90c3e8_25865_e2fafcf81249442b56820ee63dd32fa2.webp 400w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126o9utc8j30k208eaax_hu8a62c07f990d98e0978fbe9e5e90c3e8_25865_95f15eb68bc4bcde5113fd3743901880.webp 760w,
+               /blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126o9utc8j30k208eaax_hu8a62c07f990d98e0978fbe9e5e90c3e8_25865_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/006tKfTcgy1g126o9utc8j30k208eaax_hu8a62c07f990d98e0978fbe9e5e90c3e8_25865_e2fafcf81249442b56820ee63dd32fa2.webp&#34;
+               width=&#34;722&#34;
+               height=&#34;302&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;该示例由客户端和服务端组成，其中客户端是一个 Java HTTP 应用程序，被打包在镜像 &lt;code&gt;docker.io/ceposta/http-envoy-client-standalone:latest&lt;/code&gt; 中，它用来模拟对后端服务 &lt;code&gt;httpbin&lt;/code&gt; 发起 http 调用，所有的调用首先都会被 Envoy Proxy 拦截。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;假设你的集群中已经部署了 Istio，没有启用 Sidecar 的自动注入，并且没有启用双向 TLS 身份验证。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;部署示例&#34;&gt;部署示例&lt;/h3&gt;
+&lt;p&gt;部署 &lt;a href=&#34;https://github.com/istio/istio/tree/master/samples/httpbin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;httpbin&lt;/a&gt; 应用，该应用将会作为本示例的后端服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 进入 istio 根目录&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f &amp;lt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;istioctl kube-inject -f samples/httpbin/httpbin.yaml&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建一个 &lt;code&gt;DestinationRule&lt;/code&gt;，针对 &lt;code&gt;httpbin&lt;/code&gt; 服务设置熔断策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;$ kubectl apply -f - &amp;lt;&amp;lt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DestinationRule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;trafficPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connectionPool&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tcp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;maxConnections&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http1MaxPendingRequests&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;maxRequestsPerConnection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;outlierDetection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;consecutiveErrors&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;1s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;baseEjectionTime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;3m&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;maxEjectionPercent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EOF&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看该策略在 Envoy 中对应的 &lt;code&gt;Cluster&lt;/code&gt; 配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                      READY     STATUS    RESTARTS   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;httpbin-d6d68fb97-cswzc   2/2       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          2m
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;$&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;istioctl&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;pc&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;cluster&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;httpbin-d&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;6&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;d&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;68&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;fb&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;97&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;-cswzc&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;--fqdn&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;httpbin.default.svc.cluster.local&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;--direction&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;outbound&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;-o&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;json&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|8000||httpbin.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;EDS&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;edsClusterConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;edsConfig&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;ads&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;serviceName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|8000||httpbin.default.svc.cluster.local&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;connectTimeout&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;1.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxRequestsPerConnection&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;circuitBreakers&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;thresholds&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxConnections&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxPendingRequests&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nt&#34;&gt;&amp;#34;outlierDetection&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;interval&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;1.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;baseEjectionTime&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;180.000s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;maxEjectionPercent&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;enforcingConsecutive5xx&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;consecutiveGatewayFailure&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;enforcingConsecutiveGatewayFailure&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;100&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的配置告诉我们：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;maxConnections&lt;/strong&gt; : 限制对后端服务发起的 &lt;code&gt;HTTP/1.1&lt;/code&gt; 连接数，如果超过了这个限制，就会开启熔断。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;maxPendingRequests&lt;/strong&gt; : 限制待处理请求列表的长度， 如果超过了这个限制，就会开启熔断。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;maxRequestsPerConnection&lt;/strong&gt; : 在任何给定时间内限制对后端服务发起的 &lt;code&gt;HTTP/2&lt;/code&gt; 请求数，如果超过了这个限制，就会开启熔断。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面分别对这几个参数做详细解释。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;maxConnections&lt;/strong&gt; : 表示在任何给定时间内， Envoy 与上游集群（这里指的是 httpbin 服务）建立的最大连接数。该配置仅适用于 &lt;code&gt;HTTP/1.1&lt;/code&gt; 协议，因为 &lt;code&gt;HTTP/2&lt;/code&gt; 协议可以在同一个 TCP 连接中发送多个请求，而 &lt;code&gt;HTTP/1.1&lt;/code&gt; 协议在同一个连接中只能处理一个请求。如果超过了这个限制（即断路器溢出），集群的&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/cluster_manager/cluster_stats#config-cluster-manager-cluster-stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;upstream_cx_overflow&lt;/a&gt; 计数器就会递增。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;maxPendingRequests&lt;/strong&gt; : 表示待处理请求队列的长度。因为 &lt;code&gt;HTTP/2&lt;/code&gt; 是通过单个连接并发处理多个请求的，因此该熔断策略仅在创建初始 &lt;code&gt;HTTP/2&lt;/code&gt; 连接时有用，之后的请求将会在同一个 TCP 连接上多路复用。对于 &lt;code&gt;HTTP/1.1&lt;/code&gt; 协议，只要没有足够的上游连接可用于立即分派请求，就会将请求添加到待处理请求队列中，因此该断路器将在该进程的生命周期内保持有效。如果该断路器溢出，集群的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/cluster_manager/cluster_stats#config-cluster-manager-cluster-stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;upstream_rq_pending_overflow&lt;/a&gt; 计数器就会递增。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;maxRequestsPerConnection&lt;/strong&gt; : 表示在任何给定时间内，上游集群中所有主机（这里指的是 httpbin 服务）可以处理的最大请求数。实际上，这适用于仅 &lt;code&gt;HTTP/2&lt;/code&gt; 集群，因为 &lt;code&gt;HTTP/1.1&lt;/code&gt; 集群由最大连接数断路器控制。如果该断路器溢出，集群的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/cluster_manager/cluster_stats#config-cluster-manager-cluster-stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;upstream_rq_pending_overflow&lt;/a&gt; 计数器就会递增。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio DestinationRule 与 Envoy 的熔断参数对照表如下所示：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Envoy paramether&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Envoy upon object&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Istio parameter&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Istio upon ojbect&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;max_connections&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.circuit_breakers&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;maxConnections&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;TCPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;max_pending_requests&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.circuit_breakers&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;http1MaxPendingRequests&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;HTTPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;max_requests&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.circuit_breakers&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;http2MaxRequests&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;HTTPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;max_retries&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.circuit_breakers&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;maxRetries&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;HTTPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;connect_timeout_ms&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;connectTimeout&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;TCPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;max_requests_per_connection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;maxRequestsPerConnection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;HTTPSettings&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;最大连接数&#34;&gt;最大连接数&lt;/h3&gt;
+&lt;p&gt;现在我们已经为 &lt;code&gt;httpbin&lt;/code&gt; 服务设置了熔断策略，接下来创建一个 Java 客户端，用来向后端服务发送请求，观察是否会触发熔断策略。这个客户端可以控制连接数量、并发数、待处理请求队列，使用这一客户端，能够有效的触发前面在目标规则中设置的熔断策略。该客户端的 deployment yaml 内容如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# httpbin-client-deploy.yaml&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin-client-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replicas&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin-client&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ceposta/http-envoy-client-standalone:latest&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;imagePullPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;IfNotPresent&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin-client&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/bin/sleep&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;infinity&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里我们会把给客户端也进行 Sidecar 的注入，以此保证 Istio 对网络交互的控制：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f &amp;lt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;istioctl kube-inject -f httpbin-client-deploy.yaml&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面来观察一下当客户端试图使用太多线程与上游集群建立并发连接时，Envoy 会如何应对。&lt;/p&gt;
+&lt;p&gt;在上面的熔断设置中指定了 &lt;code&gt;maxConnections: 1&lt;/code&gt; 以及 &lt;code&gt;http1MaxPendingRequests: 1&lt;/code&gt;。这意味着如果超过了一个连接同时发起请求，Istio 就会熔断，阻止后续的请求或连接。&lt;/p&gt;
+&lt;p&gt;先尝试通过单线程（&lt;code&gt;NUM_THREADS=1&lt;/code&gt;）创建一个连接，并进行 5 次调用（默认值：&lt;code&gt;NUM_CALLS_PER_CLIENT=5&lt;/code&gt;）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nv&#34;&gt;CLIENT_POD&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get pod &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep httpbin-client &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; awk &lt;span class=&#34;s1&#34;&gt;&amp;#39;{ print $1 }&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt; -c httpbin-client -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;export URL_UNDER_TEST=http://httpbin:8000/get export NUM_THREADS=1 &amp;amp;&amp;amp; java -jar http-client.jar&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;using num threads: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting pool-1-thread-1 with &lt;span class=&#34;nv&#34;&gt;numCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;delayBetweenCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://localhost:15001/get &lt;span class=&#34;nv&#34;&gt;mixedRespTimes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pool-1-thread-1: &lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;5&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;failures&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;0&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;545ms&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以看到所有请求都通过了：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;5&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们可以查询 istio-proxy 的状态，获取更多相关信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt;  -c istio-proxy  -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl localhost:15000/stats&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_cx_http1_total: &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_cx_overflow: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_total: &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_200: &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_2xx: &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_overflow: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_retry: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以看出总共发送了 5 个 &lt;code&gt;HTTP/1.1&lt;/code&gt; 连接，也就是 5 个请求，响应码均为 &lt;code&gt;200&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;下面尝试把线程数提高到 2：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt; -c httpbin-client -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;export URL_UNDER_TEST=http://httpbin:8000/get export NUM_THREADS=2 &amp;amp;&amp;amp; java -jar http-client.jar&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;using num threads: &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting pool-1-thread-1 with &lt;span class=&#34;nv&#34;&gt;numCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;parallelSends&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;delayBetweenCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://httpbin:8000/get &lt;span class=&#34;nv&#34;&gt;mixedRespTimes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting pool-1-thread-2 with &lt;span class=&#34;nv&#34;&gt;numCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;parallelSends&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;delayBetweenCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://httpbin:8000/get &lt;span class=&#34;nv&#34;&gt;mixedRespTimes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pool-1-thread-1: &lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;3&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;failures&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;2&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;96ms&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pool-1-thread-2: &lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;4&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;failures&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;1&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;87ms&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;再次查看 istio-proxy 的状态：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt;  -c istio-proxy  -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl localhost:15000/stats&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep httpbin
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_cx_http1_total: &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_cx_overflow: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_total: &lt;span class=&#34;m&#34;&gt;10&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_200: &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_2xx: &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_503: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_5xx: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_overflow: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_retry: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;总共发送了 10 个 &lt;code&gt;HTTP/1&lt;/code&gt; 连接，只有 7 个 被允许通过，剩余请求被断路器拦截了。其中 &lt;code&gt;upstream_cx_overflow&lt;/code&gt; 的值为 3，表明 &lt;code&gt;maxConnections&lt;/code&gt; 断路器起作用了。&lt;code&gt;Istio-proxy&lt;/code&gt; 允许一定的冗余，你可以将线程数提高到 3，熔断的效果会更明显。&lt;/p&gt;
+&lt;h3 id=&#34;待处理请求队列&#34;&gt;待处理请求队列&lt;/h3&gt;
+&lt;p&gt;测试完 &lt;code&gt;maxConnections&lt;/code&gt; 断路器之后，我们再来测试一下 &lt;code&gt;maxPendingRequests&lt;/code&gt; 断路器。前面已经将 &lt;code&gt;maxPendingRequests&lt;/code&gt; 的值设置为 1，现在按照预想，我们只需要模拟在单个 &lt;code&gt;HTTP/1.1&lt;/code&gt; 连接中同时发送多个请求，就可以触发该断路器开启熔断。由于 &lt;code&gt;HTTP/1.1&lt;/code&gt; 同一个连接只能处理一个请求，剩下的请求只能放到待处理请求队列中。通过限制待处理请求队列的长度，可以对恶意请求、DoS 和系统中的级联错误起到一定的缓解作用。&lt;/p&gt;
+&lt;p&gt;现在尝试通过单线程（&lt;code&gt;NUM_THREADS=1&lt;/code&gt;）创建一个连接，并同时发送 20 个请求（&lt;code&gt;PARALLEL_SENDS=true&lt;/code&gt;，&lt;code&gt;NUM_CALLS_PER_CLIENT=20&lt;/code&gt;）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt; -c httpbin-client -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;export URL_UNDER_TEST=http://httpbin:8000/get export NUM_THREADS=1 export PARALLEL_SENDS=true export NUM_CALLS_PER_CLIENT=20 &amp;amp;&amp;amp; java -jar http-client.jar&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;using num threads: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting pool-1-thread-1 with &lt;span class=&#34;nv&#34;&gt;numCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;parallelSends&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;delayBetweenCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://httpbin:8000/get &lt;span class=&#34;nv&#34;&gt;mixedRespTimes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;finished batch &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;finished batch &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;finished batch &lt;span class=&#34;m&#34;&gt;10&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;finished batch &lt;span class=&#34;m&#34;&gt;15&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pool-1-thread-1: &lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;16&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;failures&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;4&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;116ms&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查询 istio-proxy 的状态：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt;  -c istio-proxy  -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl localhost:15000/stats&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep httpbin &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep pending
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_active: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_failure_eject: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_overflow: &lt;span class=&#34;m&#34;&gt;4&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.upstream_rq_pending_total: &lt;span class=&#34;m&#34;&gt;16&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;upstream_rq_pending_overflow&lt;/code&gt; 的值是 &lt;code&gt;4&lt;/code&gt;，说明有 &lt;code&gt;4&lt;/code&gt; 次调用触发了 &lt;code&gt;maxPendingRequests&lt;/code&gt; 断路器的熔断策略，被标记为熔断。&lt;/p&gt;
+&lt;h3 id=&#34;如果服务完全崩溃怎么办&#34;&gt;如果服务完全崩溃怎么办？&lt;/h3&gt;
+&lt;p&gt;现在我们知道 Envoy 的熔断策略对集群中压力过大的上游服务起到一定的保护作用，但还有一种极端的情况需要我们考虑，如果集群中的某些节点完全崩溃（或者即将完全崩溃）该怎么办？&lt;/p&gt;
+&lt;p&gt;为了专门应对这种情况，Envoy 中引入了&lt;strong&gt;异常检测&lt;/strong&gt;的功能，通过周期性的异常检测来动态确定上游集群中的某些主机是否异常，如果发现异常，就将该主机从连接池中隔离出去。异常检测是&lt;strong&gt;被动&lt;/strong&gt;健康检查的一种形式，Envoy 同时支持&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/health_checking#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;主动健康检查&lt;/a&gt;和被动健康检查，它们可以同时启用，联合决定上游主机的健康状况。&lt;/p&gt;
+&lt;h4 id=&#34;异常检测的隔离算法&#34;&gt;异常检测的隔离算法&lt;/h4&gt;
+&lt;p&gt;根据异常检测的类型，对主机的隔离可以连续执行（例如连续返回 &lt;code&gt;5xx&lt;/code&gt; 状态码），也可以周期性执行（例如配置了周期性成功率检测）。隔离算法的工作流程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;检测到了某个主机异常。&lt;/li&gt;
+&lt;li&gt;如果到目前为止负载均衡池中还没有主机被隔离出去，Envoy 将会立即隔离该异常主机；如果已经有主机被隔离出去，就会检查当前隔离的主机数是否低于设定的阈值（通过 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-max-ejection-percent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.max_ejection_percent&lt;/a&gt; 指定），如果当前被隔离的主机数量不超过该阈值，就将该主机隔离出去，否则不隔离。&lt;/li&gt;
+&lt;li&gt;隔离不是永久的，会有一个时间限制。当主机被隔离后，该主机就会被标记为不健康，并且不会被加入到负载均衡池中，除非负载均衡处于&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/load_balancing/panic_threshold#arch-overview-load-balancing-panic-threshold&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;恐慌&lt;/a&gt;模式。隔离时间等于 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-base-ejection-time&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.base_ejection_time_ms&lt;/a&gt; 的值乘以主机被隔离的次数。所以如果某个主机连续出现故障，会导致它被隔离的时间越来越长。&lt;/li&gt;
+&lt;li&gt;经过了规定的隔离时间之后，被隔离的主机将会自动恢复过来，重新接受调用方的远程调用。通常异常检测会与主动健康检查一起用于全面的健康检查解决方案。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;恐慌模式指的是：在这种情况下，代理服务器会无视负载均衡池的健康标记，重新向所有主机发送数据。这是一个非常棒的机制。在分布式系统中，必须了解到的一点是，有时候“理论上”的东西可能不是正常情况，最好能降低一点要求来防止扩大故障影响。另外一方面，可以对这一比例进行控制（缺省情况下超过 50% 的驱逐就会进入恐慌状态），可以提高，也可以禁止这一阈值。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h4 id=&#34;异常检测类型&#34;&gt;异常检测类型&lt;/h4&gt;
+&lt;p&gt;Envoy 支持以下几种异常检测类型：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;连续 &lt;code&gt;5xx&lt;/code&gt; 响应&lt;/strong&gt;：如果上游主机连续返回一定数量的 &lt;code&gt;5xx&lt;/code&gt; 响应，该主机就会被驱逐。注意，这里的 &lt;code&gt;5xx&lt;/code&gt; 响应不仅包括返回的 &lt;code&gt;5xx&lt;/code&gt; 状态码（包括 &lt;code&gt;500&lt;/code&gt;），也包括 HTTP 路由返回的一个事件（如连接超时和连接错误）。隔离主机所需的 &lt;code&gt;5xx&lt;/code&gt; 响应数量由 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-consecutive-5xx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.consecutive_5xx&lt;/a&gt; 的值控制。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;连续网关故障&lt;/strong&gt;：如果上游主机连续返回一定数量的 &lt;code&gt;&amp;quot;gateway errors&amp;quot;&lt;/code&gt;（&lt;code&gt;502&lt;/code&gt;，&lt;code&gt;503&lt;/code&gt; 或 &lt;code&gt;504&lt;/code&gt; 状态码，但不包括 &lt;code&gt;500&lt;/code&gt;），该主机就会被驱逐。这里同样也包括 HTTP 路由返回的一个事件（如连接超时和连接错误）。隔离主机所需的连续网关故障数量由 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-consecutive-gateway-failure&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.consecutive_gateway_failure&lt;/a&gt; 的值控制。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;调用成功率&lt;/strong&gt;：基于调用成功率的异常检测类型会聚合集群中每个主机的调用成功率，然后根据统计的数据以给定的周期来隔离主机。如果该主机的请求数量小于 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-success-rate-request-volume&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.success_rate_request_volume&lt;/a&gt; 指定的值，则不会为该主机计算调用成功率，因此聚合的统计数据中不会包括该主机的调用成功率。如果在给定的周期内具有最小所需请求量的主机数小于 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#envoy-api-field-cluster-outlierdetection-success-rate-minimum-hosts&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;outlier_detection.success_rate_minimum_hosts&lt;/a&gt; 指定的值，则不会对该集群执行调用成功率检测。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio DestinationRule 与 Envoy 的异常检测参数对照表如下所示：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Envoy paramether&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Envoy upon object&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Istio parameter&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;Istio upon ojbect&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;consecutive_gateway_failure&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.outlier_detection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;consecutiveErrors&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;outlierDetection&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;interval&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.outlier_detection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;interval&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;outlierDetection&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;baseEjectionTime&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.outlier_detection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;baseEjectionTime&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;outlierDetection&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;maxEjectionPercent&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;cluster.outlier_detection&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;maxEjectionPercent&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;outlierDetection&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;Envoy 中还有一些其他参数在 Istio 中暂时是不支持的，具体参考 Envoy 官方文档 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cluster/outlier_detection.proto#cluster-outlierdetection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Outlier detection&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;现在我们回头再来看一下本文最初创建的 DestinationRule 中关于异常检测的配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;outlierDetection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;consecutiveErrors&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;1s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;baseEjectionTime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;3m&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;maxEjectionPercent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该配置表示每秒钟扫描一次上游主机，连续失败 &lt;code&gt;1&lt;/code&gt; 次返回 5xx 错误码的所有主机会被移出连接池 3 分钟。&lt;/p&gt;
+&lt;h4 id=&#34;异常检测示例&#34;&gt;异常检测示例&lt;/h4&gt;
+&lt;p&gt;下面我们通过调用一个 URL 来指定 httpbin 服务返回 &lt;code&gt;502&lt;/code&gt; 状态码，以此来触发连续网关故障异常检测。总共发起 3 次调用，因为 DestinationRule 中的配置要求 Envoy 的异常检测机制必须检测到两个连续的网关故障才会将 httpbin 服务移除负载均衡池。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt; -c httpbin-client -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;export URL_UNDER_TEST=http://httpbin:8000/status/502 export NUM_CALLS_PER_CLIENT=3 &amp;amp;&amp;amp; java -jar http-client.jar&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;using num threads: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting pool-1-thread-1 with &lt;span class=&#34;nv&#34;&gt;numCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;3&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;parallelSends&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;delayBetweenCalls&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://httpbin:8000/status/502 &lt;span class=&#34;nv&#34;&gt;mixedRespTimes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pool-1-thread-1: &lt;span class=&#34;nv&#34;&gt;successes&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;0&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;failures&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;3&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, &lt;span class=&#34;nv&#34;&gt;duration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=[&lt;/span&gt;99ms&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看 istio-proxy 的状态：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;nv&#34;&gt;$CLIENT_POD&lt;/span&gt;  -c istio-proxy  -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl localhost:15000/stats&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep httpbin &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep outlier
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_active: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_consecutive_5xx: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_detected_consecutive_5xx: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_detected_consecutive_gateway_failure: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_detected_success_rate: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_enforced_consecutive_5xx: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_enforced_consecutive_gateway_failure: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_enforced_success_rate: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_enforced_total: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_overflow: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_success_rate: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster.outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;8000&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;httpbin.default.svc.cluster.local.outlier_detection.ejections_total: &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确实检测到了连续网关故障，&lt;code&gt;consecutive_gateway_failure&lt;/code&gt; 的值为 1。但是我通过查看 EDS，发现 Envoy 并没有将 httpbin 服务移出负载均衡池：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;PILOT_SVC_IP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl -n istio-system get svc istio-pilot -o go-template&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{{.spec.clusterIP}}&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl -s http://&lt;span class=&#34;nv&#34;&gt;$PILOT_SVC_IP&lt;/span&gt;:8080/debug/edsz&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;grep &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|8000||httpbin.default.svc.cluster.local&amp;#34;&lt;/span&gt; -B &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; -A &lt;span class=&#34;m&#34;&gt;15&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;clusterName&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;outbound|8000||httpbin.default.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nt&#34;&gt;&amp;#34;locality&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nt&#34;&gt;&amp;#34;lbEndpoints&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;nt&#34;&gt;&amp;#34;endpoint&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;              &lt;span class=&#34;nt&#34;&gt;&amp;#34;socketAddress&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;address&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.30.104.27&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nt&#34;&gt;&amp;#34;portValue&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;8000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;              &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;回去重新看了一下 Envoy 的配置，&lt;code&gt;enforcingConsecutiveGatewayFailure&lt;/code&gt; 的值为 100，理论上 outlierDetection 应该是生效的。但这里我疏忽了 Envoy 的恐慌模式，Envoy 默认的恐慌阈值是 &lt;code&gt;50%&lt;/code&gt;，而 httpbin 应用只有一个 upstream，所以没有被移除。当然这只是个人猜测，暂时也没时间验证，大家可以自己验证一下。&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://preliminary.istio.io/zh/docs/reference/config/istio.networking.v1alpha3/#outlierdetection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio.networking.v1alpha3 OutlierDetection&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://preliminary.istio.io/zh/docs/tasks/traffic-management/circuit-breaking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 流量管理之熔断&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhuanlan.zhihu.com/p/33490531&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Proxy和Netflix Hystrix，究竟谁才是熔断王者？&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/outlier#arch-overview-outlier-detection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Outlier detection&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/load_balancing/panic_threshold#&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Panic threshold&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/microservices/01-microservices-patterns-with-envoy-proxy-part-i-circuit-breaking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microservices Patterns With Envoy Sidecar Proxy, Part I: Circuit Breaking&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>
