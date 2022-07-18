@@ -12,5 +12,111 @@
       <link>https://cloudnative.to/author/mate-atamel/</link>
     </image>
     
+    <item>
+      <title>Istio中的应用程序指标度量</title>
+      <link>https://cloudnative.to/blog/application-metrics-in-istio/</link>
+      <pubDate>Wed, 06 Mar 2019 14:00:26 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/application-metrics-in-istio/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://meteatamel.wordpress.com/2019/01/07/application-metrics-in-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;Istio发送的默认指标有助于了解流量如何在集群中流动。但是，要了解应用程序的行为，还需要应用程序指标。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://prometheus.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus&lt;/a&gt;提供了&lt;a href=&#34;https://prometheus.io/docs/instrumenting/clientlibs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;客户端库&lt;/a&gt;，您可以使用它来检测应用程序并发送监测指标。
+这很好，但也提出了一些问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;您从哪里抓取这些指标？&lt;/li&gt;
+&lt;li&gt;您是使用Istio附带的Prometheus，还是自建新的Prometheus？&lt;/li&gt;
+&lt;li&gt;如果使用Istio附带的Prometheus，那您需要使用什么样的配置来获取这些指标？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;让我们尝试回答这些问题。&lt;/p&gt;
+&lt;h2 id=&#34;istio的prometheus-vs-独立的prometheus&#34;&gt;Istio的Prometheus vs. 独立的Prometheus&lt;/h2&gt;
+&lt;p&gt;在Prometheus中，有一个&lt;a href=&#34;https://prometheus.io/docs/prometheus/latest/federation/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;联邦&lt;/a&gt;功能，它允许一个Prometheus服务端从另一个Prometheus服务端获取指标数据。如果您想将Istio指标和应用程序指标分开，可以为应用程序指标设置一个单独的Prometheus服务端。然后，您可以使用联邦功能来获取应用程序指标以及Istio默认的观测指标。&lt;/p&gt;
+&lt;p&gt;一种更简单的方法是直接使用Istio的Prometheus来提取应用程序的指标，这正是我在这里要重点讨论的。&lt;/p&gt;
+&lt;h2 id=&#34;发送应用程序指标&#34;&gt;发送应用程序指标&lt;/h2&gt;
+&lt;p&gt;要从应用程序发送自定义指标，您需要使用Prometheus的&lt;a href=&#34;https://prometheus.io/docs/instrumenting/clientlibs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;客户端库&lt;/a&gt;来检测应用程序。使用哪个库取决于您使用的语言。作为C#/.NET开发人员，我使用了Prometheus的&lt;a href=&#34;https://github.com/prometheus-net/prometheus-net&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;.NET客户端&lt;/a&gt;，Daniel Oliver的&lt;a href=&#34;https://www.olivercoding.com/2018-07-22-prometheus-dotnetcore/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这篇博客&lt;/a&gt;分步说明了如何从&lt;a href=&#34;http://asp.net/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ASP.NET&lt;/a&gt; Core应用程序发送自定义指标并在本地Prometheus服务端查看它们。&lt;/p&gt;
+&lt;p&gt;您需要注意的一件事是开放Prometheus指标的端口。在&lt;a href=&#34;http://asp.net/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ASP.NET&lt;/a&gt; Core中，默认开放的端口是5000。在本地执行时，应用程序度量指标暴露于&lt;code&gt;localhost:5000/metrics&lt;/code&gt;。然而，当您容器化您的应用程序时，通常会在不同的端口开放您的应用程序服务，例如8080，稍后我们讨论配置时，这就变得相关了。&lt;/p&gt;
+&lt;p&gt;假设您在一个启用Istio的Kubernetes集群上容器化并部署了您的应用程序，现在让我们看看需要做些什么来让Istio的Prometheus获取这些应用程序指标。&lt;/p&gt;
+&lt;h2 id=&#34;配置&#34;&gt;配置&lt;/h2&gt;
+&lt;p&gt;在Istio 1.0.5中，Kubernetes默认安装文件&lt;code&gt;istio-demo.yaml&lt;/code&gt;或&lt;code&gt;istio-demo-auth.yaml&lt;/code&gt;已经在ConfigMap中为Prometheus提供了指标采集配置。您可以搜索&lt;code&gt;prometheus.yml&lt;/code&gt;。这里有两个与应用程序指标抓取相关的任务配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- &lt;span class=&#34;nt&#34;&gt;job_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;kubernetes-pods&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kubernetes_sd_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;role&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;pod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;job_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;kubernetes-pods-istio-secure&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scheme&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这些是从常规Pod以及启用了mTLS的Pod间抓取指标的任务配置。看起来，Istio的Prometheus应该能够自动地抓取应用程序指标。但是，在我首次尝试时，它并没有正常工作。我不确定出了什么问题，但Prometheus有一些默认endpoint端点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;/config&lt;/code&gt;：查看Prometheus的当前配置。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;/metrics&lt;/code&gt;：查看抓取的指标数据。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;/targets&lt;/code&gt;：查看正在被抓取指标的目标以及它们的状态。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;所有这些endpoint端点对于调试Prometheus非常有用：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://raw.githubusercontent.com/servicemesher/website/master/content/blog/application-metrics-in-istio/007uElTfly1g0s0xtqjpzj30l40cbtaw.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;原来，我需要在我的Pod YAML中添加一些注解，以便Prometheus对它们进行指标抓取。我必须通过这些注解告诉Prometheus哪些Pod需要被抓取指标数据，以及在哪个端口进行抓取：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;aspnetcore-v4&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replicas&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;aspnetcore&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v4&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prometheus.io/scrape&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prometheus.io/port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;8080&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;添加注解后，我能够在Prometheus中看到我的应用程序的指标数据：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://raw.githubusercontent.com/servicemesher/website/master/content/blog/application-metrics-in-istio/007uElTfgy1g0sblvrx4tj30l409p74t.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;然而，这只适用于常规Pod，我无法看到启用了mTLS的Pod间的指标数据。&lt;/p&gt;
+&lt;h2 id=&#34;istio证书和prometheus的问题&#34;&gt;Istio证书和Prometheus的问题&lt;/h2&gt;
+&lt;p&gt;经过一番调查后，我联系了Istio团队，结果发现这是个&lt;a href=&#34;https://github.com/istio/istio/issues/10528&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bug&lt;/a&gt;。在Prometheus启动时，它将尝试挂载Istio提供的证书。然而，这些证书此时可能还没有被Istio Citadel颁发。不幸的是，Prometheus不会重试加载证书，这导致抓取受mTLS保护的endpoint端点会产生问题。&lt;/p&gt;
+&lt;p&gt;这里有一个不是十分理想，但是却很容易的解决办法：重新启动Prometheus Pod。重新启动迫使Prometheus获取证书，而且来自启用了mTLS的Pod的应用程序指标也开始被抓取。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;一旦理解了基础知识，获取Istio Prometheus的应用程序指标就非常简单了。希望这篇文章为您提供了实现这一目标所需的背景知识以及需要的配置说明。&lt;/p&gt;
+&lt;p&gt;值得注意的是，Mixer正在被重新设计，并且在未来版本的Istio中，它将直接嵌入Envoy。 在该设计中，您将能够通过Mixer发送应用程序指标数据，并且它将流经与sidecar相同的统一指标处理管道。 这将使应用程序指标的获取能够更容易地实现端到端工作。&lt;/p&gt;
+&lt;p&gt;感谢Istio团队和我的同事Sandeep Dinesh帮助我调试问题，多亏了他们，我才能完成本文。&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>

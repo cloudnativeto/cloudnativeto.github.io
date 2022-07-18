@@ -1413,6 +1413,262 @@ csi.NodeServiceCapability_RPC_UNKNOWN
     </item>
     
     <item>
+      <title>Arm64 银河麒麟系统克隆机器上 k8s vxlan 跨节点不通的一次排查</title>
+      <link>https://cloudnative.to/blog/arm-kylin-clone-vxlan-error/</link>
+      <pubDate>Mon, 09 Nov 2020 00:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/arm-kylin-clone-vxlan-error/</guid>
+      <description>&lt;h2 id=&#34;由来&#34;&gt;由来&lt;/h2&gt;
+&lt;p&gt;和我博客前一篇文章 &lt;a href=&#34;https://zhangguanzhang.github.io/2020/10/20/kylin-v10-k8s-overlay-error/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;银河麒麟 arm64 系统上 k8s 集群跨节点不通的一次排查&lt;/a&gt; 不一样，从来没遇到过这样的问题，这里记录下。实施在客户那边部署业务后，业务在浏览器上无法访问，我远程上去查看日志发现 pod 内部无法 DNS 无法解析，nginx 连不上 upsteam 报错而启动失败，实际上也是跨节点不通。实际排查过程也有往错误的方向浪费了一些时间和尝试，就不写进来了，以正确的角度写下排查过程。&lt;/p&gt;
+&lt;h3 id=&#34;环境信息&#34;&gt;环境信息&lt;/h3&gt;
+&lt;p&gt;OS 是 arm64 的银河麒麟系统：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat /etc/os-release
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;NAME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Kylin Linux Advanced Server&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;VERSION&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;V10 (Tercel)&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ID&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;kylin&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;VERSION_ID&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;V10&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;PRETTY_NAME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Kylin Linux Advanced Server V10 (Tercel)&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ANSI_COLOR&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;0;31&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ uname -a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Linux localhost.localdomain 4.19.90-17.ky10.aarch64 &lt;span class=&#34;c1&#34;&gt;#1 SMP Sun Jun 28 14:27:40 CST 2020 aarch64 aarch64 aarch64 GNU/Linux&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;集群信息（和集群版本没关系）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl version -o json
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;clientVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;major&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;1&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;minor&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;15&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;v1.15.12&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitCommit&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;e2a822d9f3c2fdb5c9bfbe64313cf9f657f0a725&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitTreeState&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;clean&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;buildDate&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2020-05-06T05:17:59Z&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;goVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;go1.12.17&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;compiler&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;gc&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;platform&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;linux/arm64&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;serverVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;major&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;1&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;minor&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;15&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;v1.15.12&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitCommit&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;e2a822d9f3c2fdb5c9bfbe64313cf9f657f0a725&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;gitTreeState&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;clean&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;buildDate&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2020-05-06T05:09:48Z&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;goVersion&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;go1.12.17&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;compiler&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;gc&amp;#34;&lt;/span&gt;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;platform&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;linux/arm64&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;node 信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get node -o wide
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME            STATUS   ROLES         AGE   VERSION    INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                                   KERNEL-VERSION            CONTAINER-RUNTIME
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;172.18.27.252   Ready    master,node   32h   v1.15.12   172.18.27.252   &amp;lt;none&amp;gt;        Kylin Linux Advanced Server V10 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Tercel&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   4.19.90-17.ky10.aarch64   docker://18.9.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;172.18.27.253   Ready    master,node   32h   v1.15.12   172.18.27.253   &amp;lt;none&amp;gt;        Kylin Linux Advanced Server V10 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Tercel&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   4.19.90-17.ky10.aarch64   docker://18.9.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;172.18.27.254   Ready    master,node   32h   v1.15.12   172.18.27.254   &amp;lt;none&amp;gt;        Kylin Linux Advanced Server V10 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Tercel&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   4.19.90-17.ky10.aarch64   docker://18.9.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;coredns 信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n kube-system get po -o wide -l k8s-app&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;kube-dns
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                      READY   STATUS    RESTARTS   AGE     IP              NODE            NOMINATED NODE   READINESS GATES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;coredns-677d9c57f-pqvfv   1/1     Running   &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;          21h     10.187.0.5      172.18.27.253   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;coredns-677d9c57f-zjf86   1/1     Running   &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;          4h45m   10.187.1.12     172.18.27.252   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;排查过程&#34;&gt;排查过程&lt;/h3&gt;
+&lt;p&gt;命令都是在 &lt;code&gt;172.18.27.252&lt;/code&gt; 上执行的，用 &lt;code&gt;dig @coredns_svc_ip +short kubernetes.default.svc.cluster1.local&lt;/code&gt; 测发现时而能解析，时而不能解析，然后发现是跨节点的问题。&lt;/p&gt;
+&lt;p&gt;在 &lt;code&gt;172.18.27.252&lt;/code&gt; 上去请求 &lt;code&gt;172.18.27.253&lt;/code&gt; 上的 coredns 的 metrics 接口：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -I 10.187.0.5:9153/metrics
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在 &lt;code&gt;172.18.27.253&lt;/code&gt; 上抓包:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i flannel.1 host 10.187.0.5 and port &lt;span class=&#34;m&#34;&gt;9153&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;dropped privs to tcpdump
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on flannel.1, link-type EN10MB &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Ethernet&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;, capture size &lt;span class=&#34;m&#34;&gt;262144&lt;/span&gt; bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;^C
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets captured
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets received by filter
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; packets dropped by kernel
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;没有包，在 &lt;code&gt;172.18.27.253&lt;/code&gt; 上抓了下 &lt;code&gt;8472&lt;/code&gt; 端口是正常能收包的。像之前的那个文章 &lt;a href=&#34;https://zhangguanzhang.github.io/2020/10/20/kylin-v10-k8s-overlay-error/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;银河麒麟 arm64 系统上 k8s 集群跨节点不通的一次排查&lt;/a&gt; 看了下，253 机器上查看路由也没问题：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip route get 10.187.1.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;10.187.1.0 via 10.187.1.0 dev flannel.1 src 10.187.0.0 uid &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    cache
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;当时各种手段看了个遍，结果有点眉目了（我应该像上篇文章一样先看下 vxlan 的 vtep 信息的。。。）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get node -o yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -A3 Vtep
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;fe:22:77:eb:2f:a4&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.252
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;fe:22:77:eb:2f:a4&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.253
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;fe:22:77:eb:2f:a4&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.254
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;vtep 的 mac 地址都一样，查看下，发现三台机器都是一样的，看下网卡和 flannel.1 的信息：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -4 a s enp1s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2: enp1s0: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1500&lt;/span&gt; qdisc fq_codel state UP group default qlen &lt;span class=&#34;m&#34;&gt;1000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether dc:2d:cb:17:3e:a1 brd ff:ff:ff:ff:ff:ff
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    inet 172.18.27.252/25 brd 172.18.27.255 scope global noprefixroute enp1s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       valid_lft forever preferred_lft forever
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show  flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;394: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether fe:22:77:eb:2f:a4 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.252 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode none numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 另一台机器&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -4 a s enp1s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2: enp1s0: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1500&lt;/span&gt; qdisc fq_codel state UP group default qlen &lt;span class=&#34;m&#34;&gt;1000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether dc:2d:cb:17:3e:86 brd ff:ff:ff:ff:ff:ff
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    inet 172.18.27.254/25 brd 172.18.27.255 scope global noprefixroute enp1s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       valid_lft forever preferred_lft forever
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;66: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether fe:22:77:eb:2f:a4 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.254 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode none numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以看到网卡 enp1s0 的 mac 是不一样的，查看了下几个机器的网卡配置文件的 UUID 和 HWADDR 都不一样。上面命令可以看出只有 flannel.1 的 MAC 是一样，尝试删除然后重启 flanneld 看看重建咋样：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; flannel.1 down
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; flannel.1 up
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show  flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;4: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether fe:22:77:eb:2f:a4 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.253 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode none numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link delete flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker ps -a &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;grep -m1 flanneld
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;0aa5998260ba        122cdb7aa710                                &lt;span class=&#34;s2&#34;&gt;&amp;#34;/opt/bin/flanneld -…&amp;#34;&lt;/span&gt;    &lt;span class=&#34;m&#34;&gt;5&lt;/span&gt; hours ago          Up &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt; hours                                          k8s_kube-flannel_kube-flannel-ds-2zqr9_kube-system_1ed6eba1-fa30-405e-83d0-314160c25313_1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker restart 0aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;0aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show  flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;22: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether fe:22:77:eb:2f:a4 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.253 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;还是一摸一样，好奇这个 mac 地址如何来的，就去看了下 &lt;a href=&#34;https://github.com/coreos/flannel/blob/v0.11.0/backend/vxlan/vxlan.go#L104-L137&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;flannel 添加 flannel.1 的源码部分&lt;/a&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-golang&#34; data-lang=&#34;golang&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;devAttrs&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;vxlanDeviceAttrs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;vni&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;       &lt;span class=&#34;nb&#34;&gt;uint32&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;cfg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;VNI&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;      &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprintf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;flannel.%v&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;cfg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;VNI&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;vtepIndex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;be&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;extIface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Iface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Index&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;vtepAddr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;  &lt;span class=&#34;nx&#34;&gt;be&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;extIface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;IfaceAddr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;vtepPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;  &lt;span class=&#34;nx&#34;&gt;cfg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;gbp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;       &lt;span class=&#34;nx&#34;&gt;cfg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;GBP&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;dev&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;newVXLANDevice&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;devAttrs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;dev&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;directRouting&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;cfg&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;DirectRouting&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;subnetAttrs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;newSubnetAttrs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;be&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;extIface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ExtAddr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;dev&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;MACAddr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;())&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;dev.MACAddr()&lt;/code&gt; 是直接 return 的 &lt;code&gt;dev.link.HardwareAddr&lt;/code&gt;，goland 里 find usage 下压根没找到赋值的地方。（可以加代码打印下到底 mac 地址从哪里获取的，但是环境是远程的，得一次一次编译发过去太麻烦了我就没弄了）毫无头绪乱排查了一段时间。然后突发奇想手动按照 vxlan 创建的步骤测试添加下看看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link add &lt;span class=&#34;nb&#34;&gt;test&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; dev enp1s0 &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 10.186.0.0 dstport &lt;span class=&#34;m&#34;&gt;8473&lt;/span&gt; nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show &lt;span class=&#34;nb&#34;&gt;test&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;696: test: &amp;lt;BROADCAST,MULTICAST&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noop state DOWN mode DEFAULT group default qlen &lt;span class=&#34;m&#34;&gt;1000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether ca:32:f1:0d:c6:dc brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 10.186.0.0 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8473&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link delete &lt;span class=&#34;nb&#34;&gt;test&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link add &lt;span class=&#34;nb&#34;&gt;test&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; dev enp1s0 &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 10.186.0.0 dstport &lt;span class=&#34;m&#34;&gt;8473&lt;/span&gt; nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show &lt;span class=&#34;nb&#34;&gt;test&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;697: test: &amp;lt;BROADCAST,MULTICAST&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noop state DOWN mode DEFAULT group default qlen &lt;span class=&#34;m&#34;&gt;1000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether ca:32:f1:0d:c6:dc brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 10.186.0.0 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8473&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现手动创建的网络设备 mac 居然也是一样的（实际上 ide 里找上面那个 &lt;code&gt;HardwareAddr&lt;/code&gt; 的赋值是在引入的一个 &lt;code&gt;netlink&lt;/code&gt; 包里赋值的，也就是说 flannel 创建接口的时候和手动添加类似，没有直接设置 mac 地址，而是系统返回的），然后同样步骤在我机器上测试是不一样的，看了下客户是啥服务器，发现居然是虚机。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat /sys/class/dmi/id/product_name
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;KVM Virtual Machine
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;三台机器上添加接口的 mac 地址都是一样的，机器是不是克隆的？询问了下同事，同事说是的。其实这就是引起故障的根源，应该内部 mac 地址默认是不随机的策略。&lt;/p&gt;
+&lt;p&gt;查看下网卡策略是咋样的：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ networkctl status flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ networkctl status enp1s0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;居然都为空，ubuntu 的机器上是有个优先级低的 link 文件的：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ networkctl status enp10s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;● 2: enp10s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       Link File: /lib/systemd/network/99-default.link
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    Network File: n/a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            Type: ether
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;           State: n/a &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;unmanaged&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            Path: platform-80040000000.pcie-controller-pci-0000:0a:00.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          Driver: igb
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          Vendor: Intel Corporation
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;           Model: I210 Gigabit Network Connection
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      HW Address: 00:09:06:xx:xx:xx &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Esteem Networks&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;         Address: 10.226.45.23
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                  fe80::209:xxx:xxxx:xxxx
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;         Gateway: 10.226.45.254
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;一些云主机我看也没这个文件，但是上面添加的接口每次 mac 不一样，应该其他 OS 改了默认的行为。&lt;/p&gt;
+&lt;h3 id=&#34;解决方法&#34;&gt;解决方法&lt;/h3&gt;
+&lt;p&gt;我们可以用 systemd 写一个 link 配置文件改变策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;&amp;#39;EOF&amp;#39;&amp;gt;/etc/systemd/network/10-flannel.link
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;[Match]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;OriginalName=flannel*
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;[Link]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;MACAddressPolicy=none
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 一开始只添加上面的，结果重启后文件没了，下面的文件也追加了下，然后重启还是失效。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 然后上下两个步骤都整就行了。如果你也遇到了，先单独上面的文件试试，不行再下面的也加上试试。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;&amp;#39;EOF&amp;#39;&amp;gt;&amp;gt;/etc/systemd/networkd.conf
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;[Match]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;OriginalName=flannel*
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;[Link]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;MACAddressPolicy=none
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认生效文件&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ networkctl status flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;● 36: flannel.1                                              
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;             Link File: /etc/systemd/network/10-flannel.link
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          Network File: n/a                                 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                  Type: vxlan                               
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                 State: routable &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;unmanaged&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                Driver: vxlan                               
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            HW Address: fe:22:77:eb:2f:a4                   
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                   MTU: &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;min: 68, max: 65535&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;          
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                   VNI: &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;                                   
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                 Local: 172.18.27.252                       
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      Destination Port: &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt;                                
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     Underlying Device: enp1s0                              
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Queue Length &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Tx/Rx&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;: 1/1                                 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;               Address: 10.187.1.0 
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;再测试下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;4: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether fe:22:77:eb:2f:a4 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.253 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip link delete flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker ps -a &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -m1 flanneld
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;f8759c103131        122cdb7aa710                                   &lt;span class=&#34;s2&#34;&gt;&amp;#34;/opt/bin/flanneld -…&amp;#34;&lt;/span&gt;    &lt;span class=&#34;m&#34;&gt;27&lt;/span&gt; minutes ago      Up &lt;span class=&#34;m&#34;&gt;27&lt;/span&gt; minutes                                   k8s_kube-flannel_kube-flannel-ds-85kps_kube-system_127265f3-f3ea-4f89-87e1-aa6c0e0d356f_0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker restart f87
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;f87
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ip -d link show flannel.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;36: flannel.1: &amp;lt;BROADCAST,MULTICAST,UP,LOWER_UP&amp;gt; mtu &lt;span class=&#34;m&#34;&gt;1450&lt;/span&gt; qdisc noqueue state UNKNOWN mode DEFAULT group default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    link/ether 1a:e0:cc:e3:a7:04 brd ff:ff:ff:ff:ff:ff promiscuity &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; minmtu &lt;span class=&#34;m&#34;&gt;68&lt;/span&gt; maxmtu &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    vxlan id &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 172.18.27.253 dev enp1s0 srcport &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;8472&lt;/span&gt; nolearning ttl auto ageing &lt;span class=&#34;m&#34;&gt;300&lt;/span&gt; udpcsum noudp6zerocsumtx noudp6zerocsumrx addrgenmode eui64 numtxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; numrxqueues &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; gso_max_size &lt;span class=&#34;m&#34;&gt;65536&lt;/span&gt; gso_max_segs &lt;span class=&#34;m&#34;&gt;65535&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;果然变了，如果没变尝试把 &lt;code&gt;none&lt;/code&gt; 改成 &lt;code&gt;random&lt;/code&gt; 试试。然后每个节点这样操作后，查看下了下 vtep 信息正常了。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get node -o yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -A3 Vtep
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;9a:1e:00:9d:0c:60&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.252
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;1a:e0:cc:e3:a7:04&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.253
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-data: &lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;VtepMAC&amp;#34;:&amp;#34;fe:22:77:eb:2f:a4&amp;#34;}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/backend-type: vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/kube-subnet-manager: &lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      flannel.alpha.coreos.com/public-ip: 172.18.27.254
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下跨节点通信：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl -I 10.187.0.5:9153/metrics
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;200&lt;/span&gt; OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Length: &lt;span class=&#34;m&#34;&gt;16905&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0.0.4&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;charset&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;utf-8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Fri, &lt;span class=&#34;m&#34;&gt;06&lt;/span&gt; Nov &lt;span class=&#34;m&#34;&gt;2020&lt;/span&gt; 01:47:31 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;总结&#34;&gt;总结&lt;/h3&gt;
+&lt;p&gt;应该一开始就看下 vtep 信息的，其次应该是 os 的问题，缺少 link 文件。还有这个和 flannel 没关系，只要用到 Linux 自带的 vxlan 接口在这种场景上都会出现，例如 calico 新版本也有 vxlan 模式。&lt;/p&gt;
+&lt;h2 id=&#34;参考文档&#34;&gt;参考文档&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.jinbuguo.com/systemd/systemd.link.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;systemd link&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Zookeeper operator 实战</title>
       <link>https://cloudnative.to/blog/zookeeper-operator/</link>
       <pubDate>Mon, 08 Jun 2020 11:00:00 +0800</pubDate>
@@ -2010,6 +2266,263 @@ dynamicConfigFile=/conf/zoo.cfg.dynamic.c00000002
 &lt;li&gt; &lt;a href=&#34;https://mp.weixin.qq.com/s/O94sUDPlEcNKvfbQyrb8-w&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;阿里云携手微软与 Crossplane 社区发布 OAM Kubernetes 标准实现与核心依赖库&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://www.infoq.cn/article/gizNAvObXREqfvWMTvYt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OAM 正式开源：全球首个云原生应用标准定义与架构模型&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>构建 Kubernetes 集群 —— 选择工作节点数量和大小</title>
+      <link>https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/</link>
+      <pubDate>Sun, 08 Sep 2019 18:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/_hu37733ed5210d272631938000c51464ee_243176_a4eea57fda5c14207618780fb8d614db.webp 400w,
+               /blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/_hu37733ed5210d272631938000c51464ee_243176_a34ac03e65630e86966722ff79429976.webp 760w,
+               /blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/_hu37733ed5210d272631938000c51464ee_243176_43c4419c2dd86cac04322fee83806700.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/_hu37733ed5210d272631938000c51464ee_243176_a4eea57fda5c14207618780fb8d614db.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;570&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;本文从多个维度阐述了使用更少的大节点与更多的小节点来组建 Kubernetes 集群各自的优势与劣势，并结合实践经验给出了选择工作节点数量和大小的一般方法。&lt;/p&gt;
+&lt;h2 id=&#34;引言&#34;&gt;引言&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;欢迎来到 Kubernetes 学习园地&lt;/strong&gt;，这是一个常规专栏，收集整理了我们在线上以及线下研讨会上由 Kubernetes 专家回答的最有意思的问题。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;今天问题的答案由 &lt;a href=&#34;https://medium.com/@weibeld&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Daniel Weibel&lt;/a&gt; 给出。Daniel 是一名软件工程师，同时也是 Learnk8s 的讲师。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;如果您希望在下一期中展示您的问题，请&lt;a href=&#34;hello@learnk8s.io&#34;&gt;通过邮件联系我们&lt;/a&gt;或者&lt;a href=&#34;https://twitter.com/learnk8s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在 tweet 上 @learnk8s&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;错过了前几期？&lt;a href=&#34;https://learnk8s.io/bite-sized&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击这里查看往期内容&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;在创建 Kubernetes 集群时，您首先会想到的问题之一就是：“我应该创建何种类型的工作节点，以及应该创建多少个？”。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;如果您正在搭建内部集群，是应该购买最新一代的超级服务器，还是使用数据中心里的十几台旧机器呢？&lt;/p&gt;
+&lt;p&gt;或者您使用的是托管 Kubernetes 服务，例如 &lt;a href=&#34;https://cloud.google.com/kubernetes-engine/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Kubernetes Engine (GKE)&lt;/a&gt;，是应该使用 8 个 &lt;code&gt;n1-standard-1&lt;/code&gt; 实例，还是应该使用 2 个 &lt;code&gt;n1-standard-4&lt;/code&gt; 实例来实现您想要的计算能力呢？&lt;/p&gt;
+&lt;h2 id=&#34;集群容量&#34;&gt;集群容量&lt;/h2&gt;
+&lt;p&gt;一般来说，Kubernetes 集群可以被视为是将一组单个节点抽象为一个大的“超级节点”。这个超级节点的总计算容量（就 CPU 和内存而言）是所有组成节点资源容量的总和。您可以采用多种不同的资源配置方式实现集群所需的目标容量。&lt;/p&gt;
+&lt;p&gt;例如，假如您需要一个总容量为 8 个 CPU 和 32GB 内存的集群。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;例如，因为要在集群上运行的应用程序需要此数量的资源。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;以下是实现集群的两种可能方法：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/cluster-design.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;通过这两种方式构建的集群拥有相同的资源容量，但是一种是使用 4 个较小的节点，而另一种是使用 2 个较大的节点。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;究竟哪种配置方式更好呢？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;为了解决这个问题，让我们对比下二者（即更少的大节点与更多的小节点）各自的优缺点。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;请注意，本文中的“节点”始终代指工作节点。主节点数量和大小的选择是完全不同的主题。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;更少的大节点&#34;&gt;更少的大节点&lt;/h2&gt;
+&lt;p&gt;这方面最极端的一个例子就是由单个工作节点提供整个集群的计算容量。&lt;/p&gt;
+&lt;p&gt;在上面的示例中，这将是一个具有 16 个 CPU 和 16GB 内存的单个工作节点。&lt;/p&gt;
+&lt;h3 id=&#34;使用大节点的优势&#34;&gt;使用大节点的优势&lt;/h3&gt;
+&lt;p&gt;&lt;em&gt;让我们来看看这种方法可能具有的优势。&lt;/em&gt;&lt;/p&gt;
+&lt;h4 id=&#34;更少的管理开销&#34;&gt;更少的管理开销&lt;/h4&gt;
+&lt;p&gt;简单来说，管理少量机器相比管理大量机器会更省力。对节点进行升级和打补丁的操作能很迅速地完成，节点间的同步保持也更容易。此外，对于很少的机器而言，预期故障的绝对数量也会小于使用大量机器的场景。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;但请注意，这主要适用于裸机服务器而不适用于云实例。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;如果您使用云实例（作为托管 Kubernetes 服务的一部分或在云基础架构上安装的 Kubernetes），则实际上是将底层机器的管理外包给了云提供商。因此，管理云中的 10 个节点可能并不比管理云中的单个节点耗费更多管理成本。&lt;/p&gt;
+&lt;h4 id=&#34;更低的单节点成本&#34;&gt;更低的单节点成本&lt;/h4&gt;
+&lt;p&gt;虽然高端机器比低端机器更昂贵，但价格上涨不一定是线性的。换句话说，具有 10 个 CPU 和 10GB 内存的单台机器可能比具有 1 个 CPU 和 1GB 内存的 10 台机器便宜。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;但请注意，如果您使用云实例，这个原则可能并不适用。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;在主要的云提供商 &lt;a href=&#34;https://aws.amazon.com/ec2/pricing/on-demand/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon Web Services&lt;/a&gt;、&lt;a href=&#34;https://cloud.google.com/compute/vm-instance-pricing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Cloud Platform&lt;/a&gt; 和 &lt;a href=&#34;https://azure.microsoft.com/en-us/pricing/calculator/#virtual-machines&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microsoft Azure&lt;/a&gt; 的当前定价方案中，实例价格会随容量线性增加。例如，在 Google Cloud Platform 上，64 个 &lt;code&gt;n1-standard-1&lt;/code&gt; 实例的成本与单个 &lt;code&gt;n1-standard-64&lt;/code&gt; 实例完全相同——这两种方式都为您提供 64 个 CPU 和 240GB 内存。因此，在云上，您通常无法通过使用更大的机器来节省资金投入。&lt;/p&gt;
+&lt;h4 id=&#34;允许运行资源饥饿型应用&#34;&gt;允许运行资源饥饿型应用&lt;/h4&gt;
+&lt;p&gt;具备大型节点可能只是您要在集群中运行的应用程序类型的需求。&lt;/p&gt;
+&lt;p&gt;例如，如果您有一个需要 8GB 内存的机器学习应用程序，则无法在仅具有 1GB 内存的节点的集群上运行它。但是，您可以在具有 10GB 内存节点的集群上运行它。&lt;/p&gt;
+&lt;h3 id=&#34;使用大节点的劣势&#34;&gt;使用大节点的劣势&lt;/h3&gt;
+&lt;p&gt;&lt;em&gt;看完了优势，让我们再来看看劣势。&lt;/em&gt;&lt;/p&gt;
+&lt;h4 id=&#34;每个节点会运行大量-pod&#34;&gt;每个节点会运行大量 Pod&lt;/h4&gt;
+&lt;p&gt;在较少的节点上运行相同的工作负载自然意味着在每个节点上运行更多的 Pod。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;这可能会成为一个问题。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;原因是每个 Pod 都会为在节点上运行的 Kubernetes 代理程序引入一些开销——例如容器运行时（如 Docker）、kubelet 和 cAdvisor。&lt;/p&gt;
+&lt;p&gt;例如，kubelet 对节点上的每个容器执行周期性的 liveness 和 readiness 探测——更多容器意味着在每轮迭代中 kubelet 将执行更多工作。cAdvisor 收集节点上所有容器的资源使用统计信息，并且 kubelet 定期查询此信息并在其 API 上公开它——再次，这意味着每轮迭代中 cAdvisor 和 kubelet 的工作量都会增加。&lt;/p&gt;
+&lt;p&gt;随着 Pod 数量的增长，这些问题的聚积可能会开始减慢系统速度，甚至使集群系统变得不可靠。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/node-overload.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;有报告称，&lt;a href=&#34;https://github.com/kubernetes/kubernetes/issues/45419&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;节点被报告为未就绪&lt;/a&gt;，是因为周期性的的 kubelet 运行状况检查花费了太长时间来迭代节点上的所有容器。&lt;/p&gt;
+&lt;p&gt;出于这些原因，Kubernetes 官方&lt;a href=&#34;https://kubernetes.io/docs/setup/best-practices/cluster-large/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;建议每个节点最多 110 个 Pod&lt;/a&gt;。对于这个数字，Kubernetes 已经进行过相关测试，可以在一般类型的节点上可靠地工作。&lt;/p&gt;
+&lt;p&gt;当然，如果节点的性能足够好，您可能也能够成功地让每个节点运行更多的 Pod ——但很难预测这是否能够顺利进行，也许会遇到一些问题。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;大多数托管 Kubernetes 服务甚至对每个节点的 Pod 数量施加了严格的限制：&lt;/em&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在 &lt;a href=&#34;https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon Elastic Kubernetes Service（EKS）&lt;/a&gt;上，每个节点的最大 Pod 数取决于节点类型，范围从 4 到 737。&lt;/li&gt;
+&lt;li&gt;在 &lt;a href=&#34;https://cloud.google.com/kubernetes-engine/quotas&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Kubernetes Engine（GKE）&lt;/a&gt;上，无论节点类型如何，每个节点的限制为 100 个 Pod。&lt;/li&gt;
+&lt;li&gt;在 &lt;a href=&#34;https://docs.microsoft.com/bs-latn-ba/azure/aks/configure-azure-cni#maximum-pods-per-node&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Azure Kubernetes Service（AKS）&lt;/a&gt;上，默认限制是每个节点 30 个 Pod，但最多可以增加到 250 个。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;因此，如果您计划为每个节点运行大量 Pod，则应该事先进行测试，看能否按预期那样工作。&lt;/p&gt;
+&lt;h4 id=&#34;有限的副本数量&#34;&gt;有限的副本数量&lt;/h4&gt;
+&lt;p&gt;较少的节点可能会限制应用程序的副本数量。&lt;/p&gt;
+&lt;p&gt;例如，如果您有一个由 5 个副本组成的高可用应用程序，但您只有 2 个节点，那么应用程序的有效副本数量将减少到 2。这是因为 5 个副本只能分布在 2 个节点上，如果其中一个节点失败，它可能会同时挂掉该节点上的多个副本。相反，如果您有至少 5 个节点，则每个副本可以在单独的节点上运行，并且单个节点的故障最多只会挂掉其中一个副本。&lt;/p&gt;
+&lt;p&gt;因此，如果您有高可用要求，则可能需要集群节点数大于某个下限值。&lt;/p&gt;
+&lt;h4 id=&#34;更大的破坏范围&#34;&gt;更大的破坏范围&lt;/h4&gt;
+&lt;p&gt;如果您只有几个工作节点，那么节点失败造成的影响比使用大量节点时的影响要大。&lt;/p&gt;
+&lt;p&gt;例如，如果您只有两个节点，那其中一个节点出现故障，就意味着一半的节点会消失。Kubernetes 可以将失败节点的工作负载重新安排到其他节点。但是，如果您只有几个节点，那风险也会增加，因为剩余节点上可能没有足够的备用资源容量来容纳故障节点的所有工作负载。结果是，部分应用程序将永久停机，直到再次启动故障节点。&lt;/p&gt;
+&lt;p&gt;因此，如果您想减少硬件故障的影响，则应该选择更多的节点。&lt;/p&gt;
+&lt;h4 id=&#34;较大的资源伸缩增量&#34;&gt;较大的资源伸缩增量&lt;/h4&gt;
+&lt;p&gt;Kubernetes 为云基础架构提供了 Cluster Autoscaler，允许根据当前需求自动添加或删除节点。如果使用大型节点，则会有较大的资源伸缩增量，这会使资源扩缩容更加笨重。&lt;/p&gt;
+&lt;p&gt;例如，如果您只有 2 个节点，则添加节点意味着将群集容量增加 50%。这可能比您实际需要的资源多得多，就意味着您需要为未使用的资源付费。&lt;/p&gt;
+&lt;p&gt;因此，如果您计划使用集群的自动弹性伸缩功能，则较小的节点允许您进行更轻量且经济高效的资源扩缩容。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;在讨论了更少大节点的优缺点之后，让我们转向更多小节点的场景。&lt;/em&gt;&lt;/p&gt;
+&lt;h2 id=&#34;更多的小节点&#34;&gt;更多的小节点&lt;/h2&gt;
+&lt;p&gt;这种方法通过许多小节点构建集群，而不使用更少的大节点。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;&lt;strong&gt;那它的优缺点又是什么呢？&lt;/strong&gt;&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id=&#34;使用小节点的优势&#34;&gt;使用小节点的优势&lt;/h3&gt;
+&lt;p&gt;使用更多小节点的优点正对应于使用更少大节点的缺点。&lt;/p&gt;
+&lt;h4 id=&#34;减小破坏范围&#34;&gt;减小破坏范围&lt;/h4&gt;
+&lt;p&gt;如果您有更多节点，则每个节点上的 Pod 自然会更少。&lt;/p&gt;
+&lt;p&gt;例如，如果您有 100 个 Pod 和 10 个节点，则每个节点平均只包含 10 个 Pod。这样，即便其中一个节点发生故障，它的影响也仅限于总工作负载的较小的一部分。有可能只有部分应用程序受到影响，并且可能只有少量副本挂掉，因此整个应用程序会仍然保持运行状态。&lt;/p&gt;
+&lt;p&gt;此外，剩余节点上的备用资源很可能足以容纳故障节点的工作负载，因此Kubernetes 可以重新安排所有 Pod，并且您的应用程序可以相对快速地恢复到完全正常的运行状态。&lt;/p&gt;
+&lt;h4 id=&#34;允许更多副本数量&#34;&gt;允许更多副本数量&lt;/h4&gt;
+&lt;p&gt;如果您有一个多副本高可用应用程序以及足够的可用节点，Kubernetes 调度程序可以将每个副本分配给不同的节点。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;您可以通过&lt;a href=&#34;https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#node-affinity&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;节点亲和&lt;/a&gt;、&lt;a href=&#34;https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#inter-pod-affinity-and-anti-affinity&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pod 亲和/反亲和&lt;/a&gt;以及&lt;a href=&#34;https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;污点和容忍&lt;/a&gt;来影响调度程序对 Pod 的调度。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这意味着如果某个节点出现故障，则最多只有一个副本受影响，且您的应用程序仍然可用。&lt;/p&gt;
+&lt;h3 id=&#34;使用小节点的劣势&#34;&gt;使用小节点的劣势&lt;/h3&gt;
+&lt;p&gt;&lt;em&gt;看了使用更多小节点的优点，那它有什么缺点呢？&lt;/em&gt;&lt;/p&gt;
+&lt;h4 id=&#34;较大的节点数量&#34;&gt;较大的节点数量&lt;/h4&gt;
+&lt;p&gt;如果使用较小的节点，则自然需要更多节点来实现给定的集群容量。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;但是大量节点对 Kubernetes 控制平面来说可能是一个挑战。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;例如，每个节点都需要能够与其他节点通信，这使得可能的通信路径数量会按照节点数量的平方增长——所有节点都必须由控制平面管理。&lt;/p&gt;
+&lt;p&gt;Kubernetes controller manager 中的节点控制器定期遍历集群中的所有节点以运行状况检查——更多节点意味着节点控制器的负载更多。&lt;/p&gt;
+&lt;p&gt;更多节点同时也意味着 etcd 数据库上的负载也更多——每个 kubelet 和 kube-proxy 都会成为一个 etcd 的 &lt;a href=&#34;https://etcd.io/docs/v3.3.12/dev-guide/interacting_v3/#watch-key-changes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;watcher&lt;/a&gt; 客户端（通过 APIServer），etcd 必须广播对象变化到这些客户端。&lt;/p&gt;
+&lt;p&gt;通常，每个工作节点都会对主节点上的系统组件施加一些开销。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/cluster-overload.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;据官方统计，Kubernetes 声称&lt;a href=&#34;https://kubernetes.io/docs/setup/best-practices/cluster-large/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;支持最多 5000 个节点的集群&lt;/a&gt;。然而，在实践中，500 个节点可能已经形成了&lt;a href=&#34;https://www.lfasiallc.com/wp-content/uploads/2017/11/BoF_-Not-One-Size-Fits-All-How-to-Size-Kubernetes-Clusters_Guang-Ya-Liu-_-Sahdev-Zala.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;巨大的挑战&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;通过使用性能更高的主节点，往往可以减轻大量工作节点带来的影响。这也正是目前在实践中所应用的——这里是 &lt;code&gt;kube-up&lt;/code&gt; 在云基础架构上使用的&lt;a href=&#34;https://kubernetes.io/docs/setup/best-practices/cluster-large/#size-of-master-and-master-components&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;主节点大小&lt;/a&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.google.com/compute/docs/machine-types&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Cloud Platform&lt;/a&gt;
+&lt;ul&gt;
+&lt;li&gt;5 个工作节点 → &lt;code&gt;n1-standard-1&lt;/code&gt; 主节点&lt;/li&gt;
+&lt;li&gt;500 个工作节点 → &lt;code&gt;n1-standard-32&lt;/code&gt; 主节点&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://aws.amazon.com/ec2/instance-types/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon Web Services&lt;/a&gt;
+&lt;ul&gt;
+&lt;li&gt;5 个工作节点 → &lt;code&gt;m3.medium&lt;/code&gt; 主节点&lt;/li&gt;
+&lt;li&gt;500 个工作节点 → &lt;code&gt;c4.8xlarge&lt;/code&gt; 主节点&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;如您所见，对于 500 个工作节点，使用的主节点分别具有 32 和 36 个 CPU 以及 120GB 和 60GB 内存。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;这些都是相当大的机器！&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;因此，如果您打算使用大量小节点，则需要记住两件事：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;您拥有的工作节点越多，主节点需要的性能就越高&lt;/li&gt;
+&lt;li&gt;如果您计划使用超过 500 个节点，则可能会遇到一些需要付出一些努力才能解决的性能瓶颈&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;像 &lt;a href=&#34;https://www.youtube.com/watch?v=v9cwYvuzROs&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Virtual Kubelet&lt;/a&gt; 这样的新开发产品允许您绕过这些限制，以构建具有大量工作节点的集群。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h4 id=&#34;更多的系统开销&#34;&gt;更多的系统开销&lt;/h4&gt;
+&lt;p&gt;Kubernetes 在每个工作节点上运行一组系统守护进程——包括容器运行时（如 Docker）、kube-proxy 和包含 cAdvisor 的 kubelet。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;cAdvisor 包含在 kubelet 二进制文件中。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;所有这些守护进程一起消耗固定数量的资源。&lt;/p&gt;
+&lt;p&gt;如果使用许多小节点，则这些系统组件消耗的资源占比会增大。&lt;/p&gt;
+&lt;p&gt;例如，假设单个节点的所有系统守护程序一起使用 0.1 个 CPU 和 0.1GB 内存。如果您拥有 10 个 CPU 和 10GB 内存的单个节点，那么守护程序将占用集群容量的 1%。而如果您有 1 个 CPU 和 1GB 内存的 10 个节点，则后台程序将占用集群容量的 10%。在第二种情况下，10% 的资源消耗用于运行系统，而在第一种情况下，它只占 1%。&lt;/p&gt;
+&lt;p&gt;因此，如果您希望最大化基础架构支出的回报，那么您可能会喜欢更少的节点。&lt;/p&gt;
+&lt;h4 id=&#34;更低的资源利用率&#34;&gt;更低的资源利用率&lt;/h4&gt;
+&lt;p&gt;如果您使用较小的节点，那么可能会产生大量资源碎片因资源太少而无法分配给任何工作负载，最终保持未使用状态。&lt;/p&gt;
+&lt;p&gt;例如，假设您的所有 Pod 都需要 0.75GB 的内存。如果您有 10 个 1GB 内存的节点，那么最多可以运行 10 个这样的 Pod——您最终会在每个节点上有一块 0.25GB 的内存不能使用。这意味着，集群总内存的 25% 被浪费了。相反，如果您使用具有 10GB 内存的单个节点，那么您可以运行 13 个 Pod ——您最终会在这个节点上有一块 0.25GB 的内存不能使用。在这种情况下，您只会浪费 2.5% 的内存。&lt;/p&gt;
+&lt;p&gt;因此，如果您想最大限度地减少资源浪费，使用更大的节点可能会带来更好的结果。&lt;/p&gt;
+&lt;h4 id=&#34;小节点限制-pod-运行数量&#34;&gt;小节点限制 Pod 运行数量&lt;/h4&gt;
+&lt;p&gt;在某些云基础架构上，小节点上允许的最大 Pod 数量比您预期的要限制得更多。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://aws.amazon.com/eks/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon Elastic Kubernetes Service（EKS）&lt;/a&gt;就是这种情况，其中&lt;a href=&#34;https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;每个节点的最大 Pod 数&lt;/a&gt;取决于实例类型。&lt;/p&gt;
+&lt;p&gt;例如，对于 &lt;code&gt;t2.medium&lt;/code&gt; 实例，最大 Pod 数为 17，&lt;code&gt;t2.small&lt;/code&gt; 为 11，而 &lt;code&gt;t2.micro&lt;/code&gt;为 4。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;这些都是非常小的数字！&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;任何超出这些限制的 Pod 都无法由 Kubernetes 调度，并被无限期地保持在 Pending 状态。&lt;/p&gt;
+&lt;p&gt;如果您不了解这些限制，则可能导致难以发现的错误。&lt;/p&gt;
+&lt;p&gt;因此，如果您计划在 Amazon EKS 上使用小节点，请&lt;a href=&#34;https://github.com/awslabs/amazon-eks-ami/blob/master/files/eni-max-pods.txt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;检查相应的每节点 Pod 数量限制&lt;/a&gt;，并计算节点是否可以容纳所有 Pod。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;&lt;em&gt;那么，您应该在集群中使用更少的大节点还是更多的小节点呢？&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;这没有明确的答案。&lt;/p&gt;
+&lt;p&gt;您要部署到集群的应用程序类型可能会影响您的决策。&lt;/p&gt;
+&lt;p&gt;例如，如果您的应用程序需要 10GB 内存，则可能不应使用小节点——集群中的节点应至少具有 10GB 内存。或者，如果您的应用程序需要 10 副本以实现高可用，那么您可能不应该只使用 2 个节点——您的集群应该至少有 10 个节点。&lt;/p&gt;
+&lt;p&gt;对于中间的所有场景，它取决于您的具体需求。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;以上哪项优缺点与您相关？哪项与您不相关？&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;话虽如此，但没有规则说所有节点必须具有相同的大小。没有什么能阻止您使用不同大小的节点来混合构建集群。Kubernetes 集群的工作节点可以是完全异构的。这可能会让您权衡两种方法的优缺点。&lt;/p&gt;
+&lt;p&gt;最后，实践是检验真理的唯一标准——最好的方法是反复试验并找到最适合您的资源配置组合！&lt;/p&gt;
 </description>
     </item>
     
