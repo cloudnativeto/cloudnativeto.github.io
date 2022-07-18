@@ -5,12 +5,843 @@
     <link>https://cloudnative.to/tag/ebpf/</link>
       <atom:link href="https://cloudnative.to/tag/ebpf/index.xml" rel="self" type="application/rss+xml" />
     <description>ebpf</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Wed, 27 Oct 2021 13:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Thu, 27 Jan 2022 09:24:17 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/media/sharing.png</url>
       <title>ebpf</title>
       <link>https://cloudnative.to/tag/ebpf/</link>
     </image>
+    
+    <item>
+      <title>如何在产品中引入 eBPF 以增加可观察性</title>
+      <link>https://cloudnative.to/blog/how-to-add-bpf-observability/</link>
+      <pubDate>Thu, 27 Jan 2022 09:24:17 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/how-to-add-bpf-observability/</guid>
+      <description>&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;本文译自 &lt;a href=&#34;https://www.brendangregg.com/blog/2021-07-03/how-to-add-bpf-observability.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;How To Add eBPF Observability To Your Product&lt;/a&gt;，原文发布于 2021 年 7月 3 日。本文作者 Brendan Gregg 是 eBPF 领域的专家，出版过多本相关书籍，本文是他给想要在产品中引入 eBPF 增加可观察性人员的忠告。&lt;/p&gt;
+&lt;h2 id=&#34;正文&#34;&gt;正文&lt;/h2&gt;
+&lt;p&gt;现在有一场军备竞赛，即增加 &lt;a href=&#34;https://www.brendangregg.com/blog/2021-07-03/BPF&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF&lt;/a&gt; 的军备竞赛，在这篇文章中，我将介绍如何快速做到这一点。这也适用于人们将其添加到自己的内部监测系统中。&lt;/p&gt;
+&lt;p&gt;人们喜欢在他们建立了原型或构建了产品之后向我展示他们的 BPF 可观察性产品，但我常常在他们开始之前给出建议。作为 BPF 可观察性的领导者，这是我在最近的谈话中一直包含的建议，现在我把它纳入这篇文章中。&lt;/p&gt;
+&lt;p&gt;首先，我知道你很忙。你甚至可能不喜欢 BPF。为了务实起见，我将描述如何花最少的精力来获得最大的价值。把这看成是 “第一版”。一个相当有用的出发点。无论你是否遵循这个建议，至少请你理解它，以避免以后的遗憾和痛苦。&lt;/p&gt;
+&lt;p&gt;如果你正在使用开源监控平台，首先检查它是否已经有一个 BPF 代理。这篇文章假设它没有，而且你将首次添加一些东西。&lt;/p&gt;
+&lt;h2 id=&#34;1-运行第一个工具&#34;&gt;1. 运行第一个工具&lt;/h2&gt;
+&lt;p&gt;首先安装 &lt;a href=&#34;https://github.com/iovisor/bcc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bcc&lt;/a&gt; 或 &lt;a href=&#34;https://github.com/iovisor/bpftrace&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bpftrace&lt;/a&gt; 工具。例如，Ubuntu 上的 bcc。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# apt-get install bpfcc-tools&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后尝试运行一个工具。例如，使用 execsnoop (8) 查看带有时间戳的进程执行情况。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# execsnoop-bpfcc -T&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TIME     PCOMM            PID    PPID   RET ARGS
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 service          &lt;span class=&#34;m&#34;&gt;828567&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;6009&lt;/span&gt;     &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/sbin/service --status-all
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 basename         &lt;span class=&#34;m&#34;&gt;828568&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828567&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 basename         &lt;span class=&#34;m&#34;&gt;828569&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828567&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/bin/basename /usr/sbin/service
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 env              &lt;span class=&#34;m&#34;&gt;828570&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828567&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/bin/env -i &lt;span class=&#34;nv&#34;&gt;LANG&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;en_AU.UTF-8 &lt;span class=&#34;nv&#34;&gt;LANGUAGE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;en_AU:en &lt;span class=&#34;nv&#34;&gt;LC_CTYPE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_NUMERIC&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_TIME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_COLLATE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_MONETARY&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_MESSAGES&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_PAPER&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_NAME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_ADDRESS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_TELEPHONE&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_MEASUREMENT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_IDENTIFICATION&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;LC_ALL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;PATH&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/opt/local/bin:/opt/local/sbin:/usr/local/git/bin:/home/bgregg/.local/bin:/home/bgregg/bin:/opt/local/bin:/opt/local/sbin:/ &lt;span class=&#34;nv&#34;&gt;TERM&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;xterm-256color /etc/init.d/acpid 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 acpid            &lt;span class=&#34;m&#34;&gt;828570&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828567&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /etc/init.d/acpid status
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 run-parts        &lt;span class=&#34;m&#34;&gt;828571&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828570&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/bin/run-parts --lsbsysinit --list /lib/lsb/init-functions.d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 systemctl        &lt;span class=&#34;m&#34;&gt;828572&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828570&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/bin/systemctl -p LoadState --value show acpid.service
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:36:15 readlink         &lt;span class=&#34;m&#34;&gt;828573&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;828570&lt;/span&gt;   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; /usr/bin/readlink -f /etc/init.d/acpid
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;...&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;虽然很基本，但我仅用这个工具就解决了很多 perf 问题，包括针对配置错误的系统，其中一个 shell 脚本正在循环启动失败的进程，以及当一些小程序崩溃并每隔几分钟就重启但还没有被注意到时。&lt;/p&gt;
+&lt;h2 id=&#34;2-为你的产品添加一个工具&#34;&gt;2. 为你的产品添加一个工具&lt;/h2&gt;
+&lt;p&gt;现在想象一下将 execsnoop (8) 添加到你的产品中。你可能已经在你所有的客户系统上运行了代理。他们是否有办法运行一个命令并返回文本输出？或者运行一个命令并将输出发送到其他地方进行聚合（S3、Hive、Druid 等）？有很多选择，这实际上是你自己基于现有系统和客户环境的偏好。&lt;/p&gt;
+&lt;p&gt;当你把第一个工具添加到你的产品中时，让它在短时间内运行，比如 10 到 60 秒。我刚刚注意到 execsnoop (8) 还没有持续时间选项，所以在这期间你可以用 &lt;code&gt;watch -s2 60 execsnoop-bpfcc&lt;/code&gt; 来包装它。 如果你想 24 小时运行这些工具，首先要研究开销以了解成本。低频率的事件，如进程的执行，捕捉起来应该是可以忽略不计的。&lt;/p&gt;
+&lt;p&gt;不使用 bcc，你也可以使用 &lt;a href=&#34;https://github.com/iovisor/bpftrace&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bpftrace&lt;/a&gt; 版本。这些通常没有封装选项（-v、-l 等），但有一个 json 输出模式。例如：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# bpftrace -f json execsnoop.bt &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;attached_probes&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;probes&amp;#34;&lt;/span&gt;: 2&lt;span class=&#34;o&#34;&gt;}}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;printf&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;TIME(ms)   PID   ARGS\n&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;printf&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;2737       849176 &amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;join&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;ls -F&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;printf&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;5641       849178 &amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;join&amp;#34;&lt;/span&gt;, &lt;span class=&#34;s2&#34;&gt;&amp;#34;data&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;date&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;添加这种模式是为了使 BPF 的可观测性产品可以建立在 bpftrace 之上。&lt;/p&gt;
+&lt;h2 id=&#34;3-不要担心依赖性问题&#34;&gt;3. 不要担心依赖性问题&lt;/h2&gt;
+&lt;p&gt;我建议你在客户系统上安装 bcc 或 bpftrace，它们目前有 llvm 依赖。这可能会增加到几十 MB，这对一些资源有限的环境（嵌入式）是个问题。我们一直在做大量的工作，以便在未来解决这个问题。 &lt;a href=&#34;https://www.brendangregg.com/blog/2020-11-04/bpf-co-re-btf-libbpf.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BTF and CO-RE&lt;/a&gt;（而不是 Python），最终将意味着你可以安装 100KB 的无依赖性的工具二进制版本。bpftrace 也有一个类似的计划，使用较新的内核特性生成一个小的无依赖性的二进制版本。&lt;/p&gt;
+&lt;p&gt;这确实需要至少 Linux 5.8 才能很好地工作，而你的客户可能几年都不会运行这个系统。在这期间，我建议暂时不要担心 llvm 的依赖关系，因为它以后会被修复。&lt;/p&gt;
+&lt;p&gt;请注意，并不是所有的 Linux 发行版都启用了 &lt;code&gt;CONFIG_DEBUG_INFO_BTF=y&lt;/code&gt;，这对于 BTF 和 CO-RE 的未来是必要的。主要的发行版已经设置了它，比如在 Ubuntu 20.10、Fedora 30 和 RHEL 8.2。但如果你知道你的一些客户正在运行一些不常见的东西，请检查并鼓励他们或发行商设置 &lt;code&gt;CONFIG_DEBUG_INFO_BTF=y&lt;/code&gt; 和 &lt;code&gt;CONFIG_DEBUG_INFO_BTF_MODULES=y&lt;/code&gt;，以避免未来的痛苦。&lt;/p&gt;
+&lt;h2 id=&#34;4-第-1-版仪表板&#34;&gt;4. 第 1 版仪表板&lt;/h2&gt;
+&lt;p&gt;现在你的产品中有了一个 BPF 可观察性工具，是时候增加更多的工具了。下面是你可以运行的十大工具，并作为一个通用的 BPF 可观察性仪表盘来展示，同时还有建议的可视化。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;编号&lt;/th&gt;
+&lt;th&gt;工具&lt;/th&gt;
+&lt;th&gt;展示&lt;/th&gt;
+&lt;th&gt;可视化&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;1.&lt;/td&gt;
+&lt;td&gt;execsnoop&lt;/td&gt;
+&lt;td&gt;新进程（通过 exec (2)）&lt;/td&gt;
+&lt;td&gt;表格&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;2.&lt;/td&gt;
+&lt;td&gt;opensnoop&lt;/td&gt;
+&lt;td&gt;打开的文件&lt;/td&gt;
+&lt;td&gt;表格&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;3.&lt;/td&gt;
+&lt;td&gt;ext4slower&lt;/td&gt;
+&lt;td&gt;慢速文件系统 I/O&lt;/td&gt;
+&lt;td&gt;表格&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;4.&lt;/td&gt;
+&lt;td&gt;biolatency&lt;/td&gt;
+&lt;td&gt;磁盘 I/O 延迟柱状图&lt;/td&gt;
+&lt;td&gt;热力图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;5.&lt;/td&gt;
+&lt;td&gt;biosnoop&lt;/td&gt;
+&lt;td&gt;每个事件的磁盘 I/O 细节&lt;/td&gt;
+&lt;td&gt;表格，偏移热图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;6.&lt;/td&gt;
+&lt;td&gt;cachestat&lt;/td&gt;
+&lt;td&gt;文件系统高速缓存统计&lt;/td&gt;
+&lt;td&gt;线状图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;7.&lt;/td&gt;
+&lt;td&gt;tcplife&lt;/td&gt;
+&lt;td&gt;TCP 连接&lt;/td&gt;
+&lt;td&gt;表格，分布式图表&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;8.&lt;/td&gt;
+&lt;td&gt;tcpretrans&lt;/td&gt;
+&lt;td&gt;TCP 重传&lt;/td&gt;
+&lt;td&gt;表格&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9.&lt;/td&gt;
+&lt;td&gt;runqlat&lt;/td&gt;
+&lt;td&gt;CPU 调度器的延迟&lt;/td&gt;
+&lt;td&gt;热力图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;10.&lt;/td&gt;
+&lt;td&gt;profile&lt;/td&gt;
+&lt;td&gt;CPU 堆栈跟踪样本&lt;/td&gt;
+&lt;td&gt;火焰图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;这是在我的 &lt;a href=&#34;https://github.com/iovisor/bcc/blob/master/docs/tutorial.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bcc Tutorial&lt;/a&gt; 的，而且很多也存在于 bpftrace 中。我选择这些是为了用最少的工具找到最大的性能优势。&lt;/p&gt;
+&lt;p&gt;请注意，runqlat 和 profile 会有明显的开销，所以我只运行这些工具 10 到 60 秒，然后生成一份报告。有些工具的开销很低，如果需要的话可以 24 小时运行（例如 execsnoop、biolatency、tcplife、tcpretrans）。&lt;/p&gt;
+&lt;p&gt;在 bcc 和 bpftrace 资源库中，已经有以手册和实例文件形式存在的文档，你可以链接到这些文档，以帮助你的客户了解工具的输出。例如，在 &lt;a href=&#34;https://github.com/iovisor/bcc/blob/master/tools/execsnoop_example.txt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bcc&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/iovisor/bpftrace/blob/master/tools/execsnoop_example.txt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bpftrace&lt;/a&gt; 有 execsnoop (8) 的示例文件。&lt;/p&gt;
+&lt;p&gt;完成这些后，你就有了第一版的仪表板。&lt;/p&gt;
+&lt;h2 id=&#34;bcc-与-bpftrace&#34;&gt;bcc 与 bpftrace&lt;/h2&gt;
+&lt;p&gt;bcc 工具是最容易使用的，因为它们通常有很多命令行选项。bpftrace 工具更容易编辑和定制，而且 bpftrace 有一个 json 输出模式。&lt;/p&gt;
+&lt;p&gt;如果你是追踪的新手，就用 bcc 吧。如果你想做一些黑客和定制的工具，就用 bpftrace。最后，它们都是不错的选择。&lt;/p&gt;
+&lt;h2 id=&#34;案例研究netflix&#34;&gt;案例研究：Netflix&lt;/h2&gt;
+&lt;p&gt;Netflix 正在建立一个新的 GUI，在这些工具的 bpftrace 版本的基础上，做这个工具仪表盘和更多的工作。架构如图。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/how-to-add-bpf-observability/008i3skNly1gys3a6aaa2j31310u0tcj_hu1281580f5509380cd815e555938ab274_151424_1e949c95cac35c688b74d4c44cbaa3b0.webp 400w,
+               /blog/how-to-add-bpf-observability/008i3skNly1gys3a6aaa2j31310u0tcj_hu1281580f5509380cd815e555938ab274_151424_527c9635c03f4093f9256fe1c8dcb34b.webp 760w,
+               /blog/how-to-add-bpf-observability/008i3skNly1gys3a6aaa2j31310u0tcj_hu1281580f5509380cd815e555938ab274_151424_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-to-add-bpf-observability/008i3skNly1gys3a6aaa2j31310u0tcj_hu1281580f5509380cd815e555938ab274_151424_1e949c95cac35c688b74d4c44cbaa3b0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;584&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;虽然 bpftrace 二进制文件安装在所有目标系统上，但 bpftrace 工具（文本文件）却在网络服务器上，并在需要时被推送出去。这意味着我们可以通过在一个地方更新工具来确保我们一直在运行最新版本的工具。&lt;/p&gt;
+&lt;p&gt;这是目前我们 FlameCommander 用户界面的一部分，它也在云端运行火焰图。我们以前的 BPF GUI 是 &lt;a href=&#34;https://github.com/Netflix/vector&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Vector&lt;/a&gt; 的一部分，并使用了 bcc，但我们后来废弃了它。我们可能会在某个时候开源新的 GUI，并在 Netflix 技术博客上发表相关文章。&lt;/p&gt;
+&lt;h2 id=&#34;案例研究facebook&#34;&gt;案例研究：Facebook&lt;/h2&gt;
+&lt;p&gt;Facebook 是 BPF 的高级用户，但他们如何在整个集群中运行工具的深层细节并没有完全公开。根据 bcc 的活动，以及他们对 BTF 和 CO-RE 技术的开发，我十分怀疑他们的解决方案是基于 bcc 的 libbpf-tool 版本。&lt;/p&gt;
+&lt;h2 id=&#34;移植的陷阱&#34;&gt;移植的陷阱&lt;/h2&gt;
+&lt;p&gt;BPF 追踪工具就像应用程序和内核的补丁。它们需要不断的更新以保持在不同的软件版本中工作。把它们移植到不同的语言，然后不维护它们，可能就像试图把 Linux 4.15 的补丁应用于 Linux 5.12。如果你运气好，它就会工作！如果你不走运，补丁就会应用，但会以一种微妙的方式破坏一些东西，直到后来你才注意到。这取决于工具。&lt;/p&gt;
+&lt;p&gt;作为一个极端的例子，我在 2014 年休假时写了 cachestat (8)，用于 Netflix cloud，当时是 Linux 3.2 和 3.13 的混合版本。BPF 在这些版本上并不存在，所以我使用了 Linux 3.2 上的基本 Ftrace 功能。我把这种方法描述为 &lt;a href=&#34;https://www.brendangregg.com/blog/2014-12-31/linux-page-cache-hit-ratio.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;brittle&lt;/a&gt;， &lt;a href=&#34;https://github.com/brendangregg/perf-tools/blob/master/fs/cachestat&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sandcastle&lt;/a&gt; 需要随着内核的变化而进行维护。后来，它被移植到了带有 kprobes 的 BPF 上，现在已经被重写并包含在商业可观察性产品中。我听说它在较新的内核上有问题，打印的输出没有意义。它真的需要一次大修。当我（或某人）做了这个工作，任何从 bcc 上拉取更新的人都会自动得到固定的版本，不需要费力。那些重写的人将需要重写自己的版本。我担心他们不会这样做，而客户将在多年来一直运行一个错误的 cachestat (8) 版本。&lt;/p&gt;
+&lt;p&gt;请注意，如果在我写 cachestat (8) 的时候，BPF 在我的目标环境中是可用的，我的编码方式就会完全不同。人们正在移植为 Linux 3.2 编写的东西，并在 Linux 5.x 上运行它。&lt;/p&gt;
+&lt;p&gt;在以前的一篇博文 &lt;a href=&#34;https://www.brendangregg.com/blog/2021-06-04/an-unbelievable-demo.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;An Unbelievable Demo&lt;/a&gt; 中，谈到了很多年前发生的类似情况，即在没有更新的情况下使用旧的追踪工具版本。&lt;/p&gt;
+&lt;p&gt;我所描述的问题是针对 BPF 软件和内核追踪的。作为一个不同的例子，我的火焰图软件已经被重写了十几次，由于它是一个简单而完备的算法，我不认为这有什么大问题。我更喜欢人们帮助更新 &lt;a href=&#34;https://github.com/spiermar/d3-flame-graph&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;d3 version&lt;/a&gt; 但如果人们自己做，那也没什么大不了的。你可以给它编码，它将永远工作。基于 uprobe 和 kprobe 的 BPF 工具就不是这样了，因为它们确实需要维护。&lt;/p&gt;
+&lt;h2 id=&#34;像系统管理员一样思考而不是像程序员一样思考&#34;&gt;像系统管理员一样思考，而不是像程序员一样思考&lt;/h2&gt;
+&lt;p&gt;总之，首先检查你的监控系统是否已经有一个 BPF 代理，如果没有，就在现有的基础上构建一个 &lt;a href=&#34;https://github.com/iovisor/bcc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bcc&lt;/a&gt; 或 &lt;a href=&#34;https://github.com/iovisor/bpftrace&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bpftrace&lt;/a&gt; 工具，而不是从头开始重写一切。这是像一个安装和维护软件的系统管理员那样思考，而不是像一个编码所有东西的程序员那样思考。安装 bcc 或 bpftrace 工具，把它们添加到你的可观察性产品中，并根据需要拉取包的更新。这将是一个快速而有用的版本。BPF 启动和运行了！&lt;/p&gt;
+&lt;p&gt;我看到人们反而像程序员一样思考，觉得他们必须从深入学习 bcc 和 BPF 编程。然后，在发现所有的东西都是 C 语言或 Python 写的之后，有些人就用不同的语言重写了。&lt;/p&gt;
+&lt;p&gt;首先，学好 bcc 和 BPF 需要几周时间；学习系统跟踪的微妙之处和陷阱可能需要几个月或几年。为了让你了解你所面临的情况，请看我的 &lt;a href=&#34;https://www.brendangregg.com/blog/2021-06-15/bpf-internals.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BPF Internals&lt;/a&gt; 讲座。如果你真的想做这个，并且有时间，你当然可以（你可能会在 Tracing 会议上遇到我。在 Linux Plumber’s 或追 Tracing 会上见！）但是，如果你在某个期限内要增加 BPF 的可观察性，那就试着像一个系统管理员那样思考，并在现有的工具基础上进行构建。这是快速的方法。以后再像程序员那样思考，如果你有时间的话。&lt;/p&gt;
+&lt;p&gt;第二，BPF 软件，特别是某些基于 kprobe 的工具，需要持续的维护。一个工具可能在 Linux 5.3 上工作，但在 5.4 上就会坏掉，因为一个被追踪的函数被重新命名或增加了一个新的代码路径。BPF 库和框架也在变化和发展，最近的一次是 BTF 和 CO-RE 支持。这是我希望人们在选择重写它们之前要考虑的问题。你是否也有计划重写所有的更新，或者你最终会被困在一个旧的库的端口上？拉取所有的更新比维护你自己的版本更容易。&lt;/p&gt;
+&lt;p&gt;最后，如果你有一个比我们在 bcc 和 bpftrace 中使用的更好的 BPF 库或框架的好主意呢？和我们谈谈，试试，创新一下。我们正处于 BPF 时代的开端，还有很多东西需要探索。但请先了解现有的情况以及你所承担的维护负担。你的精力可能会被用来在现有的基础上创造新的东西，而不是移植旧的东西。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>eBPF 和 Wasm：探索服务网格数据平面的未来</title>
+      <link>https://cloudnative.to/blog/ebpf-wasm-service-mesh/</link>
+      <pubDate>Tue, 11 Jan 2022 10:55:44 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/ebpf-wasm-service-mesh/</guid>
+      <description>&lt;p&gt;本文译自 &lt;a href=&#34;https://infoq.com/news/2022/01/ebpf-wasm-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF and Wasm: Exploring the Future of the Service Mesh Data Plane&lt;/a&gt;，作者 Vivian Hu，发布于 2022 年 1 月 10 日。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;前段时间，有人提出使用 eBPF 取代服务网格中的 sidecar 代理，该观点已经发出，就在服务网格和云原生社区中引起了“轩然大波”。后来也有不少人指出该方案实属武断，不切实际。本文就总结了 eBPF 在服务网格数据平面中的作用，以及使用 Wasm 这种新的方案。&lt;/p&gt;
+&lt;h2 id=&#34;正文&#34;&gt;正文&lt;/h2&gt;
+&lt;p&gt;2021 年 12 月 2 日，Cilium 项目宣布了 &lt;a href=&#34;https://cilium.io/blog/2021/12/01/cilium-service-mesh-beta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium Service Mesh&lt;/a&gt; 的 beta 测试计划。在谷歌云基于 eBPF 的 Google Cloud Kubernetes Service（GKS）Dataplane V2（于 2020 年 8 月发布）所开创的概念基础上，Cilium Service Mesh 提倡 “无 sidecar 服务网格 &amp;quot; 的理念。它扩展了 Cilium eBPF 产品，以处理服务网格中的大部分 sidecar 代理功能，包括 L7 路由和负载均衡、TLS 终止、访问策略、健康检查、日志和跟踪，以及内置的 Kubernetes Ingress。&lt;/p&gt;
+&lt;p&gt;Cillium 的创建者 Isovalent 在一篇题为 “&lt;a href=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;告别 Sidecar—— 使用 eBPF 解锁内核级服务网格&lt;/a&gt; “的文章中解释了使用 eBPF 作为 sidecar 代理的理由。&lt;/p&gt;
+&lt;p&gt;它将把我们从 sidecar 模型中解放出来，并允许我们将现有的代理技术整合到现有的内核命名空间概念中，使它们成为我们每天都在使用的容器抽象的一部分。&lt;/p&gt;
+&lt;p&gt;简而言之，eBPF 有望解决服务网格中的一个主要痛点 —— 当有许多细粒度的微服务时，性能堪忧。然而，使用 eBPF 来取代 sidecar 代理这个想法也是存在争议的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-告别-sidecar&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;告别 sidecar&#34; srcset=&#34;
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3uba27j31x70u0dk7_hu6485f23e60e2e8e9568294bae27898e8_171400_3ec517e0bfbdc809387e973812172b6f.webp 400w,
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3uba27j31x70u0dk7_hu6485f23e60e2e8e9568294bae27898e8_171400_e9e66ec6f944a2d531d118d18b86143b.webp 760w,
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3uba27j31x70u0dk7_hu6485f23e60e2e8e9568294bae27898e8_171400_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3uba27j31x70u0dk7_hu6485f23e60e2e8e9568294bae27898e8_171400_3ec517e0bfbdc809387e973812172b6f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;329&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      告别 sidecar
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;（来源：&lt;a href=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;告别 Sidecar—— 使用 eBPF 解锁内核级服务网格&lt;/a&gt;）&lt;/p&gt;
+&lt;p&gt;服务网格中的数据平面指的是管理数据流量如何被路由和交付给微服务应用的基础设施服务。目前，这是通过使用服务代理来实现的。这种设计模式通常也被称为 Sidecar 模式。Sidecar 允许其附属的微服务透明地与服务网格中的其他组件发出和接收请求。&lt;/p&gt;
+&lt;p&gt;Sidecar 通常包含一个 L7 网络代理，如 &lt;a href=&#34;https://envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;、&lt;a href=&#34;https://linkerd.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt; 或 &lt;a href=&#34;https://mosn.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;MOSN&lt;/a&gt;。该代理处理流量路由、负载均衡、健康检查、认证、授权、加密、日志、跟踪和统计数据收集。Sidecar 还可以包含一个基于 SDK 的应用框架，如 &lt;a href=&#34;https://dapr.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dapr&lt;/a&gt;，以提供网络代理以外的应用服务。这种应用服务的例子包括服务注册、服务发现、资源绑定、基于名称的服务调用、状态管理、行为者框架和秘密存储。&lt;/p&gt;
+&lt;p&gt;Sidecar 代理和服务通常在 Kubernetes pod 或容器内运行。微服务应用也在容器内运行，它们通过网络接口连接到 sidecar 上。然而，这些容器化应用程序的一个重要问题是资源消耗。Sidecar 服务随着微服务的数量呈几何级数增加。当一个应用程序有数百个相互联系和负载均衡的微服务时，开销可能变得不堪重负。服务网格代理供应商在性能上展开竞争。正如 &lt;a href=&#34;https://www.infoq.com/news/2021/08/linkerd-rust-cloud-native/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;InfoQ 之前报道的&lt;/a&gt;那样，Linkerd 将其代理从 Go 重写成了 Rust，并取得了明显的性能提升。&lt;/p&gt;
+&lt;p&gt;不足为奇的是，现有的服务网格供应商并不相信 eBPF 是能解决我们所有问题的圣杯。来自 Solo 的 Idit Levine 等人写了一篇文章来回应 Cilium 的公告。这篇文章的标题是 “&lt;a href=&#34;https://www.zhaohuabing.com/post/2021-12-19-ebpf-for-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格将使用 eBPF ？是的，但 Envoy 代理将继续存在&lt;/a&gt; &amp;ldquo;。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;在 Solo.io，我们认为 eBPF 是优化服务网格的一种强大方式，我们认为 Envoy 代理是数据平面的基石。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;Solo.io 作者提出的关键点是，现在的 sidecar 代理所做的事情远远超过了简单的网络流量管理。在今天的服务网格部署中，有一些复杂的要求，远远超过了 eBPF 所支持的有限的编程模型，eBPF 是图灵不完整的，对内核的安全性有许多限制。Cilium eBPF 产品可以处理许多，但不是全部，由 sidecar 代理执行的各种任务。此外，Solo.io 的作者指出，eBPF 的每个节点一个代理的设置提供了更少的灵活性，因此与传统代理的每个节点一个代理的设置相比，增加了整体开销。这些 eBPF 的缺点对于开发者必须编写并部署到服务网格代理中的流量路由、负载均衡和授权的特定应用逻辑来说尤其明显。&lt;/p&gt;
+&lt;p&gt;Terate.io 的开发者在对 Cilium 公告的回应中提出了类似的论点，标题是 “&lt;a href=&#34;https://www.tetrate.io/blog/the-debate-in-the-community-about-istio-and-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;社区中关于 Istio 和服务网格的争论&lt;/a&gt; &amp;ldquo;。他们指出，今天的 sidecar 代理的性能是合理的，开源社区已经想出了进一步提高性能的方法。同时，对于开发者来说，在 eBPF 这种新颖的、图灵不完整的技术中构建特定应用的数据平面逻辑是非常困难的。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Istio 架构是稳定的，可用于生产的，而且生态系统正在萌芽。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;eBPF 的许多问题与以下事实有关：它是一种内核技术，因此必须有安全限制。有没有一种方法可以将复杂的特定应用的代理逻辑纳入数据平面，而不使用使用空间技术降低性能？事实证明，WebAssembly（Wasm）可能正是这种选择。Wasm 运行时可以安全地隔离并以接近原生的性能执行用户空间代码。&lt;/p&gt;
+&lt;p&gt;Envoy Proxy 开创了使用 Wasm 作为扩展机制对数据平面进行编程的方法。开发人员可以用 C、C++、Rust、AssemblyScript、Swift 和 TinyGo 等语言编写特定应用的代理逻辑，并将该模块编译到 Wasm 中。通过 proxy-Wasm 标准，代理可以在 &lt;a href=&#34;https://github.com/bytecodealliance/wasmtime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Wasmtime&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/WasmEdge/WasmEdge&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WasmEdge&lt;/a&gt; 等高性能运行机制中执行那些 Wasm 插件。目前，&lt;a href=&#34;https://envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Proxy&lt;/a&gt;、&lt;a href=&#34;https://github.com/istio/proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Proxy&lt;/a&gt;、MOSN 和 &lt;a href=&#34;http://openresty.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OpenResty&lt;/a&gt; 支持 &lt;a href=&#34;https://github.com/proxy-wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proxy-Wasm&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-容器生态&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;容器生态&#34; srcset=&#34;
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3wo1dnj30u015yq70_hu3c093b54cd886c4a22ac9aae88045111_160518_f4419915d3e2ff7dc1b99a66e5147a60.webp 400w,
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3wo1dnj30u015yq70_hu3c093b54cd886c4a22ac9aae88045111_160518_bd6d722dbeff5f74cacb5b849481f1d4.webp 760w,
+               /blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3wo1dnj30u015yq70_hu3c093b54cd886c4a22ac9aae88045111_160518_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-wasm-service-mesh/008i3skNly1gy9u3wo1dnj30u015yq70_hu3c093b54cd886c4a22ac9aae88045111_160518_f4419915d3e2ff7dc1b99a66e5147a60.webp&#34;
+               width=&#34;543&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      容器生态
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;（容器生态系统中的 Wasm，来源：&lt;a href=&#34;https://wasmedge.org/book/en/kubernetes.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WasmEdge Book&lt;/a&gt;）&lt;/p&gt;
+&lt;p&gt;此外，Wasm 可以作为一个通用的应用容器。它在服务网格数据平面上的应用并不限于 sidecar 代理。附在 sidecar 上的微服务可以在它自己的轻量级 Wasm 运行时运行。WasmEdge WebAssembly 运行时是一个安全、轻量级、快速、可移植和多元化的运行时，可以直接由 &lt;a href=&#34;https://wasmedge.org/book/en/kubernetes.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 作为容器&lt;/a&gt;管理。到 2021 年 12 月，WasmEdge 社区的贡献者证明了基于 WasmEdge 的微服务可以与 &lt;a href=&#34;https://github.com/second-state/dapr-wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dapr&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/Liquid-Reply/kind-crun-wasm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt; 一起工作，作为带有操作系统和完整软件堆栈的重量级全面的 Linux 容器的替代。WebAssembly 微服务消耗 1% 的资源，与 Linux 容器应用相比，冷启动的时间是 1%。&lt;/p&gt;
+&lt;p&gt;eBPF 和 Wasm 是服务网格应用在数据平面上实现高性能的新生力量。它们仍然是新生的技术，但有可能成为今天微服务生态系统中 Linux 容器的替代品或补充。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>告别 Sidecar——使用 eBPF 解锁内核级服务网格</title>
+      <link>https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/</link>
+      <pubDate>Thu, 09 Dec 2021 21:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/</guid>
+      <description>&lt;p&gt;译者注：本文作者是 Isovalent 联合创始人&amp;amp;CTO，原文标题 &lt;a href=&#34;https://isovalent.com/blog/post/2021-12-08-ebpf-servicemesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;How eBPF will solve Service Mesh - Goodbye Sidecars&lt;/a&gt;，作者回顾了Linux 内核的连接性，实现服务网格的几种模式，以及如何使用 eBPF 实现无 Sidecar 的服务网格。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id=&#34;什么是服务网格&#34;&gt;什么是服务网格？&lt;/h2&gt;
+&lt;p&gt;随着分布式应用的引入，额外的可见性、连接性和安全性要求也浮出水面。应用程序组件通过不受信任的网络跨越云和集群边界进行通信，负载均衡、弹性变得至关重要，安全必须发展到发送者和接收者都可以验证彼此的身份的模式。在分布式应用的早期，这些要求是通过直接将所需的逻辑嵌入到应用中来解决的。服务网格将这些功能从应用程序中提取出来，作为基础设施的一部分提供给所有应用程序使用，因此不再需要修改每个应用程序。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-服务网格示意图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;服务网格示意图&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyna8jsj32e20sojtx_hu6485f23e60e2e8e9568294bae27898e8_104054_8698f632d2f6bd2d13968093c75d0a57.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyna8jsj32e20sojtx_hu6485f23e60e2e8e9568294bae27898e8_104054_7ccad9cc60d4af9f3a79ee25730411ce.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyna8jsj32e20sojtx_hu6485f23e60e2e8e9568294bae27898e8_104054_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyna8jsj32e20sojtx_hu6485f23e60e2e8e9568294bae27898e8_104054_8698f632d2f6bd2d13968093c75d0a57.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;253&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      服务网格示意图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;纵观今天服务网格的功能设置，可以总结为以下几点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;弹性连接&lt;/strong&gt;：服务与服务之间的通信必须能够跨越边界，如云、集群和场所。通信必须是有弹性的和容错的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;L7 流量管理&lt;/strong&gt;：负载均衡、速率限制和弹性必须是 L7 感知的（HTTP、REST、gRPC、WebSocket 等）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;基于身份的安全&lt;/strong&gt;：依靠网络标识符来实现安全已经不够了，发送和接收服务都必须能够根据身份而不是网络标识符来验证对方。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可观察性和跟踪&lt;/strong&gt;：追踪和指标形式的可观察性对于理解、监控和排除应用程序的稳定性、性能和可用性至关重要。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;透明&lt;/strong&gt;：该功能必须以透明的方式提供给应用程序，即不需要改变应用程序代码。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在早期，服务网格的功能通常是以库的形式实现的，要求网格中的每个应用程序都要链接到以应用程序的语言框架编写的库。类似的事情也发生在互联网的早期：曾几何时，应用程序还需要运行自己的 TCP/IP 协议栈！正如我们将在这篇文章中讨论的那样，服务网格正在发展成为一种内核责任，就像网络堆栈一样。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于库的服务网格模型&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于库的服务网格模型&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyowb55j31pi0k076p_hu6485f23e60e2e8e9568294bae27898e8_99590_b6959dbf34a33344768fc560384a13ac.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyowb55j31pi0k076p_hu6485f23e60e2e8e9568294bae27898e8_99590_a06ed52554d7eaf0205dac367f5b8e87.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyowb55j31pi0k076p_hu6485f23e60e2e8e9568294bae27898e8_99590_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyowb55j31pi0k076p_hu6485f23e60e2e8e9568294bae27898e8_99590_b6959dbf34a33344768fc560384a13ac.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;247&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于库的服务网格模型
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;今天，服务网格通常使用一种叫做 sidecar 模型的架构来实现。这种架构将实现上述功能的代码封装到第四层代理中，服务间的流量被重定向到这个所谓的 sidecar 代理。它之所以被称为 “挎斗”，是因为每个应用程序都有一个代理，就像挎斗附着在摩托车上一样。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于-sidecar-的服务网格模型&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于 Sidecar 的服务网格模型&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyqsefhj31pe0moq5h_hu6485f23e60e2e8e9568294bae27898e8_104187_f7ccbefbb801fe00eda32bba825017a1.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyqsefhj31pe0moq5h_hu6485f23e60e2e8e9568294bae27898e8_104187_2417ae65f785189b2c9b3f5d5bd778c1.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyqsefhj31pe0moq5h_hu6485f23e60e2e8e9568294bae27898e8_104187_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyqsefhj31pe0moq5h_hu6485f23e60e2e8e9568294bae27898e8_104187_f7ccbefbb801fe00eda32bba825017a1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;281&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于 Sidecar 的服务网格模型
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这种架构的优点是，服务不再需要自己实现服务网格的功能。如果许多服务是用不同的语言编写部署的，或者如果你正在运行不可变的第三方应用程序，这就很有好处。&lt;/p&gt;
+&lt;p&gt;这种模式的缺点是有大量的代理，许多额外的网络连接，以及复杂的重定向逻辑，将网络流量输入代理。除此之外，在什么类型的网络流量可以被重定向到第四层代理上也有限制。代理（Proxy）在其能支持的网络协议方面是有限的。&lt;/p&gt;
+&lt;h2 id=&#34;连接性转移到内核中的历史&#34;&gt;连接性转移到内核中的历史&lt;/h2&gt;
+&lt;p&gt;几十年来，在应用程序之间提供安全可靠的连接一直是操作系统的责任。有些人可能还记得早期 Unix 和 Linux 时代的 &lt;a href=&#34;https://en.wikipedia.org/wiki/TCP_Wrappers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCP 包装器&lt;/a&gt;和 tcpd。tcpd 允许用户在不修改应用程序的情况下透明地添加日志、访问控制、主机名验证和欺骗保护。它使用了 libwrap，而且，在一个有趣的平行于服务网格的故事中，这个库也是以前应用程序提供这些功能的链接对象。tcpd 所带来的是能够在不修改现有应用程序的情况下将这些功能透明地添加到现有应用程序中。最终，所有这些功能都进入了 Linux 本身，并以一种更有效、更强大的方式提供给所有应用程序。今天，这已经发展到了我们所知道的 iptables。&lt;/p&gt;
+&lt;p&gt;然而，iptables 显然不适合解决现代应用的连接性、安全性和可观察性要求，因为它只在网络层面上操作，对应用协议层缺乏任何了解。自然，阻力最小的路径是回到库模型，然后是 sidecar 模型。现在，我们正处于这样一个阶段：为了最佳的透明度、效率和安全性，在操作系统中原生地支持这种模式是有意义的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-服务网格的进化&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;服务网格的进化&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8ybphhj31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_0e49b885a5d8058e66656bbfb77f3024.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8ybphhj31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_871e8e56078e2f8d2d170e8cf6e0aa58.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8ybphhj31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8ybphhj31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_0e49b885a5d8058e66656bbfb77f3024.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;429&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      服务网格的进化
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 tcpd 时代，曾经的连接记录现在是追踪。IP 层面的访问控制已经演变成应用协议层面的授权，例如使用 JWT。主机名验证已被更强大的认证所取代，如 mTLS。网络负载均衡已经扩展到 L7 流量管理。HTTP 重试是新的 TCP 重传。过去用黑洞路由解决的问题今天被称为断路。这些都不是根本性的新问题，但所需的环境和控制已经发生了变化。&lt;/p&gt;
+&lt;h2 id=&#34;扩展内核命名空间概念&#34;&gt;扩展内核命名空间概念&lt;/h2&gt;
+&lt;p&gt;Linux 内核已经有一个概念，可以共享共同的功能，并使其对系统上运行的许多应用程序可用。这个概念被称为命名空间（Namespace），它构成了我们今天所知的容器技术的基础。命名空间（内核的那种，不是 Kubernetes 的命名空间）存在于各种抽象中，包括文件系统、用户管理、挂载设备、进程、网络等。这就是允许单个容器呈现不同的文件系统视图、不同的用户集，以及允许多个容器绑定到单个主机上的同一网络端口。在 cgroups 的帮助下，这个概念得到了扩展，可以对 CPU、内存和网络等资源进行管理和优先排序。从云原生应用开发者的角度来看，cgroups 和资源被紧密地整合到我们所知的 &amp;ldquo;容器&amp;rdquo; 概念中。&lt;/p&gt;
+&lt;p&gt;符合逻辑的是，如果我们认为服务网格是操作系统的责任，那么它必须符合并整合命名空间和 cgroup 的概念。这看起来会是这样的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-service-mesh-namespace&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Service Mesh Namespace&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wypvr2zj31p20q0q75_hu3818cf23d00bafc73ec955949ff96cef_165657_0b4f2aeba8526e8de04d93ca7c65ed74.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wypvr2zj31p20q0q75_hu3818cf23d00bafc73ec955949ff96cef_165657_a1b71240819d57b1f178864488358330.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wypvr2zj31p20q0q75_hu3818cf23d00bafc73ec955949ff96cef_165657_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wypvr2zj31p20q0q75_hu3818cf23d00bafc73ec955949ff96cef_165657_0b4f2aeba8526e8de04d93ca7c65ed74.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;324&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Service Mesh Namespace
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;不出所料，这看起来非常自然，而且可能是大多数用户从简单的角度所期望的。应用程序保持不变，它们继续使用套接字进行通信，就像以前那样。理想的服务网格是作为 Linux 的一部分透明地提供的。它就在那里，就像今天的 TCP 一样。&lt;/p&gt;
+&lt;h3 id=&#34;注入-sidecar-的成本&#34;&gt;注入 Sidecar 的成本&lt;/h3&gt;
+&lt;p&gt;如果我们仔细研究一下 sidecar 模型，我们会发现它实际上是在试图模仿这种模型。应用程序继续使用套接字，一切都被塞进 Linux 内核的网络命名空间。然而，这比它看起来要复杂得多，需要许多额外的步骤来透明地注入 sidecar 代理。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-注入-sidecar-的成本&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;注入 Sidecar 的成本&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8nu479j31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_847fc4ec166d83ad0cc298e00f911b6a.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8nu479j31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_a9df07945aba0b0019129964807deb93.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8nu479j31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8nu479j31h30u041s_hu6485f23e60e2e8e9568294bae27898e8_131248_847fc4ec166d83ad0cc298e00f911b6a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;429&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      注入 Sidecar 的成本
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这种额外的复杂性在延迟和额外资源消耗方面付出了巨大的代价。早期的基准测试表明，这对延迟的影响高达 3-4 倍，而且所有代理都需要大量的额外内存。在这篇文章的后面，我们将研究这两点，因为我们将其与基于 eBPF 的模型进行比较。&lt;/p&gt;
+&lt;h2 id=&#34;用-ebpf-解锁内核服务网格&#34;&gt;用 eBPF 解锁内核服务网格&lt;/h2&gt;
+&lt;p&gt;为什么我们以前没有在内核中创建一个服务网格？有些人半开玩笑地说，kube-proxy 是最初的服务网格（见&lt;a href=&#34;https://www.youtube.com/watch?v=lUF88T16YqY&amp;amp;ab_channel=CloudNativeRejekts&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我们已经构建了相当多的服务网格 - Tim Hockin, Google&lt;/a&gt;）。这句话是有一定道理的。Kube-proxy 是一个很好的例子，说明了 Linux 内核在依靠传统的基于网络的 iptables 功能实现服务网格时，可以达到多么接近。然而，这还不够，L7 上下文是缺失的。Kube-proxy 完全在网络数据包层面运作。现代应用需要 L7 流量管理、跟踪、认证和额外的可靠性保证。Kube-proxy 不能在网络层面上提供这些。&lt;/p&gt;
+&lt;p&gt;eBPF 改变了这个模式。它允许动态地扩展 Linux 内核的功能。我们一直在使用 eBPF 为 Cilium 建立一个高效的网络、安全和可观察性数据通路，并将其直接嵌入到 Linux 内核。应用这个相同的概念，我们也可以在内核层面上解决服务网格的要求。事实上，Cilium 已经实现了各种所需的概念，如基于身份的安全、L3-L7 可观察性和授权、加密和负载均衡。缺少的部分现在正在向 Cilium 涌来。在本博客的末尾，你会发现如何加入由 Cilium 社区推动的 Cilium 服务网格测试项目的细节。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ebpf-服务网格架构&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;eBPF 服务网格架构&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyrufdyj31w90u0q6o_hu95fbdda1588b2cb70033d94862f03125_148213_242cf49ce50a46a6227b80ac57581596.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyrufdyj31w90u0q6o_hu95fbdda1588b2cb70033d94862f03125_148213_e9d578b8cecafb87b52464e52af33848.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyrufdyj31w90u0q6o_hu95fbdda1588b2cb70033d94862f03125_148213_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyrufdyj31w90u0q6o_hu95fbdda1588b2cb70033d94862f03125_148213_242cf49ce50a46a6227b80ac57581596.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;334&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      eBPF 服务网格架构
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;有人可能想知道为什么 Linux 内核社区不直接解决这些需求&lt;/strong&gt;。eBPF 有一个巨大的优势，eBPF 代码可以在运行时插入到现有的 Linux 内核中，类似于 Linux 内核模块，但与内核模块不同，它可以以安全和可移植的方式进行。这使得 eBPF 的实现能够随着服务网格社区的发展而继续发展。&lt;strong&gt;新的内核版本需要几年时间才能进入用户手中&lt;/strong&gt;。eBPF 是一项关键技术，它使 Linux 内核能够跟上快速发展的云原生技术栈。&lt;/p&gt;
+&lt;h2 id=&#34;无-sidecar-的基于-ebpf-的-l7-追踪和度量&#34;&gt;无 Sidecar 的基于 eBPF 的 L7 追踪和度量&lt;/h2&gt;
+&lt;p&gt;让我们看看 L7 追踪和指标可观察性，作为一个具体的例子，说明基于 eBPF 的服务网格对保持低延迟和提高观察性有巨大的影响。应用程序团队依靠应用程序的可见性和监控作为基本要求这些，这包括请求跟踪、HTTP 响应率和服务延迟信息等能力。然而，这种可观察性应该没有明显的成本（延迟、复杂性、资源…）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于-ebpf-的可视性&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于 eBPF 的可视性&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wysxpr4j31ne0iugq1_hu62b90eeb5ee5534c340e669e97e0a510_173583_f5ae6a5325dc8e98a65230ef2cdb698d.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wysxpr4j31ne0iugq1_hu62b90eeb5ee5534c340e669e97e0a510_173583_7c6e37711bde414eb340ad829e2fb56f.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wysxpr4j31ne0iugq1_hu62b90eeb5ee5534c340e669e97e0a510_173583_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wysxpr4j31ne0iugq1_hu62b90eeb5ee5534c340e669e97e0a510_173583_f5ae6a5325dc8e98a65230ef2cdb698d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;241&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于 eBPF 的可视性
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在下面的基准测试中，我们可以看到早期的测量结果，即通过 eBPF 或 sidecar 方法实现 HTTP 可见性对延迟的影响。该设置是在两个不同节点上运行的两个 pod 之间通过固定数量的连接每秒稳定运行 10K 个 HTTP 请求，并测量请求的平均延时。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于-ebpf-的延迟基准测试-vs-基于-sidecar-的-l7-可视性&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于 eBPF 的延迟基准测试 vs 基于 Sidecar 的 L7 可视性&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyt6izdj31ns0rawfw_hu61d1337f5211a474b2cf5da3f2f69ed3_62404_061d886ef61599a4368a85f4642ecd11.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyt6izdj31ns0rawfw_hu61d1337f5211a474b2cf5da3f2f69ed3_62404_af8db5d152499e3be34dcdcef9fa6e43.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyt6izdj31ns0rawfw_hu61d1337f5211a474b2cf5da3f2f69ed3_62404_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyt6izdj31ns0rawfw_hu61d1337f5211a474b2cf5da3f2f69ed3_62404_061d886ef61599a4368a85f4642ecd11.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;347&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于 eBPF 的延迟基准测试 vs 基于 Sidecar 的 L7 可视性
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们故意不提这些测量中使用的具体代理，因为它并不重要。对于我们测试过的所有代理，结果几乎都是一样的。要明确的是，这不是关于 Envoy、Linkerd、Nginx 或其他代理是否更快。所提到的代理有差异，但与首先注入代理的成本相比，它们是微不足道的。&lt;strong&gt;几乎没有开销是来自代理本身的逻辑。开销是通过注入代理，将网络流量重定向到它，终止连接和启动新的连接而增加的。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;这些早期的测量结果表明，基于 eBPF 的内核方法是非常有前途的，可以实现完全透明的服务网格的愿望，而且没有明显的开销。&lt;/p&gt;
+&lt;h2 id=&#34;使用-ebpf-加速的-per-node-代理&#34;&gt;使用 eBPF 加速的 per-node 代理&lt;/h2&gt;
+&lt;p&gt;越来越多的用例可以用这种仅有 eBPF 的方法来覆盖，从而完全取消 L4 代理。有些用例，仍然需要代理。例如，当连接需要拼接时，当 TLS 终止被执行时，或对于某些形式的 HTTP 授权。&lt;/p&gt;
+&lt;p&gt;我们的 eBPF 服务网格工作将继续关注那些从性能角度可以获得最大收益的领域。如果你必须执行 TLS 终止，你可能不介意在流量流入集群时用代理终止一次连接。然而，你会更关心在每个连接的路径中注入两个代理的影响，以提取 HTTP 指标和跟踪数据。&lt;/p&gt;
+&lt;p&gt;当一个用例不能用纯 eBPF 的方法来实现时，网格可以回退到每个节点的代理模型，直接将代理与内核的套接字层结合起来。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ebpf-per-node-proxy&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;eBPF per-node Proxy&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyvrfmfj31vq0u0q87_huc33bebe813fd43a8fe56eef115f9fbb4_204555_62d0c958911366c682a9bfc3936f8504.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyvrfmfj31vq0u0q87_huc33bebe813fd43a8fe56eef115f9fbb4_204555_6f918f3a791f9e1add359ebdd6932d14.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyvrfmfj31vq0u0q87_huc33bebe813fd43a8fe56eef115f9fbb4_204555_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyvrfmfj31vq0u0q87_huc33bebe813fd43a8fe56eef115f9fbb4_204555_62d0c958911366c682a9bfc3936f8504.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;337&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      eBPF per-node Proxy
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;eBPF 不依赖网络级的重定向，而是直接在套接字级别注入代理，保持路径短。在 Cilium 的案例中，正在使用 Envoy 代理，尽管从架构的角度来看，任何代理都可以被整合到这个模型。从概念上讲，这允许将 Linux 内核网络命名空间的概念直接扩展到 Envoy 监听器配置的概念，并将 Envoy 变成一个多用户代理。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-与-per-node-代理&#34;&gt;Sidecar 与 per-Node 代理&lt;/h2&gt;
+&lt;p&gt;即使需要代理，代理的成本也会根据部署的架构而有所不同。让我们来看看每个节点的代理模式与 sidecar 模式的比较。&lt;/p&gt;
+&lt;h3 id=&#34;每个连接的代理&#34;&gt;每个连接的代理&lt;/h3&gt;
+&lt;p&gt;所需的网络连接数将因是否有代理而不同。最简单的情况是无 sidecar 模式，这意味着网络连接的数量没有变化。一个单一的连接将为请求提供服务，eBPF 将提供服务网格功能，如跟踪或现有连接上的负载均衡。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于-ebpf-的模型&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于 eBPF 的模型&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyy16o4j32960kcwg9_hu6485f23e60e2e8e9568294bae27898e8_75684_e7abdef857f749e1da71f7e036064a17.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyy16o4j32960kcwg9_hu6485f23e60e2e8e9568294bae27898e8_75684_ca0b4a28b32d4275c9a964bc89041965.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyy16o4j32960kcwg9_hu6485f23e60e2e8e9568294bae27898e8_75684_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyy16o4j32960kcwg9_hu6485f23e60e2e8e9568294bae27898e8_75684_e7abdef857f749e1da71f7e036064a17.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;191&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于 eBPF 的模型
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;用 sidecar 模型提供同样的功能需要在连接中注入两次代理，这导致需要维护三个连接。这导致了开销的增加和所有额外的套接字缓冲区所需内存的倍增，表现为更高的服务间延迟。这就是我们之前在无 sidecar L7 可见性部分看到的 sidecar 开销。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-基于-sidecar-代理的模型&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;基于 Sidecar 代理的模型&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz3o1f6j32860lego3_huf6a82c318c1d0879d8dbb2be4a3b19b1_101863_bee2a69eca8646cc0ca7f5dcf09414cb.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz3o1f6j32860lego3_huf6a82c318c1d0879d8dbb2be4a3b19b1_101863_d98aa97a7180ddb93b2cd137cdae1836.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz3o1f6j32860lego3_huf6a82c318c1d0879d8dbb2be4a3b19b1_101863_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz3o1f6j32860lego3_huf6a82c318c1d0879d8dbb2be4a3b19b1_101863_bee2a69eca8646cc0ca7f5dcf09414cb.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;203&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      基于 Sidecar 代理的模型
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;切换到 per-node 的代理模式使我们能够摆脱其中一个代理，因为我们不再依赖在每个工作负载中运行一个 sidecar。比起不需要额外的连接，这还是不够理想，但比起总是需要两个额外的连接要好。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-per-node-代理模式&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Per-node 代理模式&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyx2lulj32980o4dhz_hu6485f23e60e2e8e9568294bae27898e8_89504_8a54cca8228d7a6a3add627487a6d73b.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyx2lulj32980o4dhz_hu6485f23e60e2e8e9568294bae27898e8_89504_14525a8ea5c80cfded1a8c70b85dae3d.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyx2lulj32980o4dhz_hu6485f23e60e2e8e9568294bae27898e8_89504_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wyx2lulj32980o4dhz_hu6485f23e60e2e8e9568294bae27898e8_89504_8a54cca8228d7a6a3add627487a6d73b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;225&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Per-node 代理模式
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;所需的代理总数&#34;&gt;所需的代理总数&lt;/h3&gt;
+&lt;p&gt;在每个工作负载中运行一个 sidecar 会导致大量的代理。即使每个单独的代理实例在其内存占用方面是相当优化的，但实例的数量之多将导致总的影响很大。此外，每个代理维护的数据结构，如路由和端点表，随着集群的增长而增长，所以集群越大，每个代理的内存消耗就越高。今天，一些服务网格试图通过将部分路由表推送给单个代理来解决这个问题，限制它们可以路由到哪里。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-代理数量&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;代理数量&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8synvej31z40oiq6n_hu6485f23e60e2e8e9568294bae27898e8_147190_e5e6f2c7d1de4f5108e2f0c65c63633b.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8synvej31z40oiq6n_hu6485f23e60e2e8e9568294bae27898e8_147190_2648ed10ae21eaef48205e7b5665caec.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8synvej31z40oiq6n_hu6485f23e60e2e8e9568294bae27898e8_147190_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7y8synvej31z40oiq6n_hu6485f23e60e2e8e9568294bae27898e8_147190_e5e6f2c7d1de4f5108e2f0c65c63633b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;262&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      代理数量
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;让我们假设在一个 500 个节点的集群中，每一个节点有 30 个 pod，一个基于 sidecar 的架构将需要运行 15K 个代理。在每个代理消耗 70MB 内存的情况下（假设已经经过极致优化过的路由表），这仍然导致集群中所有 sidecar 消耗 1.5TB 的内存。在 per-node 模型中，假设每个代理的内存足迹相同，500 个代理将消耗不超过 34GB 的内存。&lt;/p&gt;
+&lt;h3 id=&#34;多租户&#34;&gt;多租户&lt;/h3&gt;
+&lt;p&gt;当我们从 sidecar 模型转向 per-node 模型时，代理将为多个应用程序提供连接。代理必须具有多租户感知。这与我们从使用单个虚拟机转向使用容器时发生的过渡完全相同。由于我们不再使用在每个虚拟机中运行的完全独立的操作系统副本，而开始与多个应用程序共享操作系统，Linux 必须具有多租户感知。这就是命名空间和 cgroup 存在的原因。如果没有它们，一个容器可能会消耗一个系统的所有资源，容器可能会以不受控制的方式访问对方的文件系统。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-namespace&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy Namespace&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7z3klyfhj31hx0u0djs_hu1685d2cc6375f0429462180152f17634_156084_0202d25a062eeb6c9bd0f4c364e01907.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7z3klyfhj31hx0u0djs_hu1685d2cc6375f0429462180152f17634_156084_2f64eeb1fa64882906103c2cdc01534e.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7z3klyfhj31hx0u0djs_hu1685d2cc6375f0429462180152f17634_156084_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7z3klyfhj31hx0u0djs_hu1685d2cc6375f0429462180152f17634_156084_0202d25a062eeb6c9bd0f4c364e01907.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;423&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy Namespace
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果这在服务网格级别的网络资源上表现得完全一样，那不是很好吗？Envoy 已经有了命名空间的初步概念，它们被称为监听器。监听器可以携带单独的配置并独立运行。这将开启全新的可能性：突然间，我们可以很容易地控制资源消耗，建立公平的排队规则，并将可用的资源平等地分配给所有的应用程序，或者按照指定的规则分配。这可以而且应该与我们今天在 Kubernetes 中定义应用程序的 CPU 和内存约束的方式完全一样。如果你想了解这个话题，我曾在 EnvoyCon 上讲过这个问题（&lt;a href=&#34;https://www.youtube.com/watch?v=08opgZkdYIw&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Namespace - 以更小的代价运维基于 Envoy 的服务网格，Thomas Graf，EnvoyCon 2019&lt;/a&gt;）。&lt;/p&gt;
+&lt;h2 id=&#34;想参与其中吗--加入-cilium-服务网格测试版&#34;&gt;想参与其中吗？- 加入 Cilium 服务网格测试版&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-测试版&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;测试版&#34; srcset=&#34;
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz1obexj327t0u0dkm_hu6485f23e60e2e8e9568294bae27898e8_186816_9579dd5154dfdfe8956fce6548befa07.webp 400w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz1obexj327t0u0dkm_hu6485f23e60e2e8e9568294bae27898e8_186816_8b798598a3603599a1424b953b9574d1.webp 760w,
+               /blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz1obexj327t0u0dkm_hu6485f23e60e2e8e9568294bae27898e8_186816_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/ebpf-solve-service-mesh-sidecar/008i3skNly1gx7wz1obexj327t0u0dkm_hu6485f23e60e2e8e9568294bae27898e8_186816_9579dd5154dfdfe8956fce6548befa07.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;286&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      测试版
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;伴随着即将发布的 Cilium 1.11 版本，Cilium 社区正在举办一个新的 Cilium Service Mesh 测试计划。它的特点是一个新的构建，将使以下功能可用。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;L7 流量管理和负载均衡（HTTP，gRPC，…）&lt;/li&gt;
+&lt;li&gt;跨集群、云和集群的拓扑感知路由&lt;/li&gt;
+&lt;li&gt;TLS 终止&lt;/li&gt;
+&lt;li&gt;通过 Envoy 配置的金丝雀发布、重试、速率限制、断路等&lt;/li&gt;
+&lt;li&gt;用 OpenTelemetry 和 Jaeger 集成进行追踪&lt;/li&gt;
+&lt;li&gt;内置 Kubernetes Ingress 支持&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;上述所有功能都可以在 &lt;a href=&#34;https://github.com/cilium/cilium&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;github.com/cilium/cilium&lt;/a&gt; 功能分支中找到。测试计划允许 Cilium 维护者直接与用户接触，了解他们的需求。要注册，你可以直接填写 &lt;a href=&#34;https://forms.gle/j9fwhAC6HnHRJQKeA&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这个表格&lt;/a&gt;，或者你可以在 Cilium 社区的&lt;a href=&#34;https://cilium.io/blog/2021/12/01/cilium-service-mesh-beta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;公告&lt;/a&gt;中阅读更多关于该计划的信息。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;eBPF 是提供本地和高效的服务网格实现的答案。它将把我们从 sidecar 模型中解放出来，并允许将现有的代理技术整合到现有的内核命名概念中，使它们成为我们每天都在使用的容器抽象的一部分。除此之外，eBPF 将能够卸载越来越多的目前由代理执行的功能，以进一步减少开销和复杂性。通过整合几乎任何现有的代理，该架构也允许与大多数现有的服务网格控制平面（Istio、SMI、Linkerd…）整合。这可以将 eBPF 的好处提供给广大的终端用户，同时将数据通路的效率和开销的讨论与控制平面方面相分离。&lt;/p&gt;
+&lt;p&gt;如果你有兴趣探索这个话题，我们很想听到你的意见。请随时通过 &lt;a href=&#34;https://twitter.com/tgraf__&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Twitter&lt;/a&gt; 或 &lt;a href=&#34;http://ebpf.io/slack&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF &amp;amp; Cilium Slack 联系我们&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;进一步阅读&#34;&gt;进一步阅读&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/how-ebpf-streamlines-the-service-mesh/&#34;&gt;eBPF 如何简化服务网格&lt;/a&gt;，Liz Rice，The New Stack&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cilium.io/blog/2021/12/01/cilium-service-mesh-beta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium 服务网格测试计划&lt;/a&gt;，Cilium 社区&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cilium.io/learn&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;了解更多关于 Cilium 的信息&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
     
     <item>
       <title>eBPF 如何简化服务网格</title>

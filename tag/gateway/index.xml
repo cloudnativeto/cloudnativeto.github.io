@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Gateway | 云原生社区</title>
+    <link>https://cloudnative.to/tag/gateway/</link>
+      <atom:link href="https://cloudnative.to/tag/gateway/index.xml" rel="self" type="application/rss+xml" />
+    <description>Gateway</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Thu, 22 Apr 2021 10:03:00 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/media/sharing.png</url>
+      <title>Gateway</title>
+      <link>https://cloudnative.to/tag/gateway/</link>
+    </image>
+    
+    <item>
+      <title>利用 Gateway API 发展 Kubernetes 网络</title>
+      <link>https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/</link>
+      <pubDate>Thu, 22 Apr 2021 10:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/</guid>
+      <description>&lt;p&gt;译者注：本文译自 &lt;a href=&#34;https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Evolving Kubernetes networking with the Gateway API&lt;/a&gt;， Gateway API 的出现解决了 Ingress 的可移植性问题，且有利于基于角色的访问设计。&lt;/p&gt;
+&lt;p&gt;Ingress 资源是 Kubernetes 众多成功案例中的一个。它创造了一个&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多样化的 Ingress 控制器的生态系统&lt;/a&gt;，这些控制器以标准化和一致的方式在数十万个集群中使用。这种标准化有助于用户采用 Kubernetes。然而，在 Ingress 创建五年后，有迹象表明它被分割成不同但&lt;a href=&#34;https://dave.cheney.net/paste/ingress-is-dead-long-live-ingressroute.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;惊人相似的 CRD&lt;/a&gt; 和 &lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;过载的注释&lt;/a&gt;。Ingress 普遍存在的可移植性问题也限制了它的未来。&lt;/p&gt;
+&lt;p&gt;那是在 2019 年圣地亚哥的 Kubecon 上，一群充满激情的贡献者聚集在一起，讨论 &lt;a href=&#34;https://static.sched.com/hosted_files/kccncna19/a5/Kubecon%20San%20Diego%202019%20-%20Evolving%20the%20Kubernetes%20Ingress%20APIs%20to%20GA%20and%20Beyond%20%5BPUBLIC%5D.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress 的发展&lt;/a&gt;。拥挤的人群溢出到了街对面的酒店大堂，而讨论出来的东西后来被称为 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway API&lt;/a&gt;。这次讨论是基于几个关键的假设：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;路由匹配、流量管理和服务暴露所依据的 API 标准已经商业化，对其实施者和用户提供的定制 API 的价值很小。&lt;/li&gt;
+&lt;li&gt;可以通过共同的核心 API 资源来表示 L4/L7 的路由和流量管理。&lt;/li&gt;
+&lt;li&gt;可以在不牺牲核心 API 的用户体验的前提下，为更复杂的功能提供扩展性。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;gateway-api-介绍&#34;&gt;Gateway API 介绍&lt;/h2&gt;
+&lt;p&gt;这产出了一些设计原则，使 Gateway API 能够在 Ingress 的基础上进行改进。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;表达性&lt;/strong&gt;：除了 HTTP 主机 / 路径匹配和 TLS 之外，Gateway API 还可以表达 HTTP 头操作、流量加权和镜像、TCP/UDP 路由等能力，以及其他只有在 Ingress 中通过自定义注释才能实现的能力。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;面向角色的设计&lt;/strong&gt;：API 资源模型反映了路由和 Kubernetes 服务网络中常见的责任分离。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可扩展性&lt;/strong&gt;：这些资源允许在 API 的各个层面上进行任意的配置附加。这使得在最适当的地方进行细化的定制成为可能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;灵活的一致性&lt;/strong&gt;：Gateway API 定义了不同的一致性级别 —— 核心（强制支持）、扩展（支持时可移植）和自定义（不保证可移植性），一起被称为&lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/guidelines/#conformance&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;灵活的一致性&lt;/a&gt;。这促进了高度可移植的核心 API（如 Ingress），仍然为 Gateway 控制器实施者提供了灵活性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;gateway-api-是什么样子的&#34;&gt;Gateway API 是什么样子的？&lt;/h3&gt;
+&lt;p&gt;Gateway API 引入了一些新的资源类型：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.GatewayClass&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;GatewayClasses&lt;/strong&gt;&lt;/a&gt; 是集群范围内的资源，作为模板，明确地定义由其衍生的网关的行为。这与 StorageClasses 的概念类似，但用于网络数据平面。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;Gateway&lt;/strong&gt;&lt;/a&gt; 是 GatewayClasses 的部署实例。它们是执行路由的数据平面的逻辑表示，它可能是集群内的代理、硬件 LB 或云 LB。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;路由&lt;/strong&gt; 不是一个单一的资源，而是代表许多不同的特定协议的路由资源。&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.HTTPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTPRoute&lt;/a&gt; 有匹配、过滤和路由规则，这些规则被应用到可以处理 HTTP 和 HTTPS 流量的网关。同样，还有 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.TCPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCPRoutes&lt;/a&gt;、&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.UDPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UDPRoutes&lt;/a&gt; 和 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.TLSRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TLSRoutes&lt;/a&gt;，它们也有协议特定的语义。这种模式也允许网关 API 在未来逐步扩展其协议支持。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-gateway-api-资源&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Gateway API 资源&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_23f242b96c71df2d0637802488c00dcf.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_916b9319369f740180b99c0668061234.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_23f242b96c71df2d0637802488c00dcf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;453&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Gateway API 资源
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;gateway-控制器的实现&#34;&gt;Gateway 控制器的实现&lt;/h3&gt;
+&lt;p&gt;好消息是，虽然 Gateway 还在 &lt;a href=&#34;https://github.com/kubernetes-sigs/gateway-api/releases&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Alpha&lt;/a&gt; 阶段，但已经有几个 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/implementations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway 控制器实现&lt;/a&gt;，你可以运行。由于它是一个标准化的规格，下面的例子都可以运行，而且功能应该完全相同。我们来看看如何安装和使用这些 Gateway 控制器。&lt;/p&gt;
+&lt;h2 id=&#34;实践-gateway-api&#34;&gt;实践 Gateway API&lt;/h2&gt;
+&lt;p&gt;在下面的例子中，我们将展示不同的 API 资源之间的关系，并引导你完成一个常见的使用案例。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;foo 团队在 foo 命名空间中部署了他们的应用程序。他们需要控制其应用程序的不同页面的路由逻辑。&lt;/li&gt;
+&lt;li&gt;Team bar 正在 bar 命名空间中运行。他们希望能够对他们的应用程序进行蓝绿部署以减少风险。&lt;/li&gt;
+&lt;li&gt;平台团队负责管理 Kubernetes 集群中所有应用程序的负载均衡器和网络安全。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面的 foo-route 对 foo 命名空间中的各种服务进行路径匹配，并且有一个到 404 服务器的默认路由。这通过 &lt;code&gt;foo.example.com/login&lt;/code&gt; 和 &lt;code&gt;foo.example.com/home&lt;/code&gt; 分别暴露了 foo-auth 和 foo-home 服务。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;foo.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/login&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-auth&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/home&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-home&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-404&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在同一个 Kubernetes 集群的 bar 命名空间中运行的 bar 团队也希望将他们的应用程序暴露在互联网上，但他们也希望控制自己的金丝雀发布和蓝绿部署。下面的 HTTPRoute 被配置为以下行为。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;对于访问 &lt;code&gt;bar.example.com&lt;/code&gt;的流量：
+&lt;ul&gt;
+&lt;li&gt;将 90% 的流量发送到 bar-v1&lt;/li&gt;
+&lt;li&gt;将 10% 的流量发送到 bar-v2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;对于访问 &lt;code&gt;bar.example.com&lt;/code&gt; 的流量，HTTP header 为 &lt;code&gt;env: canary&lt;/code&gt;：
+&lt;ul&gt;
+&lt;li&gt;将所有的流量发送到 bar-v2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-the-routing-rules-configured-for-the-bar-v1-and-bar-v2-services&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;The routing rules configured for the bar-v1 and bar-v2 Services&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_00cfa4d7c1e98c3f608c96809d6a9966.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_1bb1ddb004e675c7d8dc122dec150f26.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_00cfa4d7c1e98c3f608c96809d6a9966.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;203&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      The routing rules configured for the bar-v1 and bar-v2 Services
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;bar.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;90&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;env&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;canary&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;路由和网关绑定&#34;&gt;路由和网关绑定&lt;/h3&gt;
+&lt;p&gt;因此，我们有两个 HTTPRoute 匹配并将流量路由到不同的服务。你可能想知道，这些服务在哪里可以访问？它们是通过哪些网络或IP暴露的？&lt;/p&gt;
+&lt;p&gt;路由如何暴露给客户是由&lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/api-overview/#route-binding&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由绑定&lt;/a&gt;管理的，它描述了路由和网关如何在彼此之间建立双向关系。当路由与网关绑定时，意味着它们的集体路由规则被配置在底层负载均衡器或代理上，并且路由可以通过网关访问。因此，网关是一个网络数据平面的逻辑表示，可以通过路由配置。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-路由如何绑定到网关&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;路由如何绑定到网关&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_400fc9be67aaec72d1d800a6b7139174.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_f6b697512deec0c98c75c80c4143d4ab.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_400fc9be67aaec72d1d800a6b7139174.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;245&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      路由如何绑定到网关
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;行政授权&#34;&gt;行政授权&lt;/h3&gt;
+&lt;p&gt;网关和路由资源之间的分割允许集群管理员将一些路由配置委托给各个团队，同时仍然保留集中控制。下面的网关资源在 443 端口暴露 HTTPS，并用集群管理员控制的证书终止该端口的所有流量。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;prod-web&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gatewayClassName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;acme-lb&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPS&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;All&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tls&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;certificateRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;admin-controlled-cert&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面的 HTTPRoute 显示了 Route 如何通过它的 &lt;code&gt;kind&lt;/code&gt;（HTTPRoute）和资源标签（&lt;code&gt;gateway=external-https-prod&lt;/code&gt;）确保它与 Gateway 的选择器相匹配。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 匹配网关上所需的 kind 选择器&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-ns&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 匹配网关上所需的标签选择器&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;以角色为导向的设计&#34;&gt;以角色为导向的设计&lt;/h3&gt;
+&lt;p&gt;当你把它放在一起时，你有一个单一的负载均衡基础设施，可以被多个团队安全地共享。Gateway API 不仅是一个用于高级路由的更具表现力的 API，而且是一个面向角色的 API，为多用户基础设施而设计。它的可扩展性确保了它在保持可移植性的同时，还能为未来的使用场景而发展。最终，这些特性将使 Gateway API 在未来适应不同的组织模式和实施方式。&lt;/p&gt;
+&lt;h3 id=&#34;尝试和参与&#34;&gt;尝试和参与&lt;/h3&gt;
+&lt;p&gt;有许多资源可供查阅，以了解更多。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;查阅&lt;a href=&#34;https://gateway-api.sigs.k8s.io/guides/getting-started/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用户指南&lt;/a&gt;，看看可以解决哪些用例。&lt;/li&gt;
+&lt;li&gt;试用现有的&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/implementations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网关控制器&lt;/a&gt;。&lt;/li&gt;
+&lt;li&gt;或者&lt;a href=&#34;https://gateway-api.sigs.k8s.io/contributing/community/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;参与进来&lt;/a&gt;，帮助设计并影响Kubernetes服务网络的未来！&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Kong 1.0发布，从网关转型为服务控制平台</title>
+      <link>https://cloudnative.to/blog/kong-at-1-0-a-service-control-platform/</link>
+      <pubDate>Thu, 20 Sep 2018 11:35:02 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kong-at-1-0-a-service-control-platform/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-第一届kong-summit&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;第一届Kong Summit&#34; srcset=&#34;
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvfula2g2aj31kw16k7jg_hue981877557476f0514ce6ae125b65e8d_510846_813325075f4c958695cf555ac3939d79.webp 400w,
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvfula2g2aj31kw16k7jg_hue981877557476f0514ce6ae125b65e8d_510846_3689c43caec9b261da8b4b12d3667e46.webp 760w,
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvfula2g2aj31kw16k7jg_hue981877557476f0514ce6ae125b65e8d_510846_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvfula2g2aj31kw16k7jg_hue981877557476f0514ce6ae125b65e8d_510846_813325075f4c958695cf555ac3939d79.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;569&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      第一届Kong Summit
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://thenewstack.io/kong-at-1-0-a-service-control-platform/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;图片：Kong公司员工们在庆祝第一届Kong Summit举办（来自Kong官方Twitter）&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://konghq.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kong&lt;/a&gt;公司的前身是Mashape，发布了其核心开源API网关的1.0版本，名字也为&lt;a href=&#34;https://github.com/Kong/kong&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kong&lt;/a&gt; 。这是包括诺基亚、纽约​时报和哈佛大学等客户近四年生产经验的结晶。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Kong 1.0是该公司构建服务控制平台愿景的基础，该平台结合了人工智能、机器学习和其他先进技术，可以促进信息流在服务之间的流动。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvftotln7rj319y0q4dmg_huf962f21cd2cbee6c1402be2a8e1aec39_233725_7777629efa9e68bd98728915a772f0f7.webp 400w,
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvftotln7rj319y0q4dmg_huf962f21cd2cbee6c1402be2a8e1aec39_233725_2673116182fd8b30065e0e1e5bd97137.webp 760w,
+               /blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvftotln7rj319y0q4dmg_huf962f21cd2cbee6c1402be2a8e1aec39_233725_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kong-at-1-0-a-service-control-platform/006tNbRwgy1fvftotln7rj319y0q4dmg_huf962f21cd2cbee6c1402be2a8e1aec39_233725_7777629efa9e68bd98728915a772f0f7.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;432&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;“我们相信未来所有数据都将处于运动状态，并且将从数据池转移到系统间代理信息的地方。Kong最初是一个网关，在1.0发布之后将转型为服务控制平台，“[Geoff Townsend](&lt;a href=&#34;https://www.linkedin.com/in&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.linkedin.com/in&lt;/a&gt; / geoff-townsend-25058347 /)，Kong工程副总裁。据该公司称，截至目前，该软件已被下载4500万次。&lt;/p&gt;
+&lt;p&gt;本周在&lt;a href=&#34;https://konghq.com/kong-summit/?utm_source=pressrelease&amp;amp;utm_medium=referral&amp;amp;utm_content=1-0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kong Summit 2018&lt;/a&gt;上，在该公司的总部旧金山探讨了1.0里程碑以及企业级组件包括开发人员门户、Open API规范、自动生成和自动配置，这些功能将于明年初推出。&lt;/p&gt;
+&lt;p&gt;“我们希望帮助您获得服务的可见性，并能以简单的方式记录通过平台的所有内容。我们将从生产中的服务自动生成Open API规范，这将能够记录没有登记在册的服务。使用Open API规范自动配置Kong的节点，以便记录的内容与生产中的内容一致。有一个API地图能够显示实时流量的拓扑，“他说。 “Kong位于网络中的绝佳位置，所以它将能够做一系列异常检测和机器学习。”&lt;/p&gt;
+&lt;p&gt;Kong建立在Nginx反向代理服务器之上。&lt;a href=&#34;https://thenewstack.io/mashape-opens-kong-a-microservices-proxy-built-on-nginx/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;提供的服务&lt;/a&gt;中包括一个RESTful API接口，用于在注册表中注册API本身的插件平台，提供微服务常用的基础功能。&lt;/p&gt;
+&lt;p&gt;首席执行官&lt;a href=&#34;https://www.linkedin.com/in/sonicaghi/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Augusto Marietti&lt;/a&gt;之前告诉The New Stack，“它解决了在系统中处理身份验证协议的所有问题。”&lt;/p&gt;
+&lt;p&gt;日志记录是另一个常见服务，可以使用Kong中的插件向微服务公开。&lt;/p&gt;
+&lt;p&gt;“对于那些已经使用微服务架构的人来说，Kong并没有改变服务的编排方式，但会使微服务变得更轻量，因为使用它后就可以剔除微服务中的许多常用功能，把这些功能集中到Kong中，使服务变得更轻，更易于维护，“Marietti说。&lt;/p&gt;
+&lt;p&gt;[雅虎日本](&lt;a href=&#34;https://globenewswire.com/news-release/2018/09/13/1570542/0/en/Yahoo-Japan-Deploys-Kong-Enterprise-API-Platform-to-Improve-Service-Development-Productivity&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://globenewswire.com/news-release/2018/09/13/1570542/0/en/Yahoo-Japan-Deploys-Kong-Enterprise-API-Platform-to-Improve-Service-Development-Productivity&lt;/a&gt; .html)最近宣布，使用单点Kong来代理所有API端点和路由流量，从而消除了为每个API的编写身份验证和授权的冗余代码。它还使用Kong的金丝雀发布功能来评估一小部分用户的版本。&lt;/p&gt;
+&lt;p&gt;Kong最近宣布&lt;a href=&#34;https://konghq.com/blog/service-mesh-new-pattern-not-new-technology/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;支持服务网格部署&lt;/a&gt;。去年在MesosCon 2017上，Kong首席技术官&lt;a href=&#34;https://www.linkedin.com/in/marcopalladino/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Marco Palladino&lt;/a&gt;预测&lt;a href=&#34;https://thenewstack.io/api-gateways-age-microservices/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;API网关和服务网格之间的相似性&lt;/a&gt;将继续增长。&lt;/p&gt;
+&lt;p&gt;传统的API网关用于处理单体应用程序和外部客户端之间的流量，微服务架构将这些大部分流量转移到内部不同微服务之间的通信。&lt;/p&gt;
+&lt;p&gt;“你依然拥有外部客户端用例，但现在它只是微服务的所有消费者中的一个。”Palladino解释说。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>为什么你应该关心Istio gateway</title>
+      <link>https://cloudnative.to/blog/why-you-should-care-about-istio-gateways/</link>
+      <pubDate>Mon, 13 Aug 2018 20:44:06 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/why-you-should-care-about-istio-gateways/</guid>
+      <description>&lt;p&gt;如果您要拆分单体架构，使用Istio管理您的微服务的一个巨大优势是，它利用与传统负载均衡器和应用分发控制器类似的入口模型的配置。&lt;/p&gt;
+&lt;p&gt;在负载均衡器领域，虚拟IP和虚拟服务器一直被认为是使运营商能够以灵活和可扩展的方式配置入口流量的概念（&lt;a href=&#34;https://devcentral.f5.com/articles/wils-virtual-server-versus-virtual-ip-address&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Lori Macvittie对此有一些相关的想法&lt;/a&gt;)。&lt;/p&gt;
+&lt;p&gt;在Istio中，&lt;a href=&#34;https://istio.io/docs/reference/config/istio.networking.v1alpha3/#Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway&lt;/a&gt;控制网格边缘的服务暴露。Gateway允许用户指定L4-L6设置，如端口和TLS设置。对于Ingress流量的L7设置，Istio允许您将网关绑定到&lt;a href=&#34;https://istio.io/docs/reference/config/istio.networking.v1alpha3/#VirtualService&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualServices&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这种分离使得管理流入到网格的流量变得容易，就像在传统负载均衡器中将虚拟IP绑定到虚拟服务器一样。这使得传统技术栈用户能够以无缝方式迁移到微服务。对于习惯于整体和边缘负载均衡器的团队来说，这是一种自然的进步，而不需要考虑全新的网络配置方式。&lt;/p&gt;
+&lt;p&gt;需要注意的一点是，在服务网格中路由流量和将外部流量引入网格不同。在网格中，您在正常流量中分辨异常的部分，因为只要在服务网格内，默认情况下Istio可以与（与Kubernetes兼容）所有应用通信。&lt;strong&gt;如果您不希望与某些服务进行通信，则必须添加策略。反向代理（类似于传统的负载均衡器）获取进入网格的流量，您必须准确指定哪些流量允许进入网格。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;早期版本的Istio利用Kubernetes的&lt;a href=&#34;https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.11/#ingress-v1beta1-extensions&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress资源&lt;/a&gt;，但最近发布的Istio v1 alpha3 API利用Gateway提供更丰富的功能，因为Kubernetes Ingress已被证明不足以满足Istio应用程序的要求。Kubernetes Ingress API合并了L4-6和L7的规范，这使得拥有单独信任域（如SecOps和NetOps）的组织中的不同团队难以拥有Ingress流量管理。&lt;/p&gt;
+&lt;p&gt;此外，Ingress API的表现力不如Istio为Envoy提供的路由功能。在Kubernetes Ingress API中进行高级路由的唯一方法是为不同的入口控制器添加注解。组织内的单独关注点和信任域保证需要一种更有效的方式来管理入口，这些可以由Istio Gateway和VirtualServices来完成。&lt;/p&gt;
+&lt;p&gt;一旦流量进入网格，最好能够为VirtualServices提供分离的关注点，以便不同的团队可以管理其服务的流量路由。 L4-L6规范通常是SecOps或NetOps可能关注的内容。 L7规范是集群运营商或应用程序所有者最关心的问题。因此，正确分离关注点至关重要。&lt;/p&gt;
+&lt;p&gt;由于我们相信团队责任的力量，我们认为这是一项重要的能力。由于我们相信Istio的力量，我们正在Istio社区中提交&lt;a href=&#34;https://docs.google.com/document/d/17K0Tbp2Hv1RAkpFxVTIYPLQRuceyUnABtt0amd9ZVow/edit#heading=h.m6yvqjh71gxi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RFE&lt;/a&gt;，这将有助于为网格内的流量管理启用所有权语义。&lt;/p&gt;
+&lt;p&gt;我们很高兴Istio已经发布&lt;a href=&#34;https://thenewstack.io/istio-1-0-come-for-traffic-routing-stay-for-distributed-tracing/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1.0版本&lt;/a&gt;，并且很乐意继续为项目和社区做出贡献。&lt;/p&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>

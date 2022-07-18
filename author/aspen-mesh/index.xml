@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Aspen Mesh | 云原生社区</title>
+    <link>https://cloudnative.to/author/aspen-mesh/</link>
+      <atom:link href="https://cloudnative.to/author/aspen-mesh/index.xml" rel="self" type="application/rss+xml" />
+    <description>Aspen Mesh</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language>
+    <image>
+      <url>https://cloudnative.to/author/aspen-mesh/avatar_hue38add62c87b7486d80c9f3fda25dfc1_12220_270x270_fill_q75_lanczos_center.jpg</url>
+      <title>Aspen Mesh</title>
+      <link>https://cloudnative.to/author/aspen-mesh/</link>
+    </image>
+    
+    <item>
+      <title>在Istio中跟踪gRPC</title>
+      <link>https://cloudnative.to/blog/tracing-grpc-with-istio/</link>
+      <pubDate>Fri, 08 Jun 2018 12:40:05 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/tracing-grpc-with-istio/</guid>
+      <description>&lt;p&gt;Aspen Mesh很喜欢用&lt;a href=&#34;https://grpc.io/docs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;。Apen Mesh面向公众的API和许多内部API大多都是使用gRPC构建的。如果您还没有听说过 gRPC（熟练掌握gRPC真的很难），那么我先为您简单的介绍下，它是一种新型、高效和优化的远程过程调用（RPC）框架。gRPC 基于&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;protocol buffer&lt;/a&gt;序列化格式和&lt;a href=&#34;https://http2.github.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP/2&lt;/a&gt;网络协议。&lt;/p&gt;
+&lt;p&gt;使用HTTP/2协议，gRPC应用程序可以利用多路复用请求显著提高连接利用率，而且比起如HTTP/1.1等&lt;a href=&#34;https://http2.github.io/faq/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;其他协议&lt;/a&gt;具有更多增强功能。此外，protocal buffer是以二进制方式对结构化数据进行序列化，这比起基于文本的序列化方式更简单且可扩展，还可以显着提高性能。将这两个结果组合在一个低延迟和高度可扩展的RPC框架中，这实质上就是gRPC。此外，不断增长的gRPC生态支持使用多种语言编写应用程序，例如（C ++、Java、Go等），还包括大量第三方&lt;a href=&#34;https://github.com/grpc-ecosystem&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;库&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;除了上面列出的好处之外，gRPC让我最喜欢的一点是可以让我以简单直观的方式指定RPC（使用protobuf IDL）以及客户端调用服务器端的方法，就好像是调用本地函数一样。很多代码（服务描述和处理程序、客户端方法等）都可以自动生成，这使得gRPC非常好用。&lt;/p&gt;
+&lt;p&gt;现在我已经介绍了gRPC的一些背景知识，我们再把注意力转回到博客的主题。在这里，我将介绍如何在基于gRPC的应用程序中添加跟踪，特别是如果您使用Istio或Aspen Mesh。&lt;/p&gt;
+&lt;p&gt;跟踪（Tracing）非常适合于调试和理解应用程序的行为。理解所有跟踪数据的关键是能够关联来自与单个客户端请求相关的多个不同微服务的跨度（span）。&lt;/p&gt;
+&lt;p&gt;为了实现这一点，应用程序中的所有微服务应该传播跟踪header。如果您使用的是像Istio或Aspen Mesh这样的服务网格，ingress和sidecar代理会自动添加适当的跟踪header，并将这些span报告给跟踪收集器后端，如Jaeger或Zipkin。应用程序唯一要做的就是将传入请求（sidecar或ingress代理添加的）的跟踪header传播到其对其他微服务的所有传出请求。&lt;/p&gt;
+&lt;h2 id=&#34;grpc到grpc请求传播header&#34;&gt;gRPC到grpc请求传播header&lt;/h2&gt;
+&lt;p&gt;使用gRPC，跟踪header传播的最简单方法是使用&lt;a href=&#34;https://github.com/grpc-ecosystem/go-grpc-middleware/tree/master/tracing/opentracing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grpc opentracing middleware&lt;/a&gt;库的客户端拦截器。如果您的gRPC应用程序在收到传入请求时发出新的出站gRPC请求，则可以使用此功能。以下是将传入的跟踪header正确传播到传出的gRPC请求的示例代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;ot &amp;#34;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;github&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;com&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;opentracing&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;opentracing&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;go&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  )
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  // ctx is the incoming gRPC request&amp;#39;s context
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  // addr is the address for the new outbound request
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  func createGRPCConn(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  	var opts []grpc.DialOption
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  	opts = append(opts, grpc.WithStreamInterceptor(
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  		grpc_opentracing.StreamClientInterceptor(
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  			grpc_opentracing.WithTracer(ot.GlobalTracer()))))
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  	opts = append(opts, grpc.WithUnaryInterceptor(
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  		grpc_opentracing.UnaryClientInterceptor(
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  			grpc_opentracing.WithTracer(ot.GlobalTracer()))))
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  	conn, err := grpc.DialContext(ctx, addr, opts...)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  	if err != nil {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  		glog.Error(&amp;#34;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Failed&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;to&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;connect&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;to&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;application&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;很简单对吧？&lt;/p&gt;
+&lt;p&gt;添加opentracing客户端拦截器可确保在客户端连接上创建任何新的一元（unary）或流式gRPC请求注入正确的跟踪header。如果传递的上下文中存在跟踪header（如使用Aspen Mesh或Istio传入入站gRPC请求上下文），则新创建的span将作为传递的上下文中已存在的span的子span。另外，如果上下文中没有跟踪信息，则会为出站gRPC请求创建新的根span。&lt;/p&gt;
+&lt;h2 id=&#34;grpc到http请求传播header&#34;&gt;gRPC到HTTP请求传播header&lt;/h2&gt;
+&lt;p&gt;我们再来看下这个场景，如果您的应用程序在收到一个新传入的gRPC请求时发出一个出站HTTP/1.1请求。以下是在此情况下完成header传播的示例代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;net/http&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context/ctxhttp&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;ot &amp;#34;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;github&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;com&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;opentracing&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;opentracing&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;go&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  )
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  // ctx is the incoming gRPC request&amp;#39;s context
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  // addr is the address of the application being requested
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  func makeNewRequest(ctx context.Context, addr string) {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    if span := ot.SpanFromContext(ctx); span != nil {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      req, _ := http.NewRequest(&amp;#34;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;GlobalTracer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;HTTPHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;HTTPHeadersCarrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ctxhttp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Do&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ctx&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;c1&#34;&gt;// Do something with resp
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这是序列化传入请求（HTTP或gRPC）上下文中跟踪header的标准方式。&lt;/p&gt;
+&lt;p&gt;很好，至此我们已经能够使用库或标准实用程序代码来实现我们想要的功能。&lt;/p&gt;
+&lt;h2 id=&#34;使用grpc-gateway时传播header&#34;&gt;使用grpc-gateway时传播header&lt;/h2&gt;
+&lt;p&gt;gRPC应用程序中有一个常用的库&lt;a href=&#34;https://github.com/grpc-ecosystem/grpc-gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grpc-gateway&lt;/a&gt;，可以将gRPC服务作为RESTful JSON API暴露出来。当您想要了解gRPC或维护RESTful架构，使用curl、web浏览器等客户端时，这非常有用。有关如何使用&lt;code&gt;grpc-gateway&lt;/code&gt;从gRPC中暴露RESTful API的更多细节请参考&lt;a href=&#34;https://coreos.com/blog/grpc-protobufs-swagger.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这个博客&lt;/a&gt;。如果您对此架构不熟悉，我强烈建议您阅读。&lt;/p&gt;
+&lt;p&gt;当您开始使用&lt;code&gt;grpc-gateway&lt;/code&gt;并想传播跟踪header时，有一些值得一提的非常有趣的交互。 &lt;code&gt;grpc-gateway&lt;/code&gt; &lt;a href=&#34;https://github.com/grpc-ecosystem/grpc-gateway#mapping-grpc-to-http&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档&lt;/a&gt;指出，作为gRPC请求header，所有IANA（互联网号码分配局）永久HTTP header都以&lt;code&gt;grpcgateway-&lt;/code&gt;作为前缀并添加。这很好，但是像&lt;code&gt;x-b3-traceid&lt;/code&gt;、&lt;code&gt;x-b3-spanid&lt;/code&gt;等跟踪header不是IANA认可的永久HTTP header，当&lt;code&gt;grpc-gateway&lt;/code&gt;代理HTTP请求时，它们不会被复制到gRPC请求中。这意味着只要将&lt;code&gt;grpc-gateway&lt;/code&gt;添加到您的应用程序中，header传播逻辑就会停止工作。&lt;/p&gt;
+&lt;p&gt;这是个特例吗？添加一个东西打断了当前的工作。不用担心，我为您解决问题！&lt;/p&gt;
+&lt;p&gt;这是一种确保使用&lt;code&gt;grpc-gateway&lt;/code&gt;在HTTP和gRPC之间进行代理时不会丢失跟踪信息的方法：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;net/http&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;google.golang.org/grpc/metadata&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/grpc-ecosystem/grpc-gateway/runtime&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kd&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt;  &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinTraceID&lt;/span&gt;      &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;traceid&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinSpanID&lt;/span&gt;       &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;spanid&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinParentSpanID&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;parentspanid&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinSampled&lt;/span&gt;      &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;sampled&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinFlags&lt;/span&gt;        &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefixTracerState&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;flags&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;otHeaders&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinTraceID&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinSpanID&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinParentSpanID&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinSampled&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;zipkinFlags&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;injectHeadersIntoMetadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ctx&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;MD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;nx&#34;&gt;pairs&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;_&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;h&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;range&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;otHeaders&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;v&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Get&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;h&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  			&lt;span class=&#34;nx&#34;&gt;pairs&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;append&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;pairs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;h&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;v&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Pairs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;pairs&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;annotator&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;MD&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;chainGrpcAnnotators&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;annotators&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;annotator&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;annotator&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;r&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;MD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;nx&#34;&gt;mds&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;MD&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;_&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;a&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;range&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;annotators&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  			&lt;span class=&#34;nx&#34;&gt;mds&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;append&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;mds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;a&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;r&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  		&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Join&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;mds&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;// Main function of your application. Insert tracing headers into gRPC
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;c1&#34;&gt;// metadata using annotators
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;run&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	  &lt;span class=&#34;nx&#34;&gt;annotators&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;annotator&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;injectHeadersIntoMetadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	  &lt;span class=&#34;nx&#34;&gt;gwmux&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;runtime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewServeMux&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		  &lt;span class=&#34;nx&#34;&gt;runtime&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;WithMetadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;chainGrpcAnnotators&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;annotators&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	  &lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在上面的代码中，我使用了&lt;code&gt;grpc-gateway&lt;/code&gt;库中的&lt;a href=&#34;https://github.com/grpc-ecosystem/grpc-gateway/blob/master/runtime/mux.go#L88&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;runtime.WithMetadata&lt;/code&gt;&lt;/a&gt;。该API从HTTP请求中读取属性并将其添加到gRPC元数据中，这一点非常有用，这正是我们想要的！虽然多了一步，但仍然使用库提供的API。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;injectHeadersIntoMetadata&lt;/code&gt;注解器在HTTP请求中查找跟踪header并将其附加到gRPC元数据中，从而确保跟踪header可以使用前面部分中提到的技术从gRPC进一步传播到出站请求。&lt;/p&gt;
+&lt;p&gt;您可能观察到的另一个有趣的事情是&lt;code&gt;chainGrpcAnnotators&lt;/code&gt;包装函数。&lt;code&gt;runtime.WithMetadata&lt;/code&gt; API只允许添加一个注释器，这可能不足以满足所有场景。在我们的例子中，我们有一个跟踪注释器（如上面的一个示例）和一个认证注释器，它将来自HTTP请求的认证数据附加到gRPC元数据。使用&lt;code&gt;chainGrpcAnnotators&lt;/code&gt;允许您添加多个注释器，并且包装函数将来自各种注释器的元数据加入到gRPC请求的单个元数据中。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>服务网格之路</title>
+      <link>https://cloudnative.to/blog/the-path-to-service-mesh/</link>
+      <pubDate>Mon, 04 Jun 2018 15:55:08 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/the-path-to-service-mesh/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/the-path-to-service-mesh/007ackX3ly1frux62q06sj333415oqv5_hudc131b5d1fb55b113caea86c479da2d9_1823411_8d9599627f18427a61aa08aac89f5782.webp 400w,
+               /blog/the-path-to-service-mesh/007ackX3ly1frux62q06sj333415oqv5_hudc131b5d1fb55b113caea86c479da2d9_1823411_4579e2f1d3b7436524f83d0e53d4d390.webp 760w,
+               /blog/the-path-to-service-mesh/007ackX3ly1frux62q06sj333415oqv5_hudc131b5d1fb55b113caea86c479da2d9_1823411_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/the-path-to-service-mesh/007ackX3ly1frux62q06sj333415oqv5_hudc131b5d1fb55b113caea86c479da2d9_1823411_8d9599627f18427a61aa08aac89f5782.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;285&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://blog.aspenmesh.io/blog/2018/03/the-path-to-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;当我们谈论服务网格的时候，有几个问题经常被提及。这些问题的范围覆盖从简单的了解服务网格的历史，到产品和架构相关的比较深入的技术问题。&lt;/p&gt;
+&lt;p&gt;为了回答这些问题，通过 Aspen Mesh 之旅，我们带来三个主题的系列博文来讨论我们为什么选择了 Istio 。&lt;/p&gt;
+&lt;p&gt;作为开始，我将重点讨论我最经常被问到的问题之一：&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;为什么你选择服务网格，是什么原因促使你这样做？&lt;/em&gt;&lt;/p&gt;
+&lt;h4 id=&#34;linerate-高性能负载均衡软件&#34;&gt;&lt;strong&gt;LineRate ：高性能负载均衡软件&lt;/strong&gt;&lt;/h4&gt;
+&lt;p&gt;这个旅程起源于来自 Boulder 的初创公司 LineRate ，该公司在2013年被 F5 Networks 公司收购。 LineRate 除了是我曾经有幸参与的最聪明、最有才华的工程团队，还是一款轻量级高性能 L7 软件代理。当我说高性能时，我正在谈论的是如何将5年前在数据中心已经存在的服务器，变成一个高性能20+ Gbps 200,000+ HTTP 请求每秒的全功能负载。&lt;/p&gt;
+&lt;p&gt;虽然性能本身是引入注目的并为我们的客户打开了大门，但是我们的出发点在于客户期望付费的是容量，而不是硬件。这种见解是 LineRate 的核心价值主张。这个简单的概念将使我们的客户能够改变他们在应用之前使用和部署负载均衡的方式。&lt;/p&gt;
+&lt;p&gt;为了满足这个需求，我们交付了一种产品和商业模式，使我们的客户能够基于 COTS （可在市场上买到的）硬件按需多次复制他们的软件，从而不管部署多少实例都可以获得峰值性能。如果客户需要更多的容量，他们只需要简单的升级其订购层并部署更多的产品副本，直到达到他们许可证允许的带宽，请求速率或者交易速率。&lt;/p&gt;
+&lt;p&gt;这很有吸引力，我们也取得了一些成就，但是很快我们有了新的想法&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;h4 id=&#34;效率优于性能&#34;&gt;效率优于性能&lt;/h4&gt;
+&lt;p&gt;对于我们而言，应用架构正在发生变化，而客户的价值曲线随之变化的趋势也变得明显。我们在与资深团队沟通的过程中注意到，他们讨论的是诸如效率，敏捷，速度，印迹和横向扩展这类的概念。同时我们也开始听到这些领域的创新者开始采用Docker的新技术，以及它将如何改变应用和服务交付的方式。&lt;/p&gt;
+&lt;p&gt;我们与这些团队交流的越多，思考我们如何开发自己的内部应用程序，我们就越意识到转变正在发生。团队从根本上改变他们交付应用的方式，结果是我们的客户开始更少的关注原始性能而是更多地关心分布式代理。这些转变还有更多地收益，包含减少应用的故障域，增加部署的灵活性和赋予应用将负载和网络作为配置管理的能力。&lt;/p&gt;
+&lt;p&gt;与此同时容器和容器编排引擎也开始登上舞台，因此我们开始致力于通过一个新的控制面板以容器的方式交付 LineRate 的产品，并深入的思考人们未来会如何使用这些新技术来交付应用。&lt;/p&gt;
+&lt;p&gt;这些发生在2015的早期讨论促使我们思考未来应用交付将会如何&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;h4 id=&#34;与时俱进的想法&#34;&gt;与时俱进的想法&lt;/h4&gt;
+&lt;p&gt;随着我们对于未来应用交付方式的思考，我们开始关注云原声分布式应用领域中有关策略和网络服务的概念。尽管我们仍然有很多不同的优先级项目，改变应用蓝图，云原生应用和基于DevOps交付模式的想法始终在我们思想的最前端。&lt;/p&gt;
+&lt;p&gt;在这个领域将会有一个新的市场。&lt;/p&gt;
+&lt;p&gt;我们设计了许多项目，但由于种种原因未能成功。我们亲切的称这些项目为 v1.0 ，v1.5 和 v2.0 。每个项目都有一种解决分布式应用架构（微服务）挑战的独特技术。&lt;/p&gt;
+&lt;p&gt;我们尽最大可能去思考。下一个应用交付控制架构（ ADC ):一个完全与 API 驱动的控制面板和一个分离的数据面板。数据面板可能来自云你能够设想到的任意一种形式：靠近微服务的专用硬件，商用软件，或者云原生组件（就像服务网格）。这种无限可扩展的架构可以实现优雅的平衡，能够完美的工作于任意规模的任意组织的任意一种工作。很有野心吧？我们陷入了为客户提供所有东西的陷阱。&lt;/p&gt;
+&lt;p&gt;接下来，我们在“1.5”中完善了我们的方法，我们决定开发一种策略语言&amp;hellip;&amp;hellip; 关键是要定义开源的策略接口并将它无缝地连接到完成工作的数据路径。在一个真正开放的平台中，其中一些数据路径也是开源的。但是仍然有很多发展中的事情没有一步到位；事后看来，其中一些事情已经到来了&amp;hellip;&amp;hellip; 市场还没有到来，加上我们在开源方面也没有专业知识，于是我们在描述我们在做什么以及为什么时遇到了麻烦。&lt;/p&gt;
+&lt;p&gt;但是想法仍然在我们的脑海中燃烧，而我们也没有放弃&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;p&gt;在 2.0 版本，我们设计了一个帮助希望开始容器之旅的 F5 的用户的计划。技术是新的，而市场也刚刚开始走向成熟，我们决定用户将会通过三步开启他们的微服务之旅。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;em&gt;试验&lt;/em&gt; - 在笔记本、服务器或者云主机上通过容器测试应用。&lt;/li&gt;
+&lt;li&gt;&lt;em&gt;生产规划&lt;/em&gt; - 识别能够帮忙开发人员在生产环境部署容器化应用的技术。&lt;/li&gt;
+&lt;li&gt;&lt;em&gt;规模经营&lt;/em&gt; - 重点关注容器应用的可观察性，可操作性和安全性，以减少平均停机发现时间 MTTD 和平均故障恢复时间 MTTR。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;对于实验性用户我们做不了什么，但是对于生产规划，我们将创造一个开源的连接器，用来连接容器编排环境和 BIG-IP 。我们称之为 BIG-IP Container Connector，我们能够解决现有 F5 客户的问题，并和这些用户讨论下一步工作。BIG-IP ContainerConnector 的团队持续弥合在 ADC 和 快速改变的容器编排环境中的差距。&lt;/p&gt;
+&lt;p&gt;我们也开始开发一个新的轻量级容器化代理，称之为容器服务代理 （ Application Service Proxy ），或者 ASP 。 与 Linkerd 和 Envoy 类似的是，它被设计来促使微服务间的高效、灵活、可控的通信。与 Linkerd 和 Envoly 不同的是，它并没有开源社区。我们在考虑一种开源策略，同时它对于 ASP 意味着什么。&lt;/p&gt;
+&lt;p&gt;与此同时，F5 也在发生变化&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;h4 id=&#34;aspen-mesh---f5-的创新&#34;&gt;Aspen Mesh - F5 的创新&lt;/h4&gt;
+&lt;p&gt;在我们开展 ASP 市场计划的同时，F5 通过孵化计划改变了投资新技术和新兴市场的方式。这两个事件与容器的爆炸性增长相结合，导致我们决定承诺在现有的开源服务网格之上构建产品。我们选择 Istio 是因为它具有吸引力的声明式策略语言，可扩展的控制平面架构以及其他我们将在更深入讨论时会涉及的内容。&lt;/p&gt;
+&lt;p&gt;计划已定，是时候将我们的想法推向我们力所能及的位置。Aspen Mesh 是这次推广的结果，也是一段历程的结局，同时也开启了一个新的篇章。&lt;/p&gt;
+&lt;p&gt;本系列文章的第二和第三章节将会重点讨论为什么我们决定将 Istio 作为我们服务网格的核心，和我们将会在未来的几个月内推出什么样的商业化的服务网格。&lt;/p&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>

@@ -12,5 +12,319 @@
       <link>https://cloudnative.to/author/petr-mcallister/</link>
     </image>
     
+    <item>
+      <title>在 Istio 服务网格中使用 Traefik Ingress Controller</title>
+      <link>https://cloudnative.to/blog/using-traefik-ingress-controller-with-istio-service-mesh/</link>
+      <pubDate>Thu, 01 Apr 2021 10:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/using-traefik-ingress-controller-with-istio-service-mesh/</guid>
+      <description>&lt;p&gt;本文译自 &lt;a href=&#34;https://thenewstack.io/using-traefik-ingress-controller-with-istio-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Using Traefik Ingress Controller with Istio Service Mesh&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Istio 服务网格自带 ingress，但我们经常看到有要求使用非 Istio ingress 的客户。此前，我们已经介绍过&lt;a href=&#34;https://www.tetrate.io/blog/using-istio-with-other-ingress-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;将 NGINX 与 Istio 集成&lt;/a&gt;的情况。最近，我们一直在与使用 &lt;a href=&#34;https://traefik.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traefik&lt;/a&gt; ingress 的客户合作。通过对我们之前建议的方法进行一些轻微调整，我将向你介绍如何实现 Traefik 作为 Istio 服务网格的入口网关。&lt;/p&gt;
+&lt;p&gt;流量的流向如下图所示。一旦请求从 Traefik Ingress 到达服务网格，Istio 就能够对请求应用安全性、可观察性和流量引导规则。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4j5v18z8j31hc0u07ad_hu6485f23e60e2e8e9568294bae27898e8_107492_225a79206eb5b4f752641fa201119540.webp 400w,
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4j5v18z8j31hc0u07ad_hu6485f23e60e2e8e9568294bae27898e8_107492_54ebe384a1da962e972ba1b2897dd9fd.webp 760w,
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4j5v18z8j31hc0u07ad_hu6485f23e60e2e8e9568294bae27898e8_107492_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4j5v18z8j31hc0u07ad_hu6485f23e60e2e8e9568294bae27898e8_107492_225a79206eb5b4f752641fa201119540.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;428&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;传入的流量绕过 Istio sidecar，直接到达 Traefik，所以请求终止在 Traefik ingress。&lt;/p&gt;
+&lt;p&gt;Traefik 使用 &lt;code&gt;IngressRoute&lt;/code&gt; 配置重写 Host 头以匹配目的地，并将请求转发到目标服务，这是一个多步骤的过程。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;从 Traefik Ingress 出来的请求被重定向到 Istio sidecar（由 iptables）。&lt;/li&gt;
+&lt;li&gt;Sidecar 接收请求，对其进行加密（因为我们的 Istio &lt;code&gt;PeerAuthentication&lt;/code&gt; 策略要求使用 STRICT mTLS），然后将请求转发到目标服务的 pod。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面是一个端到端的部署示例，使用 Istio 的 bookinfo 演示应用，但用 Traefik ingress 来支撑整个部署。简而言之，要想在自己的环境中实现这个功能。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;用 Istio sidecar 部署 Traefik 控制器，注释部署，使入站流量绕过 Istio Sidecar:&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;# Exclude the ports that Traefik receives traffic on
+traffic.sidecar.istio.io/excludeInboundPorts: “80” 
+
+# Make sure Traefik controller can talk to the Kubernetes API server 
+
+traffic.sidecar.istio.io/excludeOutboundIPRanges: X.X.X.X/32 
+&lt;/code&gt;&lt;/pre&gt;&lt;ul&gt;
+&lt;li&gt;在应用程序命名空间中启用 Istio sidecar 注入，并部署任何你需要的 Istio 特定配置。&lt;/li&gt;
+&lt;li&gt;用 Traefik &lt;code&gt;Middleware&lt;/code&gt; 对象创建 &lt;code&gt;IngressRoute&lt;/code&gt;，将主机名改写为网格识别的主机名（即集群中的服务；下文将通过一个例子详细讨论）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;使用-traefik-ingress-的-bookinfo&#34;&gt;使用 Traefik Ingress 的 Bookinfo&lt;/h2&gt;
+&lt;p&gt;这篇文章的其余部分涵盖了部署 Istio 的 Bookinfo 示例应用程序，使用 Traefik 作为部署的 Ingress 代理。&lt;/p&gt;
+&lt;h3 id=&#34;设置环境&#34;&gt;设置环境&lt;/h3&gt;
+&lt;p&gt;参考以下步骤。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;部署一个至少 1.17 版本的 Kuberentes 集群（最小支持 Istio 1.8 版本）。我们使用 Google Kubernetes Engine 创建的集群。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gcloud container clusters create istio-traefik &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --cluster-version&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;1.17 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --region &amp;lt;GCP region&amp;gt; &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --machine-type&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;e2-standard-4 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --project &amp;lt;GCP Project&amp;gt; &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --num-nodes &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --node-locations &amp;lt;GCP Zone&amp;gt; &lt;span class=&#34;c1&#34;&gt;# i.e us-west2-b (otherwise 1 node per zone)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;下载 Istio 1.8&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -sL https://git.io/getLatestIstio &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ISTIO_VERSION&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;1.8.1 sh -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;在启用 HTTP 访问日志的情况下进行安装。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./istio-1.8.1/bin/istioctl install &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --set meshConfig.accessLogFile&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/dev/stdout &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --skip-confirmation
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-bookinfo-应用&#34;&gt;部署 Bookinfo 应用&lt;/h3&gt;
+&lt;p&gt;安装好 Istio 后，我们就可以开始部署我们的应用程序了。我们将使用 Istio 的 Bookinfo 应用程序进行演示。这个示例应用程序是 Istio 发行版的一部分（在&lt;code&gt;./istio-1.8.1/samples/&lt;/code&gt; 文件夹中）。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建 bookinfo namespace。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create ns bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;设置 label，让 sidecar 自动注入。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl label namespace bookinfo istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;在该 namespace 中部署 bookinfo 应用程序。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f istio-1.8.1/samples/bookinfo/platform/kube/bookinfo.yaml -n bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认所有的吊舱都已启动，并部署了侧车。&lt;/p&gt;
+&lt;p&gt;启用 Istio mTLS 为应用程序命名空间的服务到服务通信。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f - 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: security.istio.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: PeerAuthentication
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: default
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  mtls:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    mode: STRICT
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-traefik-入口&#34;&gt;部署 Traefik 入口&lt;/h3&gt;
+&lt;p&gt;现在是时候按照 v2.3 文档来部署 Traefik 了（本篇文章中 Traefik 的最新版本是 2.3，但如果你根据你的版本调整了 &lt;code&gt;IngressRoute&lt;/code&gt; 和 &lt;code&gt;Middleware&lt;/code&gt; 资源，它将适用于任何版本的 Traefik）。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;部署 Traefik。请注意，Traefik 网站上的文档部署有一些修改（代替 Traefik 文档中的默认命名空间，将指定 bookinfo 命名空间）。该文件可以在这里访问并应用如下。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f http://bit.ly/Traefik-CRDs-and-Roles
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/ingressroutes.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/middlewares.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/ingressroutetcps.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/ingressrouteudps.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/tlsoptions.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/tlsstores.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/traefikservices.traefik.containo.us created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrole.rbac.authorization.k8s.io/traefik-ingress-lb created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrolebinding.rbac.authorization.k8s.io/traefik-ingress-lb created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;为传入的请求创建一个服务。该服务将接收外部 IP 地址。(Traefik 网站上的例子有一些变化)。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;需要指定 Namespace。&lt;/li&gt;
+&lt;li&gt;只发布两个端口：80 用于 Bookinfo 应用，8080 用于 Traefik 管理。&lt;/li&gt;
+&lt;li&gt;服务需要使用的标签（traefik-ingress-lb）指向 Traefik。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Type: Loadbalancer&lt;/code&gt; 是为了告诉 GCP 给服务分配一个外部 IP。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f - 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Service
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: traefik
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  ports:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - protocol: TCP
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      name: web
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      port: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - protocol: TCP
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      name: admin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      port: 8080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    app: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  type: LoadBalancer
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;确认服务的创建符合预期。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get svc traefik -n bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME      TYPE           CLUSTER-IP      EXTERNAL-IP   PORT&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                       AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;traefik   LoadBalancer   10.35.244.227   35.236.XXX.XXX   80:31718/TCP,8080:31334/TCP   2m6s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;正如 &lt;a href=&#34;https://doc.traefik.io/traefik/user-guides/crd-acme/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traefik 网站&lt;/a&gt;中介绍的，需要应用 &lt;code&gt;ServiceAccount&lt;/code&gt; 的 Kubernetes 部署。除了名称和命名空间，网站示例还引入了以下变化。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;为了简单起见，删除了安全端点。
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;Accesslog&lt;/code&gt;：增加了 &lt;code&gt;=true&lt;/code&gt;，因为没有这个值就不行。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Log.level&lt;/code&gt; 设置为 DEBUG 将帮助我们看到发生了什么。&lt;/li&gt;
+&lt;li&gt;增加了 &lt;code&gt;traffic.sidecar.istio.io&lt;/code&gt; 注释（更多细节请参考之前提到的 Tetrate &lt;a href=&#34;https://www.tetrate.io/blog/using-istio-with-other-ingress-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;NGINX 文章&lt;/a&gt;）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;KUBERNETES_SVC_IP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt; kubectl get svc kubernetes -n default -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.spec.clusterIP}&amp;#39;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f - 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: ServiceAccount
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Deployment
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: apps/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  labels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    app: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  replicas: 1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    matchLabels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      app: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  template:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      labels:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        app: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      annotations:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        traffic.sidecar.istio.io/excludeInboundPorts: &amp;#34;80&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        traffic.sidecar.istio.io/excludeOutboundIPRanges: ${KUBERNETES_SVC_IP}/32
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      serviceAccountName: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      containers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - name: traefik-ingress-lb
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          image: traefik:v2.3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          args:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - --api.insecure
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - --accesslog=true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - --providers.kubernetescrd
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - --entrypoints.web.address=:80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - --log.level=DEBUG
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          ports:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - name: web
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              containerPort: 80
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            - name: admin
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              containerPort: 8080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;确认 Traefik 在 Bookinfo 命名空间的部署。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$  kubectl get pods -n bookinfo -l app=traefik-ingress-lb
+NAME                                  READY   STATUS    RESTARTS   AGE
+traefik-ingress-lb-669fc4b77d-74mpx   2/2     Running   0          2m35s
+&lt;/code&gt;&lt;/pre&gt;&lt;ol&gt;
+&lt;li&gt;获取服务 IP 并记录 BOOKINFO_IP 变量值。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;BOOKINFO_IP=$(kubectl -n bookinfo get service traefik -o jsonpath=&amp;#39;{.status.loadBalancer.ingress[0].ip}&amp;#39;)
+&lt;/code&gt;&lt;/pre&gt;&lt;ol&gt;
+&lt;li&gt;测试来自 Ingress 80 端口的响应，看看它是否有通往应用的路由。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -I &lt;span class=&#34;nv&#34;&gt;$BOOKINFO_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确保它返回 “404 Not Found”—— 由于尚未实施 Ingress 规则，所以预计会有 not-200 响应。&lt;/p&gt;
+&lt;h3 id=&#34;配置-traefik-ingress-规则&#34;&gt;配置 Traefik Ingress 规则&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;Traefik 的 &lt;code&gt;Middleware&lt;/code&gt; 头重写功能将使 Istio 服务网格正常运行。本例中，需要将主机定义为 &lt;code&gt;productpage.bookinfo.svc&lt;/code&gt;。头可以根据 &lt;a href=&#34;https://doc.traefik.io/traefik/middlewares/headers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traefik 文档&lt;/a&gt;来定义。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f - 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: traefik.containo.us/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Middleware
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: productpage-header
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  headers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    customRequestHeaders:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      Host: productpage.bookinfo.svc
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;最后一步是指定 ingress 请求的路由逻辑，因为本文的重点是服务网格集成。这个定义非常简单，将所有到达 80 端口的入站请求转发到名为 ProductPage 的前沿 bookinfo 应用服务（服务于 9080 端口的流量）。它还使用了上一步创建的中间件对象。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f - 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: traefik.containo.us/v1alpha1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IngressRoute
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: bookinfo
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  entryPoints:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - web
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  routes:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - match: PathPrefix(`/`)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    kind: Rule
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    middlewares:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: productpage-header
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    services:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    - name: productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      port: 9080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;验证部署功能&#34;&gt;验证部署功能&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;重新测试应用程序的响应。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -I &lt;span class=&#34;nv&#34;&gt;$BOOKINFO_IP&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们会收到 “200 OK “的回复。也可以通过浏览器测试，使用 &lt;code&gt;http://&amp;lt;BOOKINFO_IP&amp;gt;/productpage&lt;/code&gt;。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;如果在 &lt;code&gt;http://&amp;lt;BOOKINFO_IP&amp;gt;/productpage&lt;/code&gt;，就会返回应用响应。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4jrzhuugj30iq0aqaam_huaa9506dab7d33971492ce3a09a829c3d_57310_7b8efbb35428e631abbc3a2c5859b4d8.webp 400w,
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4jrzhuugj30iq0aqaam_huaa9506dab7d33971492ce3a09a829c3d_57310_f1dbc1dc923e0db03e5a7e7d0025e01e.webp 760w,
+               /blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4jrzhuugj30iq0aqaam_huaa9506dab7d33971492ce3a09a829c3d_57310_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-traefik-ingress-controller-with-istio-service-mesh/008eGmZEly1gp4jrzhuugj30iq0aqaam_huaa9506dab7d33971492ce3a09a829c3d_57310_7b8efbb35428e631abbc3a2c5859b4d8.webp&#34;
+               width=&#34;674&#34;
+               height=&#34;386&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;通过查询 istio-proxy 容器的 bookinfo 命名空间中的 Traefik pod 日志，可以在 istio-proxy 日志中看到向应用程序发出的请求。没有传入请求，因为它们直接到达 Traefik Ingress。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;TRAEFIK_POD&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt; kubectl -n bookinfo get pods -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;traefik-ingress-lb -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.items[0].metadata.name}&amp;#39;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n bookinfo logs &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;TRAEFIK_POD&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; -c istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;请注意，请求处理后，日志需要几秒钟才能显示。只有在 Istio 安装时使用 &lt;code&gt;meshConfig.accessLogFile=/dev/stdout&lt;/code&gt; 标志的情况下，才会显示日志。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;[2021-01-05T20:13:55.015Z] &amp;#34;GET /productpage HTTP/1.1&amp;#34; 200 - &amp;#34;-&amp;#34; 0 5179 1069 1069 &amp;#34;10.32.0.1&amp;#34; &amp;#34;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36&amp;#34; &amp;#34;4bd443e9-1a2e-4d30-b1e3-398a5005f240&amp;#34; &amp;#34;productpage.bookinfo.svc&amp;#34; &amp;#34;10.32.0.18:9080&amp;#34; outbound|9080||productpage.bookinfo.svc.cluster.local 10.32.0.19:51810 10.32.0.18:9080 10.32.0.1:0 - default&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;[2021-01-05T20:13:56.301Z] &amp;#34;GET /static/bootstrap/fonts/glyphicons-halflings-regular.woff2 HTTP/1.1&amp;#34; 200 - &amp;#34;-&amp;#34; 0 18028 3 3 &amp;#34;10.32.0.1&amp;#34; &amp;#34;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36&amp;#34; &amp;#34;8cb44552-c3c8-45dd-8674-4af207ce1648&amp;#34; &amp;#34;productpage.bookinfo.svc&amp;#34; &amp;#34;10.32.0.18:9080&amp;#34; outbound|9080||productpage.bookinfo.svc.cluster.local 10.32.0.19:51810 10.32.0.18:9080 10.32.0.1:0 - default&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文演示了如何将 Traefik Ingress 作为 Istio 服务网格的入口点。这里应用的基本方法应该是适用的，即使你的环境与我们例子中使用的环境不同。当引入服务网格时，Traefik / 服务网格集成可以在不同的云中成功实施，并使用全新或现有（也就是棕地）部署 Traefik。最终，您将获得两者最好的东西：Istio 服务网格与您所选择的 Ingress 控制器相集成！&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>

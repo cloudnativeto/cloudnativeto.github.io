@@ -777,6 +777,642 @@ csi.NodeServiceCapability_RPC_UNKNOWN
     </item>
     
     <item>
+      <title>利用 Gateway API 发展 Kubernetes 网络</title>
+      <link>https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/</link>
+      <pubDate>Thu, 22 Apr 2021 10:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/</guid>
+      <description>&lt;p&gt;译者注：本文译自 &lt;a href=&#34;https://kubernetes.io/blog/2021/04/22/evolving-kubernetes-networking-with-the-gateway-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Evolving Kubernetes networking with the Gateway API&lt;/a&gt;， Gateway API 的出现解决了 Ingress 的可移植性问题，且有利于基于角色的访问设计。&lt;/p&gt;
+&lt;p&gt;Ingress 资源是 Kubernetes 众多成功案例中的一个。它创造了一个&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多样化的 Ingress 控制器的生态系统&lt;/a&gt;，这些控制器以标准化和一致的方式在数十万个集群中使用。这种标准化有助于用户采用 Kubernetes。然而，在 Ingress 创建五年后，有迹象表明它被分割成不同但&lt;a href=&#34;https://dave.cheney.net/paste/ingress-is-dead-long-live-ingressroute.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;惊人相似的 CRD&lt;/a&gt; 和 &lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;过载的注释&lt;/a&gt;。Ingress 普遍存在的可移植性问题也限制了它的未来。&lt;/p&gt;
+&lt;p&gt;那是在 2019 年圣地亚哥的 Kubecon 上，一群充满激情的贡献者聚集在一起，讨论 &lt;a href=&#34;https://static.sched.com/hosted_files/kccncna19/a5/Kubecon%20San%20Diego%202019%20-%20Evolving%20the%20Kubernetes%20Ingress%20APIs%20to%20GA%20and%20Beyond%20%5BPUBLIC%5D.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress 的发展&lt;/a&gt;。拥挤的人群溢出到了街对面的酒店大堂，而讨论出来的东西后来被称为 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway API&lt;/a&gt;。这次讨论是基于几个关键的假设：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;路由匹配、流量管理和服务暴露所依据的 API 标准已经商业化，对其实施者和用户提供的定制 API 的价值很小。&lt;/li&gt;
+&lt;li&gt;可以通过共同的核心 API 资源来表示 L4/L7 的路由和流量管理。&lt;/li&gt;
+&lt;li&gt;可以在不牺牲核心 API 的用户体验的前提下，为更复杂的功能提供扩展性。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;gateway-api-介绍&#34;&gt;Gateway API 介绍&lt;/h2&gt;
+&lt;p&gt;这产出了一些设计原则，使 Gateway API 能够在 Ingress 的基础上进行改进。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;表达性&lt;/strong&gt;：除了 HTTP 主机 / 路径匹配和 TLS 之外，Gateway API 还可以表达 HTTP 头操作、流量加权和镜像、TCP/UDP 路由等能力，以及其他只有在 Ingress 中通过自定义注释才能实现的能力。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;面向角色的设计&lt;/strong&gt;：API 资源模型反映了路由和 Kubernetes 服务网络中常见的责任分离。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可扩展性&lt;/strong&gt;：这些资源允许在 API 的各个层面上进行任意的配置附加。这使得在最适当的地方进行细化的定制成为可能。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;灵活的一致性&lt;/strong&gt;：Gateway API 定义了不同的一致性级别 —— 核心（强制支持）、扩展（支持时可移植）和自定义（不保证可移植性），一起被称为&lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/guidelines/#conformance&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;灵活的一致性&lt;/a&gt;。这促进了高度可移植的核心 API（如 Ingress），仍然为 Gateway 控制器实施者提供了灵活性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;gateway-api-是什么样子的&#34;&gt;Gateway API 是什么样子的？&lt;/h3&gt;
+&lt;p&gt;Gateway API 引入了一些新的资源类型：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.GatewayClass&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;GatewayClasses&lt;/strong&gt;&lt;/a&gt; 是集群范围内的资源，作为模板，明确地定义由其衍生的网关的行为。这与 StorageClasses 的概念类似，但用于网络数据平面。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;strong&gt;Gateway&lt;/strong&gt;&lt;/a&gt; 是 GatewayClasses 的部署实例。它们是执行路由的数据平面的逻辑表示，它可能是集群内的代理、硬件 LB 或云 LB。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;路由&lt;/strong&gt; 不是一个单一的资源，而是代表许多不同的特定协议的路由资源。&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.HTTPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTPRoute&lt;/a&gt; 有匹配、过滤和路由规则，这些规则被应用到可以处理 HTTP 和 HTTPS 流量的网关。同样，还有 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.TCPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCPRoutes&lt;/a&gt;、&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.UDPRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;UDPRoutes&lt;/a&gt; 和 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/spec/#networking.x-k8s.io/v1alpha1.TLSRoute&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TLSRoutes&lt;/a&gt;，它们也有协议特定的语义。这种模式也允许网关 API 在未来逐步扩展其协议支持。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-gateway-api-资源&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Gateway API 资源&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_23f242b96c71df2d0637802488c00dcf.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_916b9319369f740180b99c0668061234.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6ut5jlj31ed0u0jyp_hu656dfebab448ed54c64e7e264f6b5f2e_141133_23f242b96c71df2d0637802488c00dcf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;453&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Gateway API 资源
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;gateway-控制器的实现&#34;&gt;Gateway 控制器的实现&lt;/h3&gt;
+&lt;p&gt;好消息是，虽然 Gateway 还在 &lt;a href=&#34;https://github.com/kubernetes-sigs/gateway-api/releases&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Alpha&lt;/a&gt; 阶段，但已经有几个 &lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/implementations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway 控制器实现&lt;/a&gt;，你可以运行。由于它是一个标准化的规格，下面的例子都可以运行，而且功能应该完全相同。我们来看看如何安装和使用这些 Gateway 控制器。&lt;/p&gt;
+&lt;h2 id=&#34;实践-gateway-api&#34;&gt;实践 Gateway API&lt;/h2&gt;
+&lt;p&gt;在下面的例子中，我们将展示不同的 API 资源之间的关系，并引导你完成一个常见的使用案例。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;foo 团队在 foo 命名空间中部署了他们的应用程序。他们需要控制其应用程序的不同页面的路由逻辑。&lt;/li&gt;
+&lt;li&gt;Team bar 正在 bar 命名空间中运行。他们希望能够对他们的应用程序进行蓝绿部署以减少风险。&lt;/li&gt;
+&lt;li&gt;平台团队负责管理 Kubernetes 集群中所有应用程序的负载均衡器和网络安全。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面的 foo-route 对 foo 命名空间中的各种服务进行路径匹配，并且有一个到 404 服务器的默认路由。这通过 &lt;code&gt;foo.example.com/login&lt;/code&gt; 和 &lt;code&gt;foo.example.com/home&lt;/code&gt; 分别暴露了 foo-auth 和 foo-home 服务。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;foo.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/login&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-auth&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/home&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-home&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prefix&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-404&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在同一个 Kubernetes 集群的 bar 命名空间中运行的 bar 团队也希望将他们的应用程序暴露在互联网上，但他们也希望控制自己的金丝雀发布和蓝绿部署。下面的 HTTPRoute 被配置为以下行为。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;对于访问 &lt;code&gt;bar.example.com&lt;/code&gt;的流量：
+&lt;ul&gt;
+&lt;li&gt;将 90% 的流量发送到 bar-v1&lt;/li&gt;
+&lt;li&gt;将 10% 的流量发送到 bar-v2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;对于访问 &lt;code&gt;bar.example.com&lt;/code&gt; 的流量，HTTP header 为 &lt;code&gt;env: canary&lt;/code&gt;：
+&lt;ul&gt;
+&lt;li&gt;将所有的流量发送到 bar-v2&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-the-routing-rules-configured-for-the-bar-v1-and-bar-v2-services&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;The routing rules configured for the bar-v1 and bar-v2 Services&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_00cfa4d7c1e98c3f608c96809d6a9966.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_1bb1ddb004e675c7d8dc122dec150f26.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6via0rj31np0fxq5x_hu674ebadfc5e293b8e2f9a1121962b053_111842_00cfa4d7c1e98c3f608c96809d6a9966.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;203&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      The routing rules configured for the bar-v1 and bar-v2 Services
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostnames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;bar.example.com&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;90&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;values&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;env&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;canary&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;forwardTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bar-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;路由和网关绑定&#34;&gt;路由和网关绑定&lt;/h3&gt;
+&lt;p&gt;因此，我们有两个 HTTPRoute 匹配并将流量路由到不同的服务。你可能想知道，这些服务在哪里可以访问？它们是通过哪些网络或IP暴露的？&lt;/p&gt;
+&lt;p&gt;路由如何暴露给客户是由&lt;a href=&#34;https://gateway-api.sigs.k8s.io/concepts/api-overview/#route-binding&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由绑定&lt;/a&gt;管理的，它描述了路由和网关如何在彼此之间建立双向关系。当路由与网关绑定时，意味着它们的集体路由规则被配置在底层负载均衡器或代理上，并且路由可以通过网关访问。因此，网关是一个网络数据平面的逻辑表示，可以通过路由配置。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-路由如何绑定到网关&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;路由如何绑定到网关&#34; srcset=&#34;
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_400fc9be67aaec72d1d800a6b7139174.webp 400w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_f6b697512deec0c98c75c80c4143d4ab.webp 760w,
+               /blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/evolving-kubernetes-networking-with-the-gateway-api/008i3skNly1gpsl6w3e9aj31fo0gotay_huf2719bba21f1b58ff131301a095e01bb_123389_400fc9be67aaec72d1d800a6b7139174.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;245&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      路由如何绑定到网关
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;行政授权&#34;&gt;行政授权&lt;/h3&gt;
+&lt;p&gt;网关和路由资源之间的分割允许集群管理员将一些路由配置委托给各个团队，同时仍然保留集中控制。下面的网关资源在 443 端口暴露 HTTPS，并用集群管理员控制的证书终止该端口的所有流量。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;prod-web&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gatewayClassName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;acme-lb&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPS&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaces&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;from&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;All&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tls&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;certificateRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;admin-controlled-cert&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面的 HTTPRoute 显示了 Route 如何通过它的 &lt;code&gt;kind&lt;/code&gt;（HTTPRoute）和资源标签（&lt;code&gt;gateway=external-https-prod&lt;/code&gt;）确保它与 Gateway 的选择器相匹配。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 匹配网关上所需的 kind 选择器&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTPRoute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.x-k8s.io/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-ns&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 匹配网关上所需的标签选择器&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;external-https-prod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;以角色为导向的设计&#34;&gt;以角色为导向的设计&lt;/h3&gt;
+&lt;p&gt;当你把它放在一起时，你有一个单一的负载均衡基础设施，可以被多个团队安全地共享。Gateway API 不仅是一个用于高级路由的更具表现力的 API，而且是一个面向角色的 API，为多用户基础设施而设计。它的可扩展性确保了它在保持可移植性的同时，还能为未来的使用场景而发展。最终，这些特性将使 Gateway API 在未来适应不同的组织模式和实施方式。&lt;/p&gt;
+&lt;h3 id=&#34;尝试和参与&#34;&gt;尝试和参与&lt;/h3&gt;
+&lt;p&gt;有许多资源可供查阅，以了解更多。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;查阅&lt;a href=&#34;https://gateway-api.sigs.k8s.io/guides/getting-started/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用户指南&lt;/a&gt;，看看可以解决哪些用例。&lt;/li&gt;
+&lt;li&gt;试用现有的&lt;a href=&#34;https://gateway-api.sigs.k8s.io/references/implementations/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网关控制器&lt;/a&gt;。&lt;/li&gt;
+&lt;li&gt;或者&lt;a href=&#34;https://gateway-api.sigs.k8s.io/contributing/community/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;参与进来&lt;/a&gt;，帮助设计并影响Kubernetes服务网络的未来！&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>为什么 RBAC 不足以保障 Kubernetes 的安全？</title>
+      <link>https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/</link>
+      <pubDate>Thu, 17 Dec 2020 10:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/</guid>
+      <description>&lt;p&gt;Kubernetes 不再是（只是）好玩的游戏了。它正在被用于生产；它是关键任务；所有旧有的安全和合规规则和法规都需要以某种方式加装到 Kubernetes 上。不幸的是，像 RBAC 这样的旧的访问控制工具根本无法应对挑战。&lt;/p&gt;
+&lt;h2 id=&#34;概述&#34;&gt;概述&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes API 的设计与大多数现代 API 不同。&lt;/strong&gt; 它是基于意图的，这意味着使用 API 的人考虑的是他们想要 Kubernetes 做什么，而不是如何实现。其结果是一个令人难以置信的可扩展性、弹性，和一个强大而流行的系统。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;同时，其基于意图的 API 给安全带来了挑战。&lt;/strong&gt; 标准的访问控制解决方案（基于角色的访问控制、基于属性的访问控制、访问控制列表或 IAM 策略）都不够强大，无法强制执行基本的策略，比如谁可以更改 pod 上的标签，或者哪些镜像存储库是安全的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes Admission Control 就是为了解决这个问题而设计的。&lt;/strong&gt; Kubernetes Admission Controller 并不能解决开箱即用的访问控制问题，但它们允许你使用 Webhook 来解决授权挑战与解耦策略。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;kubernetes-基于意图的-api&#34;&gt;Kubernetes 基于意图的 API&lt;/h2&gt;
+&lt;p&gt;Kubernetes API 接受了一个与我们大家习惯的 API 范式截然不同的 API。今天的大多数 API 都是所谓的 &lt;em&gt;基于行动的（action-based）&lt;/em&gt;，这意味着当你想到一个 API 调用时，你正在考虑你想要执行的行动，以改变软件的运行方式。例如，如果你想让一个应用程序暴露在互联网上，你可能会运行 API openport (443)，改变应用程序上的网络设置，使端口 443 打开。&lt;/p&gt;
+&lt;p&gt;相比之下，Kubernetes 有所谓的 &lt;em&gt;基于意图的（intent-based）&lt;/em&gt; API（最近在网络领域流行，例如 &lt;a href=&#34;https://medium.com/r/?url=https%3A%2F%2Fwww.sdxcentral.com%2Fsdn%2Fdefinitions%2Fwhat-is-intent-based-networking%2F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SDXCentral&lt;/a&gt;），这意味着当你想要进行一个 API 调用时，你要考虑的是你希望该系统处于何种状态。你并不关心用什么操作来实现这种希望的状态。你只需告诉系统你想要什么（你的意图），系统就会想出如何实现它 —— 采取哪些动作将系统过渡到期望的状态。例如，你可以说你的应用程序应该运行 1.7 版本的二进制文件，应该使用带加密的持久存储，并且应该连接到互联网。系统会计算出如何升级或降级二进制文件，如何开启加密，以及如何重新配置网络以允许互联网连接。&lt;/p&gt;
+&lt;p&gt;架构上的关键区别在于，&lt;em&gt;基于意图的&lt;/em&gt; 系统既能理解系统当前所处的状态（有时称为 &lt;em&gt;实际状态&lt;/em&gt; ），也能理解你对系统应该处于何种状态的意图（&lt;em&gt;期望状态&lt;/em&gt;）。系统不断地计算两者之间的差距，并采取任何必要的行动使实际状态变成期望状态。用户可以直接通过 API 调用来改变期望状态，而依靠系统本身来改变实际状态。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glqzp7lpo7j30l20ept9z_huf675dbcb4eb5722472b9eb703e89d1e8_44194_19313c24462b73fb7b06a43a10b26756.webp 400w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glqzp7lpo7j30l20ept9z_huf675dbcb4eb5722472b9eb703e89d1e8_44194_f00c1fb36d253b8f873897cb1ef017c4.webp 760w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glqzp7lpo7j30l20ept9z_huf675dbcb4eb5722472b9eb703e89d1e8_44194_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glqzp7lpo7j30l20ept9z_huf675dbcb4eb5722472b9eb703e89d1e8_44194_19313c24462b73fb7b06a43a10b26756.webp&#34;
+               width=&#34;758&#34;
+               height=&#34;529&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Kubernetes 的 API 是基于意图的。每个 API 调用都允许你指定 Kubernetes 众多对象中的一个对象的期望状态：pod、service、ingress、configmap 等。例如，下面是你为一个 nginx 工作负载定义的期望状态。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# nginx-pod.yaml&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Pod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx	&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后要把这个想要的状态发送到 Kubernetes，用 kubectl，把上面的 YAML 文件交给它就行了。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f nginx-pod.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;假设你想改变 nginx 的版本，挂载一个外部卷，或者提供额外的配置，你更新 nginx-pod.yaml 文件到任何你想要的状态，然后再使用 kubectl apply。更新 nginx-pod.yaml 文件到任何需要的状态，然后再使用 kubectl apply。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f nginx-pod.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里的关键要点是，你不是在运行像 updateVersion 或 mountVolume 这样的 API，而是在改变一些描述系统应该处于什么状态的 YAML，并通过运行 apply 来说&amp;quot; 使之如此 &amp;ldquo;。&lt;/p&gt;
+&lt;p&gt;Kubernetes 的 API 模型有几个优势：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;减少学习曲线&lt;/strong&gt;。你要学习每个对象的 YAML 格式和一系列动作，如创建、应用、获取、描述、删除。无论如何，你都需要学习每个对象的 YAML 配置格式（这样你才能读懂它）。相比之下，&lt;em&gt;基于动作的&lt;/em&gt; API 还需要你学习可能是 1,000 个动作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;可扩展性&lt;/strong&gt;。Kubernetes 支持自定义资源定义（CRD）。因此，除了所有常见的 pod、service、ingress 等，你还可以定义自己的资源。这是可能的，因为 API 表面不需要扩展来处理新的资源类型。你只需要写一些描述资源的 YAML，然后调用同样的十几个动作，例如：创建、应用、获取、描述、删除。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;分布式系统&lt;/strong&gt;。在使用商用硬件构建的云上运行大规模系统，要求在面对故障时具有难以置信的弹性。Kubernetes 基于意图的架构让它知道自己应该做什么，所以当比如说发生硬件故障时，它可以尝试进行补偿。Brian Grant（Google Kubernetes 的联合技术负责人）曾就 &lt;a href=&#34;https://docs.google.com/document/d/1cLPGweVEYrVqQvBLJg6sxV-TrE5Rm2MNOBA_cxZP2WU/edit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;声明式应用管理&lt;/a&gt; 和 &lt;a href=&#34;https://docs.google.com/document/d/1RmHXdLhNbyOWPW_AtnnowaRfGejw-qlKQIuLKQWlwzs/edit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 资源管理&lt;/a&gt; 写过大量文章，并指出 Kubernetes API 是解决许多分布式系统问题的关键：故障、分布、自动伸缩、多所有者、可用性、性能、可逆性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;为什么-rbac-不足以保证-kubernetes-的-api-安全&#34;&gt;为什么 RBAC 不足以保证 Kubernetes 的 API 安全？&lt;/h2&gt;
+&lt;p&gt;基于 Kubernetes 意图的 API 的挑战来自于你想要保护和保障 API 的安全时 —— 当你想要控制哪些人可以使用该 API 做什么时。想象一下，你是 Kubernetes 管理员，负责集群的运维、安全和合规性。新手 Kubernetes 开发人员需要护栏；安全团队需要控制和可见性；合规团队需要帮助将古老的规定映射到这个全新的系统；你从自己的经验中知道你需要采用哪些 Kubernetes 最佳实践。&lt;/p&gt;
+&lt;p&gt;理想情况下，你会在 Kubernetes 本身内部通过设置访问控制来执行这些规则、法规和最佳实践。基于角色的访问控制（RBAC）是几十年来的解决方案，使你能够控制哪些用户可以在哪些资源上运行哪些 API。Kubernetes RBAC（自 &lt;a href=&#34;https://kubernetes.io/blog/2017/10/using-rbac-generally-available-18/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;2017 年末&lt;/a&gt; 开始提供）是你的第一道防线。它可以让你为特定的用户组提供对资源的只读访问。它让你通过给不同的用户组分配 Kubernetes 的不同部分（也就是 &lt;em&gt;namespace&lt;/em&gt;）来隔离不同的用户组（虽然不是完全隔离）。它可以让你限制 service account
+的权限。所有这些都是有价值的。&lt;/p&gt;
+&lt;p&gt;但与基于动作的系统相比，RBAC 处理了绝大部分的访问控制需求，Kubernetes 中的 RBAC 由于其基于意图的 API，提供的控制 &lt;em&gt;要少得多&lt;/em&gt;。从 API 的角度来看，只有十几个动作，这意味着如果 alice 可以更新一个资源，她就可以更新这个资源的任何部分。&lt;/p&gt;
+&lt;p&gt;例如，SRE 需要读取集群中的大部分资源，以便在出现问题时能够诊断出问题。但当 SRE 发现某个节点上出现问题时，例如邻居有噪音，她可能需要对该节点进行排空（drain），以便将工作负载转移到不同的节点上，缓解问题。不幸的是，API 没有 drain 动作 —— 那些是 CLI 提供的宏，只是更新节点上的注释。使用 RBAC 试图达到这个级别的粒度是繁琐而复杂的，以至于不切实际。&lt;/p&gt;
+&lt;p&gt;下面的基于意图的 K8s RBAC 图从概念上显示了你必须使用 RBAC 的工作内容 —— 你可以选择哪些用户 / 操作 / 资源组合是允许的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr08337z4j30b908s75g_hub04e92c7d7222ae2fb70f08d2a5ae893_29577_658ea02caf112ef78433918045108e6a.webp 400w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr08337z4j30b908s75g_hub04e92c7d7222ae2fb70f08d2a5ae893_29577_b0ee9c847fd57a2e6098e331567adcb0.webp 760w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr08337z4j30b908s75g_hub04e92c7d7222ae2fb70f08d2a5ae893_29577_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr08337z4j30b908s75g_hub04e92c7d7222ae2fb70f08d2a5ae893_29577_658ea02caf112ef78433918045108e6a.webp&#34;
+               width=&#34;405&#34;
+               height=&#34;316&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;相反，想象一下，如果 Kubernetes 是基于动作的（例如，它包括 cordon、drain、setImage、mountVolume、openPort 等 API）。那么我们就可以使用 RBAC 来授予读以及 cordon 和 drain，但没有其他的功能。基于动作的 API 只是有更多的名字，你可以在编写 RBAC 策略时使用。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr0978kbej30bc0d5wgf_hu9e8170b5c68f8038cafcb45d159049dc_41862_64640f4067f2c62bcea4a72891dd8a1a.webp 400w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr0978kbej30bc0d5wgf_hu9e8170b5c68f8038cafcb45d159049dc_41862_5527be398cbcb85bb11ca2487d463b62.webp 760w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr0978kbej30bc0d5wgf_hu9e8170b5c68f8038cafcb45d159049dc_41862_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr0978kbej30bc0d5wgf_hu9e8170b5c68f8038cafcb45d159049dc_41862_64640f4067f2c62bcea4a72891dd8a1a.webp&#34;
+               width=&#34;408&#34;
+               height=&#34;473&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;简而言之，Kubernetes API 提供了一个强大的、可扩展的、统一的资源模型，但也正是这个资源模型使得 RBAC 对于很多用例来说过于粗粒度。RBAC 所能提供的控制是非常宝贵的，但比起其他系统，RBAC 还远不能满足 Kubernetes 的需要。&lt;/p&gt;
+&lt;h3 id=&#34;我们需要什么来保证-k8s-的-api-安全&#34;&gt;我们需要什么来保证 K8s 的 API 安全？&lt;/h3&gt;
+&lt;p&gt;那么如果 RBAC 不能提供足够的控制，我们该怎么做呢？我们来看一个例子。&amp;ldquo;所有的 pod 必须只使用来自受信任的存储库的镜像&amp;rdquo;（比如说，hooli.com）任何时候有人运行，比如说，kubectl apply，访问控制系统需要根据用户、动作 apply 和描述 pod 的 YAML 做出决定。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Pod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx-1493591563-bvl8q&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;production&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;securityContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;privileged&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;hooli.com/frontend&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;frontend&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;securityContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;privileged&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;dnsPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterFirst&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;restartPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Always&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;为了做出正确的决策，访问控制系统需要提取镜像名称列表（如&lt;code&gt;nginx&lt;/code&gt;和&lt;code&gt;hooli.com/frontend&lt;/code&gt;），并进行字符串操作以提取仓库的名称（如默认的 repo 和 hooli.com）。&lt;/p&gt;
+&lt;p&gt;一种方案是将一堆关于 Kubernetes 资源的知识构建到访问控制系统本身。然后管理员可以写一个策略，比如谁可以 &lt;code&gt;update-labels&lt;/code&gt;，&lt;code&gt;permitted-image-registries&lt;/code&gt; 是什么，等等。这就是大多数系统的做法 —— 发明一堆权限，然后在上面建立一个自定义的访问控制系统。&lt;/p&gt;
+&lt;p&gt;但是构建一个自定义的访问控制系统对于 Kubernetes 来说是行不通的，因为它允许用户和厂商发明自己的 YAML 格式（自定义资源定义），并安装实现这些格式的代码。所以 Kubernetes 的资源可扩展性要求任何定制的 Kubernetes 访问控制系统本身都是可扩展的。&lt;/p&gt;
+&lt;p&gt;所以，不管我们做什么，我们都需要一个访问控制系统，让管理员编写策略：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;通过 YAML 文件的层次结构进行递减。&lt;/li&gt;
+&lt;li&gt;对数组中的元素进行迭代。&lt;/li&gt;
+&lt;li&gt;操作字符串、IP、数字等。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;标准的访问控制范式都不能满足这些要求。这包括基于角色的访问控制（RBAC）、基于属性的访问控制（ABAC）、访问控制列表（ACL），甚至是 IAM 风格的策略。&lt;/p&gt;
+&lt;h3 id=&#34;使用准许控制来应急&#34;&gt;使用准许控制来应急&lt;/h3&gt;
+&lt;p&gt;幸运的是，Kubernetes 团队预见到了这个问题，并创建了一个 &lt;a href=&#34;https://medium.com/r/?url=https%3A%2F%2Fkubernetes.io%2Fdocs%2Freference%2Faccess-authn-authz%2Fadmission-controllers%2F&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Admission Control&lt;/a&gt; 机制，在这里你可以把控制的范围远远超过 RBAC 和标准的访问控制机制。Kubernetes API 服务器提供了一条访问控制的管道，分为 Authorization（如 RBAC），和 Admission。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr2h345xpj30rg06rq42_hu1515a8297a06efb46434a18bb20c7994_42296_1aa7f130d1fe9491aa81c26a62b9ffee.webp 400w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr2h345xpj30rg06rq42_hu1515a8297a06efb46434a18bb20c7994_42296_082cc5dafdbd0124098698189f91a8b8.webp 760w,
+               /blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr2h345xpj30rg06rq42_hu1515a8297a06efb46434a18bb20c7994_42296_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-rbac-is-not-enough-for-kubernetes-api-security/0081Kckwly1glr2h345xpj30rg06rq42_hu1515a8297a06efb46434a18bb20c7994_42296_1aa7f130d1fe9491aa81c26a62b9ffee.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;187&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;授权（Authorization）发生在每次 API 调用上，而准许（Addmission）只发生在更新（创建、更新和删除）上。通过授权，你将获得以下信息以做出决定：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;用户&lt;/strong&gt;：用户、组、认证提供的额外属性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;动作&lt;/strong&gt;：路径、API 动词、HTTP 动词。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源&lt;/strong&gt;：资源、子资源、命名空间、API 组。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通过 Admission，你会得到一个 YAML 中的 AdmissionReview 对象。它包括所有关于资源被修改的信息，以做出任何你想要的决定（见下面的 &lt;code&gt;request.object&lt;/code&gt;）。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;admission.k8s.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;AdmissionReview&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Pod&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;frontend&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;object&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;creationTimestamp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;2018-10-27T02:12:20Z&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;frontend&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;uid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bbfee96d-d98d-11e8-b280-080027868e77&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;imagePullPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Always&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;terminationMessagePath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/dev/termination-log&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;terminationMessagePolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;File&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumeMounts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/var/run/secrets/kubernetes.io/serviceaccount&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-token-tm9v8&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;readOnly&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;dnsPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterFirst&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;restartPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Always&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;schedulerName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-scheduler&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;securityContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceAccount&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceAccountName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;terminationGracePeriodSeconds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;30&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tolerations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;effect&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NoExecute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;node.kubernetes.io/not-ready&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operator&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Exists&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tolerationSeconds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;300&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;effect&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NoExecute&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;node.kubernetes.io/unreachable&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operator&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Exists&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tolerationSeconds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;300&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-token-tm9v8&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-token-tm9v8&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;phase&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Pending&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;qosClass&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;BestEffort&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;oldObject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CREATE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resource&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resource&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;pods&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;uid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;bbfeef88-d98d-11e8-b280-080027868e77&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;userInfo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;groups&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;system:masters&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;system:authenticated&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;username&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;minikube-user &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;当然，你可以通过编写、部署和维护实现准入控制 webhook 协议（一个简单的 HTTP/json API）的自定义代码，编写任何你喜欢的逻辑来保护你的 API。现在，如果你不想支持和维护自定义代码，你可以使用 &lt;a href=&#34;https://medium.com/r/?url=https%3A%2F%2Fwww.openpolicyagent.org&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Open Policy Agent&lt;/a&gt; 作为 Kubernetes &lt;a href=&#34;https://www.openpolicyagent.org/docs/latest/kubernetes-tutorial/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;准入控制器&lt;/a&gt;，并利用其声明式策略语言。该语言包括上述所需的表达能力：迭代、点注和 50 多个内置的可用于字符串操纵等。更多信息，请参见 &lt;a href=&#34;https://blog.openpolicyagent.org/securing-the-kubernetes-api-with-open-policy-agent-ce93af0552c3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&amp;rdquo; 利用 Open Policy Agent 确保 Kubernetes API 安全 &amp;quot; 一文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在这篇文章中，我们深入研究了 Kubernetes 所面临的 API 安全挑战，并重点介绍了以下几个关键要点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 基于意图的 API 让用户专注于他们希望 Kubernetes 处于什么状态，而不是如何实现它。&lt;/li&gt;
+&lt;li&gt;基于意图的方法的核心好处之一是，它使 Kubernetes 在面对故障时具有弹性。因为系统知道自己应该做什么，所以当故障发生时，Kubernetes 知道如何恢复。&lt;/li&gt;
+&lt;li&gt;Kubernetes 的 API 还提供了巨大的可扩展性。用户可以创建自己的自定义资源，而无需扩展 API。&lt;/li&gt;
+&lt;li&gt;Kubernetes 的 API 所面临的挑战是，一个访问控制决策可能需要分析一个任意的 YAML 文档，例如使用点符号、迭代和字符串操纵。标准的访问控制系统，如 RBAC、ABAC、ACLs 和 IAM，根本没有足够的表达能力。&lt;/li&gt;
+&lt;li&gt;Kubernetes 团队引入了准入控制（Admission Control），以赋予用户控制 API 的额外权力。你可以使用声明式授权解决方案（如 Open Policy Agent）作为 Kubernetes Admission Controller，为你提供所需的表达能力，以克服这些新的访问挑战，并提供真正有效的粒度。&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>亚马逊 EKS 发行版（EKS-D）介绍</title>
+      <link>https://cloudnative.to/blog/introducing-amazon-eks-distro/</link>
+      <pubDate>Tue, 01 Dec 2020 10:03:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/introducing-amazon-eks-distro/</guid>
+      <description>&lt;p&gt;今天，我们发布了 &lt;a href=&#34;https://distro.eks.amazonaws.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon EKS Distro&lt;/a&gt;（EKS-D），这是一个基于 &lt;a href=&#34;https://amazonaws-china.com/eks/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Amazon Elastic Kubernetes Service&lt;/a&gt;（Amazon EKS）的 Kubernetes 发行版，并由 Amazon EKS 用于创建可靠和安全的 Kubernetes 集群。通过 EKS-D，你可以依赖 EKS 部署的相同版本的 Kubernetes 及其依赖项。这包括最新的上游更新以及扩展的安全补丁支持。EKS-D 遵循与亚马逊 EKS 相同的 Kubernetes 版本发布周期，我们以 &lt;a href=&#34;https://github.com/aws/eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GitHub 上的开源项目的方式&lt;/a&gt; 提供。&lt;/p&gt;
+&lt;p&gt;在这篇文章中，我们将介绍 EKS Distro，并使用合作伙伴生态系统中的例子来解释开始使用 EKS Distro 的不同方法。&lt;/p&gt;
+&lt;h2 id=&#34;什么是-eks-d&#34;&gt;什么是 EKS-D？&lt;/h2&gt;
+&lt;p&gt;通过 EKS Distro，你现在可以在通过 EKS 提供的相同 Kubernetes 发行版上实现标准化。这意味着你现在可以手动部署可靠和安全的集群，而无需持续测试和跟踪 Kubernetes 更新、依赖性和安全补丁。每个 EKS Distro 版本都遵循 &lt;a href=&#34;https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html#kubernetes-release-calendar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EKS&lt;/a&gt; 验证新 Kubernetes 版本兼容性的 &lt;a href=&#34;https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html#kubernetes-release-calendar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;流程&lt;/a&gt;。你还可以选择使用提供的构建环境设置、工具和我们发布的镜像的哈希值重现 EKS Distro 的构建，以确认你的下载在传输过程中没有被篡改。通过 EKS-D，我们为社区支持到期后的 Kubernetes 版本提供了扩展支持，更新了以前版本的构建，现在有了最新的安全补丁。&lt;/p&gt;
+&lt;p&gt;在过去两年大规模运营 Amazon EKS 之后（我们说的是全球数百万个各种规模的集群），我们现在能够确定哪些工作、&lt;a href=&#34;https://kccncna19.sched.com/event/Uaav/living-with-the-pathology-of-the-cloud-how-aws-runs-lots-of-clusters-micah-hausler-amazon&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;哪些组件要运行以及如何运行&lt;/a&gt;。我们已经了解到，客户希望在企业内部和云端获得一致的体验，以便进行迁移或实现混合云设置。例如，客户有一个用例，由于数据主权的原因，部分工作负载驻留在内部的 Kubernetes 集群中，而其他部分则运行在 EKS 上。现在你手头就有了基于 EKS 的解决方案参考系。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzwpf3fj30rs0fst9y_hu6588f5763964ae39685b0fd553d47cda_56208_1a24a5dfd26ea7e6cce5aed642832925.webp 400w,
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzwpf3fj30rs0fst9y_hu6588f5763964ae39685b0fd553d47cda_56208_f36353cd8991f3366bfdaa0fcf093526.webp 760w,
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzwpf3fj30rs0fst9y_hu6588f5763964ae39685b0fd553d47cda_56208_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzwpf3fj30rs0fst9y_hu6588f5763964ae39685b0fd553d47cda_56208_1a24a5dfd26ea7e6cce5aed642832925.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;432&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;对于 EC2 上的 EKS，你可以 &lt;a href=&#34;https://docs.aws.amazon.com/eks/latest/userguide/worker.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自己&lt;/a&gt; 管理节点，也可以使用 &lt;a href=&#34;https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;托管节点组&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;为了解决一致性的要求，我们想到了 EKS Distro，我们基于 EKS 的 Kubernetes 发行版，你可以在任何环境下运行，无论是裸机还是虚拟机。EKS-D 将上游的（未修改的）Kubernetes 和包，按照一定的、特意的方式进行配置，称为 &lt;a href=&#34;https://github.com/cncf/k8s-conformance/blob/master/faq.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 发行版&lt;/a&gt;，并将这些 &lt;a href=&#34;https://github.com/aws/eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;作为开源&lt;/a&gt; 提供。fork 和 distribution 之间的区别很重要：fork 是一个替代上游的代码库。另一方面，发行版是一个特定的下游代码库，比如 Linux 发行版有 Ubuntu 和 Amazon Linux 2，比如 Hadoop 发行版，EMR 中有由 Cloudera 提供的并发行版。&lt;/p&gt;
+&lt;p&gt;从高层的角度来看，EKS Distro 的情况如下（考虑到一些上游的开源项目，包括 Kubernetes 和 etcd）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzx24n5j30sg0p1q45_huf4456918e88570d55a188c76c54212c6_54994_b3623a4e15790b3a556a429e878c6342.webp 400w,
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzx24n5j30sg0p1q45_huf4456918e88570d55a188c76c54212c6_54994_db76c15f22e4f3ca48372eaebf2492c6.webp 760w,
+               /blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzx24n5j30sg0p1q45_huf4456918e88570d55a188c76c54212c6_54994_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/introducing-amazon-eks-distro/0081Kckwgy1glhwzx24n5j30sg0p1q45_huf4456918e88570d55a188c76c54212c6_54994_b3623a4e15790b3a556a429e878c6342.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;669&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;通过 EKS Distro，你可以通过单一供应商安全地访问可安装、可复制的 Kubernetes 构建，以创建集群，并在社区支持到期后提供 Kubernetes 版本的扩展安全补丁支持。我们将根据 Amazon EKS 版本生命周期政策提供长达 14 个月的 Kubernetes 扩展维护支持，为你提供必要的时间窗口来更新你的基础设施，使其与你的软件生命周期保持一致。&lt;/p&gt;
+&lt;h2 id=&#34;开始使用-eks-d&#34;&gt;开始使用 EKS-D&lt;/h2&gt;
+&lt;p&gt;我们与一些 &lt;a href=&#34;https://amazonaws-china.com/eks/eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;合作伙伴合作&lt;/a&gt;，提供安装方法以及与 EKS Distro 的集成。下面，我们将重点介绍几家合作伙伴，以及他们为帮助你开始使用 EKS-D 所做的工作。&lt;/p&gt;
+&lt;h3 id=&#34;weaveworks&#34;&gt;Weaveworks&lt;/h3&gt;
+&lt;p&gt;Weave Kubernetes Platform（WKP）为 Amazon EKS Distro（EKS-D）带来了 GitOps，并为内部安装、创建和管理 EKS-D 集群提供支持。与任何 Kubernetes 发行版一样，EKS-D 需要配置、升级以及额外的组件和附加组件，如日志、跟踪和指标。WKP 通过将 GitOps 添加到你的 Kubernetes 环境的每一层，为 EKS-D 或任何其他云端和企业内部的发行版解决了这些问题。通过利用 Cluster API 项目，GitOps 工作流可以管理整个集群生命周期，包括维护、升级和补丁，以及 Prometheus 和 Grafana 等平台组件的集群配置。通过 WKP 交付和管理 EKS-D 集群，应用开发团队可以获得最新的 GitOps 功能，从而实现更频繁的部署，缩短价值实现时间，提高可靠性和可重复性。平台团队还可以获得对内部部署 EKS-D 的全面洞察和观察能力。Weaveworks &lt;a href=&#34;https://weave.works/blog/on-prem-kubernetes-gitops-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;发布的博客文章&lt;/a&gt; 进一步详细描述了 EKS-D 和 WKP 之间的关系。另外一篇文章则是 &lt;a href=&#34;https://weave.works/blog/multicluster-gitops-eks-d-wkp&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在 EKS-D 和 EKS-D 混合场景下的 WKP 演示&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;kubestack&#34;&gt;Kubestack&lt;/h3&gt;
+&lt;p&gt;Kubestack 就是要为 Terraform 和 Kubernetes 提供最佳的 GitOps 开发者体验，从本地开发，一直到生产。通过他们 &lt;a href=&#34;https://dev.to/kubestack/localhost-eks-development-environments-with-eks-d-and-kubestack-4p6&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;发布博文&lt;/a&gt; 了解如何使用 Kubestack 管理 EKS-D 集群，你也可以找到一个 &lt;a href=&#34;https://www.youtube.com/watch?v=TcVwtfFww4w&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;视频 demo&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;kubermatic&#34;&gt;Kubermatic&lt;/h3&gt;
+&lt;p&gt;你可以使用 Kubermatic 的 &lt;a href=&#34;https://www.kubermatic.com/products/kubeone/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;KubeOne&lt;/a&gt; 安装 EKS-D。KubeOne 是一个基础设施对等的开源 Kubernetes 集群生命周期管理工具，可以自动部署和 Day 2 操作单个 Kubernetes 集群。了解如何使用 Kubermatic 的开源集群生命周期管理工具 KubeOne 在 AWS 和 Amazon Linux 2 上 &lt;a href=&#34;https://www.kubermatic.com/blog/run-amazon-eks-distro-with-kubeone&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安装 EKS-D&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;aqua-security&#34;&gt;Aqua Security&lt;/h3&gt;
+&lt;p&gt;为了保护 EKS-D 的安全，你需要一个整体的方法来征服 Kubernetes 的复杂性。Aqua 提供 KSPM（Kubernetes 安全态势管理）来提高可观察性和补救错误配置，以及先进的、无代理的 Kubernetes 运行时保护。你还可以使用 Kubernetes 原生功能，为你的 Kubernetes 应用实现策略驱动的全生命周期保护和合规性。了解更多关于 &lt;a href=&#34;https://blog.aquasec.com/aws-security-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aqua 的 EKS-D 集成的信息&lt;/a&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;sysdig&#34;&gt;Sysdig&lt;/h3&gt;
+&lt;p&gt;Sysdig 提供安全和可视性，以检测和响应运行时威胁，验证合规性，并监控和排除 EKS-D 上的容器。查看他们的 &lt;a href=&#34;https://sysdig.com/blog/security-compliance-visibility-amazon-eks-d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;发布博客文章&lt;/a&gt;，了解更多关于使用 CNCF Falco 和 Sysdig Secure 管理 EKS-D 工作负载中的运行时安全的信息。&lt;/p&gt;
+&lt;h3 id=&#34;tetrate&#34;&gt;Tetrate&lt;/h3&gt;
+&lt;p&gt;Tetrate Service Bridge（TSB）&lt;a href=&#34;https://www.tetrate.io/blog/tetrate-expands-aws-partnership-to-bring-enterprise-grade-istio-for-eks-and-eks-distro/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;可在 EKS 和 EKS-D 上实现跨工作负载的统一应用连接和安全&lt;/a&gt;。TSB 为企业级（上游或符合 FIPS 标准）Istio 和 Envoy Proxy 提供了便捷的访问和操作性。多租户、流量管理、网状和应用级可观察性、端到端 mTLS（相互传输层安全）、细粒度授权和应用安全是 TSB 的关键要素。&lt;/p&gt;
+&lt;p&gt;一系列合作伙伴一直在开展更多与 EKS-D 有关的活动，包括：&lt;/p&gt;
+&lt;h3 id=&#34;供应和管理&#34;&gt;供应和管理&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;了解如何 &lt;a href=&#34;https://rancher.com/blog/2020/RKE2-supports-amazon-EKS-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Rancher 的 RKE2 部署 EKS-D&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://snapcraft.io/eks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;看看使用 Canonical 的 MicroK8s 安装 EKS-D&lt;/a&gt; 有多简单 &lt;a href=&#34;https://snapcraft.io/eks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;，一目了&lt;/a&gt; 然&lt;/li&gt;
+&lt;li&gt;探索如何使用 &lt;a href=&#34;https://rafay.co/the-kubernetes-current/how-to-provision-and-manage-amazons-eks-distribution-using-rafay&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Rafay 的托管 Kubernetes 平台（MKP）来管理 EKS-D 集群&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;查看如何 &lt;a href=&#34;https://pulumi.com/blog/amazon-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Pulumi 配置 EKS-D 集群&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.upbound.io/eks-d-and-upbound/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upbound Cloud 使 EKS-D 用户可以轻松地将集群的配置整合&lt;/a&gt; 到一个与环境无关的 Crossplane 配置库中。利用这些配置，集群就可以通过一个统一的 API 接口在企业内部、云端或边缘进行配置。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;观察性&#34;&gt;观察性&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;通过 Instana，你可以 &lt;a href=&#34;https://instana.com/blog/instana-brings-best-in-class-observability-with-the-new-amazon-kubernetes-distribution/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自动监控和可视化&lt;/a&gt; EKS-D 的工作负载&lt;/li&gt;
+&lt;li&gt;Sumo Logic 展示了他们如何 &lt;a href=&#34;https://www.sumologic.com/blog/monitor-aws-kubernetes-service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;与 EKS-D 一起工作&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Epsagon 使你能够 &lt;a href=&#34;https://epsagon.com/announcements/amazon-eks-distro/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监控 EKS-D 工作负载&lt;/a&gt;，包括控制平面指标&lt;/li&gt;
+&lt;li&gt;Datadog 提供了跨内部、混合和云计算基础设施的虚拟机、容器和无服务器环境的健康状况的可视性。了解有关 &lt;a href=&#34;https://www.datadoghq.com/blog/amazon-eks-distro-monitoring/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EKS-D 支持&lt;/a&gt; 的更多信息。&lt;/li&gt;
+&lt;li&gt;Splunk 基础设施监控为所有 Kubernetes 环境 —— 云原生 Amazon EKS、与 Amazon Outposts 的混合 &lt;a href=&#34;https://www.splunk.com/en_us/blog/devops/monitor-amazon-eks-distro-eks-d-with-splunk.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;环境&lt;/a&gt; 以及内部 &lt;a href=&#34;https://www.splunk.com/en_us/blog/devops/monitor-amazon-eks-distro-eks-d-with-splunk.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自我管理的 EKS-D 环境&lt;/a&gt; 提供了企业级监控解决方案。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;安全&#34;&gt;安全&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;了解 &lt;a href=&#34;https://nirmata.com/2020/11/20/nirmata-delivers-consistent-hybrid-cloud-kubernetes-with-aws/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Nirmata 的 EKS 管理器与 EKS-D 的集成&lt;/a&gt;，以及如何使用它来加强你的安全态势&lt;/li&gt;
+&lt;li&gt;Alcide 为跨越 EKS、Outposts 和 &lt;a href=&#34;https://blog.alcide.io/alcide-and-amazon-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;新增加的 EKS-D 的&lt;/a&gt; 混合部署提供集中统一的安全覆盖&lt;/li&gt;
+&lt;li&gt;查看 Tigera 围绕 &lt;a href=&#34;https://www.tigera.io/blog/tigera-amazon-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Calico 和 Calico Enterprise 支持所&lt;/a&gt; 做的工作 &lt;a href=&#34;https://www.tigera.io/blog/tigera-amazon-eks-distro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;，以实现运行 EKS-D 的集群的强大安全性和合规性&lt;/a&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;你可以想象，这只是旅程的开始。你可能会问，下一步是什么？&lt;/p&gt;
+&lt;h2 id=&#34;下一步&#34;&gt;下一步&lt;/h2&gt;
+&lt;p&gt;要开始使用 EKS Distro，请访问 &lt;a href=&#34;https://distro.eks.amazonaws.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://distro.eks.amazonaws.com&lt;/a&gt;，并使用 kops 或 kubeadm 或上述任何一个合作伙伴提供的解决方案亲自尝试。&lt;/p&gt;
+&lt;p&gt;你可以通过 GitHub 提供反馈和 PR，成为 EKS-D 社区的一员。如果你喜欢更多的互动交流，可以在 Kubernetes Slack 社区通过 #eks 频道或 AWS 开发者 Slack 频道加入我们，我们在那里设置了 #eks-d 频道。&lt;/p&gt;
+&lt;p&gt;我们很高兴了解你使用 EKS Distro 的情况，并听取你的反馈和建议。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Zookeeper operator 实战</title>
       <link>https://cloudnative.to/blog/zookeeper-operator/</link>
       <pubDate>Mon, 08 Jun 2020 11:00:00 +0800</pubDate>
@@ -1374,6 +2010,968 @@ dynamicConfigFile=/conf/zoo.cfg.dynamic.c00000002
 &lt;li&gt; &lt;a href=&#34;https://mp.weixin.qq.com/s/O94sUDPlEcNKvfbQyrb8-w&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;阿里云携手微软与 Crossplane 社区发布 OAM Kubernetes 标准实现与核心依赖库&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://www.infoq.cn/article/gizNAvObXREqfvWMTvYt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OAM 正式开源：全球首个云原生应用标准定义与架构模型&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>在Play with Kubernetes平台上以测试驱动的方式部署Istio</title>
+      <link>https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/</link>
+      <pubDate>Fri, 07 Sep 2018 12:33:30 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kubernetes-and-istio&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes and Istio&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7dq9d14j20jg08cju2_hu6dc5a606e4844d1a31a7da99e75b9608_93089_33a5b80ea8ec7e30ac623f11b71396a3.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7dq9d14j20jg08cju2_hu6dc5a606e4844d1a31a7da99e75b9608_93089_c3ee7e6ea0658ecfa72a95b9e3851df0.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7dq9d14j20jg08cju2_hu6dc5a606e4844d1a31a7da99e75b9608_93089_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7dq9d14j20jg08cju2_hu6dc5a606e4844d1a31a7da99e75b9608_93089_33a5b80ea8ec7e30ac623f11b71396a3.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;300&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Kubernetes and Istio
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://www.knowledgehut.com/blog/cloud-computing/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;作为一名全栈开发，假如最近花了不少时间开发应用，肯定已经理解了微服务架构下要面临的一系列全新挑战。尽管应用已经从庞大的单体应用转变成了开发更快、弹性更好、更小也更聚焦的微服务，但现实是，开发者需要开始操心将这些服务集成到分布式系统中的问题了，包括服务发现、负载均衡、注册、容错、监控、路由、兼容和安全等。&lt;/p&gt;
+&lt;p&gt;让我们更详细的拆解微服务架构下开发和运维面临的挑战吧。先来看看第一代简单的 Service Mesh 场景，如下图所示，服务 A 要和 服务 B 通信，没有采用直接通信的方式，请求是通过 NGINX 路由的。NGINX 从 Consul（服务发现工具）查找路由，并在收到 HTTP 502 响应时，自动重试。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-10---一代-service-mesh&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 1.0 - 一代 Service Mesh&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7wkxxawj20jg08cmz4_huaf89de9cf8683fa4994b8016c9073b3b_66260_dea693bbadc3e310a367a5903ccba3b5.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7wkxxawj20jg08cmz4_huaf89de9cf8683fa4994b8016c9073b3b_66260_1942d48e4c98ab17f367abe00305cf67.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7wkxxawj20jg08cmz4_huaf89de9cf8683fa4994b8016c9073b3b_66260_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7wkxxawj20jg08cmz4_huaf89de9cf8683fa4994b8016c9073b3b_66260_dea693bbadc3e310a367a5903ccba3b5.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;300&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 1.0 - 一代 Service Mesh
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-11---服务增多时级联失败演示&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 1.1 - 服务增多时，级联失败演示&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7ybax2rj20jg09pgpc_hud74ca1e1f887cab8dbbf45be6d584d8d_126757_a675632275f4434e8b92747d7e472be7.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7ybax2rj20jg09pgpc_hud74ca1e1f887cab8dbbf45be6d584d8d_126757_131ed7591eb3692a38f95b1b2caf5143.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7ybax2rj20jg09pgpc_hud74ca1e1f887cab8dbbf45be6d584d8d_126757_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fux7ybax2rj20jg09pgpc_hud74ca1e1f887cab8dbbf45be6d584d8d_126757_a675632275f4434e8b92747d7e472be7.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;349&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 1.1 - 服务增多时，级联失败演示
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;但随着微服务架构的到来，服务数量的增长一发不可收拾，下面列出的是开发和运维团队遇到的问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如何让日益增长的微服务们互联？&lt;/li&gt;
+&lt;li&gt;如何为微服务提供负载均衡？&lt;/li&gt;
+&lt;li&gt;为微服务提供基于角色的路由；&lt;/li&gt;
+&lt;li&gt;如何控制微服务的出口流量，如何实现灰度发布？&lt;/li&gt;
+&lt;li&gt;如何控制不断增长的微服务的复杂度？&lt;/li&gt;
+&lt;li&gt;如何用富路由规则实现细粒度的流量控制？&lt;/li&gt;
+&lt;li&gt;实现流量加密、服务到服务的鉴权和强身份声明的挑战&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;简而言之，虽然你可以在应用和网络中间件中开启服务发现和重试机制，但实际上，想让服务发现正常工作是非常困难的。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;初试 Istio Service Mesh&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Service Mesh 是 2018 年度最火热的流行词之一，它是微服务的可配置基础架构层，负责微服务应用间的交互，service mesh 让微服务实例间的交互更灵活、可靠和快速。Mesh 层提供了服务发现、负载均衡、加密、鉴权和验证，支持熔断机制等其他能力。&lt;/p&gt;
+&lt;p&gt;Istio 是完全开源的，可透明的部署在已有的分布式应用上。Istio 1.0 版本在上个月发布，已经生产环境可用。Istio 完全由 Go 语言编写，提供成熟的 API 接口可以接入到任何日志平台、遥测和策略系统中。Istio 在 GitHub 上发布，对系统的性能影响很小，丰富的特性让你可以顺利、高效的运行分布式微服务架构，并提供统一的保护、连接和监控方法。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-12-istio-功能&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 1.2 Istio 功能&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxw8v04rgj20jg09pmyw_hu5214fd2bd28b725d6749a29d24beb588_61096_e69eb1c0b8292db34431ea8fde48edb1.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxw8v04rgj20jg09pmyw_hu5214fd2bd28b725d6749a29d24beb588_61096_5ce1c11c4f202beafa5aafdf045bdf94.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxw8v04rgj20jg09pmyw_hu5214fd2bd28b725d6749a29d24beb588_61096_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxw8v04rgj20jg09pmyw_hu5214fd2bd28b725d6749a29d24beb588_61096_e69eb1c0b8292db34431ea8fde48edb1.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;349&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 1.2 Istio 功能
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio 对系统的影响很小，它在 GitHub 上发布，上个月，Istio 1.0 版本已经发布，并且生产环境可用。&lt;/p&gt;
+&lt;p&gt;Istio 能带来什么好处呢？&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio 提供服务的连接、保护、控制和观测能力。&lt;/li&gt;
+&lt;li&gt;减少服务部署的复杂度，减轻部署团队的压力。&lt;/li&gt;
+&lt;li&gt;在无需修改应用代码的前提下，为开发和开发运维提供了细粒度的流量可视化和控制。&lt;/li&gt;
+&lt;li&gt;为 CIO 提供了帮助全企业安全实施和合规型需求的必要工具。&lt;/li&gt;
+&lt;li&gt;在 service mesh 层提供了统一的行为监测和运营控制。&lt;/li&gt;
+&lt;li&gt;Istio 让为服务网络提供 HTTP、gRPC、Web Socket 和 TCP 流量的自动负载均衡变的轻松。&lt;/li&gt;
+&lt;li&gt;提供了细粒度的流量行为控制，包括：富路由规则、重试、故障转移和失败注入。&lt;/li&gt;
+&lt;li&gt;支持插件化的策略控制层和配置 API，支持访问控制、流量限制和配额。&lt;/li&gt;
+&lt;li&gt;Istio 为集群内的全部流量提供自动的度量、日志、追踪，包括进群的入口和出口。&lt;/li&gt;
+&lt;li&gt;以强身份验证和鉴权的方式，提供了集群内安全的服务间通信。&lt;/li&gt;
+&lt;li&gt;如何想深入 Istio 架构，我强烈推荐 Istio 官方网站（https://istio.io/zh）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwajuotmj20jg0dy0uz_hue1ef43e9a1610efe61165732ae0b3d6e_80487_1af2f07f0de30ecdb24c4581bb80d8f4.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwajuotmj20jg0dy0uz_hue1ef43e9a1610efe61165732ae0b3d6e_80487_0c23c8e00c08f12a2168db7bf18096fe.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwajuotmj20jg0dy0uz_hue1ef43e9a1610efe61165732ae0b3d6e_80487_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwajuotmj20jg0dy0uz_hue1ef43e9a1610efe61165732ae0b3d6e_80487_1af2f07f0de30ecdb24c4581bb80d8f4.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;502&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;开始演示！！！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;在这篇文章中，我将展示如何在 Play with Kubernetes（PWK）中免费部署 Istio，这是个由 Docker 提供的实验网站，是让用户在几秒钟内跑起来 Kubernetes 集群的试验环境。PWK 提供了在浏览器中使用免费 CentOS Linux 虚拟机的体验，实际上是 Docker-in-Docker（DinD）技术模拟了多虚拟机/PC 的效果。&lt;/p&gt;
+&lt;p&gt;打开 &lt;a href=&#34;https://labs.play-with-k8s.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://labs.play-with-k8s.com/&lt;/a&gt;，访问 Kubernetes Playground。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwcxpg13j20jg0dy76k_hu3b98725f853926a92aa88f92c32cf407_84096_95459076129087a711b2d527e7fd533d.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwcxpg13j20jg0dy76k_hu3b98725f853926a92aa88f92c32cf407_84096_7f5ca7e3a0fa159fd2a0077078254825.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwcxpg13j20jg0dy76k_hu3b98725f853926a92aa88f92c32cf407_84096_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwcxpg13j20jg0dy76k_hu3b98725f853926a92aa88f92c32cf407_84096_95459076129087a711b2d527e7fd533d.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;502&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;点击 &amp;ldquo;Login&amp;rdquo; 按钮，以 Docker Hub 或 GitHub ID 登陆。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwdv6kv0j20nq0byaa1_hu95ac13d253bf62071fcc85fdfc52231a_36652_0e7bb2e30eb3ac60ae52f81b2f828f52.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwdv6kv0j20nq0byaa1_hu95ac13d253bf62071fcc85fdfc52231a_36652_f6b32f19c5f623f8c6f2892cf2e5c234.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwdv6kv0j20nq0byaa1_hu95ac13d253bf62071fcc85fdfc52231a_36652_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwdv6kv0j20nq0byaa1_hu95ac13d253bf62071fcc85fdfc52231a_36652_0e7bb2e30eb3ac60ae52f81b2f828f52.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;383&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;完成本教程，你将获得自己的实验环境。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;添加第一个 Kubernetes 节点&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;点击左侧的 &amp;ldquo;Add New Instance&amp;rdquo; 来构建你的第一个 Kubernetes 集群节点，自动命名为 &amp;ldquo;node1&amp;rdquo;，每个节点都预装来 Docker 社区版（CE）和 Kubeadm。这个节点将成为集群的主节点。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwf2adjdj211o0nq75d_hucbbb5c7174c6c5ecb868f590fd667293_245323_65b84ad64a78885115680c26da1702ac.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwf2adjdj211o0nq75d_hucbbb5c7174c6c5ecb868f590fd667293_245323_36e0be3c8342620424c98e65c28d9fcb.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwf2adjdj211o0nq75d_hucbbb5c7174c6c5ecb868f590fd667293_245323_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwf2adjdj211o0nq75d_hucbbb5c7174c6c5ecb868f590fd667293_245323_65b84ad64a78885115680c26da1702ac.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;479&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;启动主节点&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;用如下脚本初始化主节点（node1）来启动 Kubernetes 集群，复制该脚本内容到文件 bootstrap.sh，并执行命令添加可执行权限：&lt;code&gt;chmod +x bootstrap.sh&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwgb83gkj20jg04p75i_hu3613c94fdf616b834ba1fbf6400b6118_63394_359bb764e54a975c9e5571773730b58a.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwgb83gkj20jg04p75i_hu3613c94fdf616b834ba1fbf6400b6118_63394_e38abbce40361d5fbd7bf4733e653fe2.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwgb83gkj20jg04p75i_hu3613c94fdf616b834ba1fbf6400b6118_63394_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwgb83gkj20jg04p75i_hu3613c94fdf616b834ba1fbf6400b6118_63394_359bb764e54a975c9e5571773730b58a.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;169&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;执行脚本时，作为初始化的一部分，kubeadm 会写入几个必要的配置文件、设置 RBAC 并部署 Kubernetes 控制平面组件（例如 kube-apiserver、kube-dns、kube-proxy、etcd 等）。控制平面组件以 docker 容器形式部署。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1mbluj20y004ujrf_hue84cd626be9258b8eb5294d817db9f75_68987_a71f1e15e48cb38edd0fc6648a14dfe7.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1mbluj20y004ujrf_hue84cd626be9258b8eb5294d817db9f75_68987_77cf68b744a77dde8a11ccd5a2f014dc.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1mbluj20y004ujrf_hue84cd626be9258b8eb5294d817db9f75_68987_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1mbluj20y004ujrf_hue84cd626be9258b8eb5294d817db9f75_68987_a71f1e15e48cb38edd0fc6648a14dfe7.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;108&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;复制上面的 kubeadm join token 命令，留作下步使用，此命令用来在集群中加入其他节点。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;添加从节点&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;点击 &amp;ldquo;Add New Node&amp;rdquo; 添加新的从节点&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ncf3j20sj0a3aam_huf66524b906d276aed81d129dc6291413_155619_1abdacea32fad79bd4cc63bacb03dd20.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ncf3j20sj0a3aam_huf66524b906d276aed81d129dc6291413_155619_51810011ffc924bd510d4bb55049e41e.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ncf3j20sj0a3aam_huf66524b906d276aed81d129dc6291413_155619_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ncf3j20sj0a3aam_huf66524b906d276aed81d129dc6291413_155619_1abdacea32fad79bd4cc63bacb03dd20.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;269&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证集群状态&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1moxsj20h304rmxc_hu82a63f9de8e3c9de708586f8e82fe828_48837_d79bb9df95b4a5564acd295f9647817a.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1moxsj20h304rmxc_hu82a63f9de8e3c9de708586f8e82fe828_48837_16b27bb35a43b0626da2be7aa03e8856.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1moxsj20h304rmxc_hu82a63f9de8e3c9de708586f8e82fe828_48837_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1moxsj20h304rmxc_hu82a63f9de8e3c9de708586f8e82fe828_48837_d79bb9df95b4a5564acd295f9647817a.webp&#34;
+               width=&#34;615&#34;
+               height=&#34;171&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证运行的 Pods&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1scslj20to0bfmyo_hu77aadf9b41ee647f74b776d5574341a1_184998_11b058fd3e7e4a86900e638e773058a9.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1scslj20to0bfmyo_hu77aadf9b41ee647f74b776d5574341a1_184998_127473c1a1f410c3a7e498021d48e082.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1scslj20to0bfmyo_hu77aadf9b41ee647f74b776d5574341a1_184998_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1scslj20to0bfmyo_hu77aadf9b41ee647f74b776d5574341a1_184998_11b058fd3e7e4a86900e638e773058a9.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;292&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;安装 Istio 1.0.0&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Istio 部署在单独的 Kubernetes 命名空间里：istio-system，我们过后再来验证。现在，复制如下内容到文件，命名为 install_istio.sh，并保存。添加可执行权限，运行以安装 Istio 和相关工具。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oor0j20jg05mgn0_huade74eaeb41ca1ae1faa3a6f8113b2d8_73050_1a804941fdb3d07bacf407c2bd5d68b6.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oor0j20jg05mgn0_huade74eaeb41ca1ae1faa3a6f8113b2d8_73050_b57a1b92cc7275dff05c1644c59a83b3.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oor0j20jg05mgn0_huade74eaeb41ca1ae1faa3a6f8113b2d8_73050_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oor0j20jg05mgn0_huade74eaeb41ca1ae1faa3a6f8113b2d8_73050_1a804941fdb3d07bacf407c2bd5d68b6.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;202&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;屏幕上应显示如下内容：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ue42j20k70fb75x_hu4021e95a42d5a443fee20d42eb0c9ff8_204911_1cada9fe0102c1449bc83c8436b7b406.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ue42j20k70fb75x_hu4021e95a42d5a443fee20d42eb0c9ff8_204911_c935557d98f7c808d98874619732f626.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ue42j20k70fb75x_hu4021e95a42d5a443fee20d42eb0c9ff8_204911_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ue42j20k70fb75x_hu4021e95a42d5a443fee20d42eb0c9ff8_204911_1cada9fe0102c1449bc83c8436b7b406.webp&#34;
+               width=&#34;727&#34;
+               height=&#34;551&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如上所示，默认会安装 Prometheus、ServiceGraph、Jaeger、Grafana 和 Zipkin。&lt;/p&gt;
+&lt;p&gt;请注意：运行该脚本时，可能会报如下错误：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;unable to recognize &lt;span class=&#34;s2&#34;&gt;&amp;#34;install/kubernetes/istio-demo.yaml&amp;#34;&lt;/span&gt;: no matches &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; admissionregistration.k8s.io/, &lt;span class=&#34;nv&#34;&gt;Kind&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;MutatingWebhookConfiguration
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这是正常的，命令一执行完，可在页面的中央看到一长串展示的端口。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1uh9aj20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_d68751c3bafaae42a93efb3d8caf69e6.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1uh9aj20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_36b367bb83f3e5f6b7eb2934f46e7d65.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1uh9aj20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1uh9aj20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_d68751c3bafaae42a93efb3d8caf69e6.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;494&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wesej20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_e3128d8532b2b4f3dafd2fd924d9f605.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wesej20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_14cfa4d05bc652a8a42b4a61afc19388.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wesej20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wesej20u40jkmz5_hu9da5ce422a4db76569746ea351b5c1ec_239571_e3128d8532b2b4f3dafd2fd924d9f605.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;494&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证服务&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wxc3j20x10f175z_hu872c7b4b768231f436cdf8344f6f246a_216874_a7eaf2ad395903dacff902916e9b326d.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wxc3j20x10f175z_hu872c7b4b768231f436cdf8344f6f246a_216874_6c8a6df34d26d442decfdbffb713185f.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wxc3j20x10f175z_hu872c7b4b768231f436cdf8344f6f246a_216874_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1wxc3j20x10f175z_hu872c7b4b768231f436cdf8344f6f246a_216874_a7eaf2ad395903dacff902916e9b326d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;346&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;暴露服务&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;要暴露 Prometheus、Grafana 和 服务图标服务，需要先删除已有的服务，用 NodePort 替换 ClusterIP，用实例页顶端展示的端口访问服务（如下所示）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oduej210g07ywfj_huc850f44675f8e36587eded2ca0067d5b_139657_66747b702562ed5331c3b6ef2bdc26eb.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oduej210g07ywfj_huc850f44675f8e36587eded2ca0067d5b_139657_5563c5afe3b9e6ba9e8d59e6c2c3982b.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oduej210g07ywfj_huc850f44675f8e36587eded2ca0067d5b_139657_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oduej210g07ywfj_huc850f44675f8e36587eded2ca0067d5b_139657_66747b702562ed5331c3b6ef2bdc26eb.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;166&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1x12ej20z80eogn8_huae4220ce6871ab0dbc1f31538fdfa5a6_253774_7fef22a3912cfb7dd7bee152de4eba29.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1x12ej20z80eogn8_huae4220ce6871ab0dbc1f31538fdfa5a6_253774_dbc17847e02a17134b49026367350e18.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1x12ej20z80eogn8_huae4220ce6871ab0dbc1f31538fdfa5a6_253774_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1x12ej20z80eogn8_huae4220ce6871ab0dbc1f31538fdfa5a6_253774_7fef22a3912cfb7dd7bee152de4eba29.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;317&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;点击 &amp;ldquo;30004&amp;rdquo; 访问 Grafana 页，点击 &amp;ldquo;30003&amp;rdquo; 访问 Prometheus 页。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ysfbj21350ofjsy_hu86f33364715a39ef5bd5a4e8516a8191_379345_6dee66e5f5c36ae67096538129ed6cbc.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ysfbj21350ofjsy_hu86f33364715a39ef5bd5a4e8516a8191_379345_e3185be4b34dcd5b1051eae12c57071b.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ysfbj21350ofjsy_hu86f33364715a39ef5bd5a4e8516a8191_379345_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ysfbj21350ofjsy_hu86f33364715a39ef5bd5a4e8516a8191_379345_6dee66e5f5c36ae67096538129ed6cbc.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;474&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oe4rj213z0ivq3r_hu14cab968650e78ebfe175af9f7cbb2eb_179960_1f46c3d9f95cafcab2a875478d63fdf0.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oe4rj213z0ivq3r_hu14cab968650e78ebfe175af9f7cbb2eb_179960_5a239c6e0ebf174d9203f26a436832b6.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oe4rj213z0ivq3r_hu14cab968650e78ebfe175af9f7cbb2eb_179960_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1oe4rj213z0ivq3r_hu14cab968650e78ebfe175af9f7cbb2eb_179960_1f46c3d9f95cafcab2a875478d63fdf0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;358&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;可以如下图所示，选择必要配置查看 Prometheus 度量：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1olhxj20rp0fl3yr_hu5d770ecd63e907c7446bd86085120b25_113131_0356e617b5aa5125a5d2e052c04d61c2.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1olhxj20rp0fl3yr_hu5d770ecd63e907c7446bd86085120b25_113131_5f76d9a49464557097da13a088eaa98e.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1olhxj20rp0fl3yr_hu5d770ecd63e907c7446bd86085120b25_113131_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1olhxj20rp0fl3yr_hu5d770ecd63e907c7446bd86085120b25_113131_0356e617b5aa5125a5d2e052c04d61c2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;428&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 Grafana 页，添加 Prometheus 数据源，并确认 Dashboard 已经运行。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1pomvj20hs0ixdgh_hu473ca735c09336fb140fbed3e588be60_166731_4bd29ef116aa220d5ca9437059eb34ed.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1pomvj20hs0ixdgh_hu473ca735c09336fb140fbed3e588be60_166731_044e1034bcd740eb375c95262cc8583f.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1pomvj20hs0ixdgh_hu473ca735c09336fb140fbed3e588be60_166731_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1pomvj20hs0ixdgh_hu473ca735c09336fb140fbed3e588be60_166731_4bd29ef116aa220d5ca9437059eb34ed.webp&#34;
+               width=&#34;640&#34;
+               height=&#34;681&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;恭喜！你已经将 Istio 部署在 Kubernetes 集群上了，K8S playgroud 上已经安装的服务包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio Controllers，以及相关 RBAC 规则&lt;/li&gt;
+&lt;li&gt;Istio 定制资源定义&lt;/li&gt;
+&lt;li&gt;Prometheus 和 Grafana 监控系统&lt;/li&gt;
+&lt;li&gt;Jeager 分布式追踪系统&lt;/li&gt;
+&lt;li&gt;Istio Sidecar 注入程序（下一节我们再来仔细看看）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;安装 Istioctl&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Istioctl 是 Istio 的命令行配置工具，可以用来创建、查询、修改和删除 Istio 系统的配置资源。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1qvitj213v06it97_hu4bed4ec9a3fe0f52d29dcd5008f78db0_80284_ace157c630b64e5aa71189c76fcde7a4.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1qvitj213v06it97_hu4bed4ec9a3fe0f52d29dcd5008f78db0_80284_7147f6da189b94b1913876bac2aa8ac0.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1qvitj213v06it97_hu4bed4ec9a3fe0f52d29dcd5008f78db0_80284_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1qvitj213v06it97_hu4bed4ec9a3fe0f52d29dcd5008f78db0_80284_ace157c630b64e5aa71189c76fcde7a4.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;124&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;部署 BookInfo 应用示例&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Istio 已经安装并验证过了，可以在上面部署示例应用 BookInfo 了，这是一个简单的书店模拟应用，由四个服务组成：网站首页、书籍信息、评论（几个特定的版本有评论服务）和评分，全部由 Istio 管理。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;部署 BookInfo 服务&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj247c0j20jg07gdhv_hu26ef41b77f1c429db00115f20c7fe0c6_99776_bd1741c3bb80badeb5aa13925182e7ad.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj247c0j20jg07gdhv_hu26ef41b77f1c429db00115f20c7fe0c6_99776_3233240f45e0d9fbb9c7b326d4048518.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj247c0j20jg07gdhv_hu26ef41b77f1c429db00115f20c7fe0c6_99776_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj247c0j20jg07gdhv_hu26ef41b77f1c429db00115f20c7fe0c6_99776_bd1741c3bb80badeb5aa13925182e7ad.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;268&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;定义入口网关&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1rru2j20jg03xdgu_hu3613c94fdf616b834ba1fbf6400b6118_57337_daf80ce763d94bac02cec2177c54c93d.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1rru2j20jg03xdgu_hu3613c94fdf616b834ba1fbf6400b6118_57337_1f0959e60d7eede91b9ef5f6cfbe6afb.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1rru2j20jg03xdgu_hu3613c94fdf616b834ba1fbf6400b6118_57337_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1rru2j20jg03xdgu_hu3613c94fdf616b834ba1fbf6400b6118_57337_daf80ce763d94bac02cec2177c54c93d.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;141&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;验证 BookInfo 应用&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj280kwj20jg0d8aew_hu13b365c30b663e527f71a049679681e3_215583_e182e7cc3503361a526829bdc2bbfcc2.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj280kwj20jg0d8aew_hu13b365c30b663e527f71a049679681e3_215583_eff0ccdab9011137dad7ba5eb1314f08.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj280kwj20jg0d8aew_hu13b365c30b663e527f71a049679681e3_215583_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj280kwj20jg0d8aew_hu13b365c30b663e527f71a049679681e3_215583_e182e7cc3503361a526829bdc2bbfcc2.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;476&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj27k0kj20jg0k57b9_hu2ccd47d7a574f6af9dcefbb7cd23fb37_317848_a4f90fb0aabadfe180c55a740c5dec95.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj27k0kj20jg0k57b9_hu2ccd47d7a574f6af9dcefbb7cd23fb37_317848_d45b1193978341164f3504d8a18add96.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj27k0kj20jg0k57b9_hu2ccd47d7a574f6af9dcefbb7cd23fb37_317848_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj27k0kj20jg0k57b9_hu2ccd47d7a574f6af9dcefbb7cd23fb37_317848_a4f90fb0aabadfe180c55a740c5dec95.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;725&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;通过 URL 访问&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj28b2bj20jg07rwhd_hu0373c8aed4a62ef57be0d0244ac1d3a4_135786_154f3a03178201ec43ba51949d2ea2ff.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj28b2bj20jg07rwhd_hu0373c8aed4a62ef57be0d0244ac1d3a4_135786_911a332a3367e0a358f37fabed4f533c.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj28b2bj20jg07rwhd_hu0373c8aed4a62ef57be0d0244ac1d3a4_135786_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj28b2bj20jg07rwhd_hu0373c8aed4a62ef57be0d0244ac1d3a4_135786_154f3a03178201ec43ba51949d2ea2ff.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;279&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;现在应该可以看到 BookInfo 示例了：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ycp2j20jg07rjtf_hu15be16246fdd09b28e4cbbba4393fe0c_76402_f771fe38ca402cd2c785ec54793f1b88.webp 400w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ycp2j20jg07rjtf_hu15be16246fdd09b28e4cbbba4393fe0c_76402_d3b9c8e0285dac2c243460cfcac57219.webp 760w,
+               /blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ycp2j20jg07rjtf_hu15be16246fdd09b28e4cbbba4393fe0c_76402_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/test-drive-your-first-istio-deployment-using-play-with-kubernetes-platform-cloud-computing/6286a305ly1fuxwj1ycp2j20jg07rjtf_hu15be16246fdd09b28e4cbbba4393fe0c_76402_f771fe38ca402cd2c785ec54793f1b88.webp&#34;
+               width=&#34;700&#34;
+               height=&#34;279&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;希望本部程能帮你顺利的在 Kubernetes 上部署 Istio。下一篇博客，我将深入 Istio 的内部架构、流量控制、权限和遥测等细节。&lt;/p&gt;
 </description>
     </item>
     
