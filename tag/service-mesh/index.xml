@@ -3538,6 +3538,420 @@
     </item>
     
     <item>
+      <title>初探可编程网关 Pipy</title>
+      <link>https://cloudnative.to/blog/glance-at-programmable-gateway-pipy/</link>
+      <pubDate>Mon, 31 May 2021 07:13:54 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/glance-at-programmable-gateway-pipy/</guid>
+      <description>&lt;p&gt;有幸参加了 &lt;a href=&#34;https://flomesh.cn/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Flomesh&lt;/a&gt; 组织的workshop，了解了他们的 Pipy 网络代理，以及围绕 Pipy 构建起来的生态。Pipy 在生态中，不止是代理的角色，还是 Flomesh 服务网格​中的数据平面。&lt;/p&gt;
+&lt;p&gt;整理一下，做个记录，顺便瞄一下 Pipy 的部分源码。&lt;/p&gt;
+&lt;h2 id=&#34;介绍&#34;&gt;介绍&lt;/h2&gt;
+&lt;p&gt;下面是摘自 Github 上关于 Pipy 的介绍：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Pipy 是一个轻量级、高性能、高稳定、可编程的网络代理。Pipy 核心框架使用 C++ 开发，网络 IO 采用 ASIO 库。 Pipy 的可执行文件仅有 5M 左右，运行期的内存占用 10M 左右，因此 Pipy 非常适合做 Sidecar proxy。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Pipy 内置了自研的 pjs 作为脚本扩展，使得Pipy 可以用 JS 脚本根据特定需求快速定制逻辑与功能。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Pipy 采用了模块化、链式的处理架构，用顺序执行的模块来对网络数据块进行处理。这种简单的架构使得 Pipy 底层简单可靠，同时具备了动态编排流量的能力，兼顾了简单和灵活。通过使用 REUSE_PORT 的机制（主流 Linux 和 BSD 版本都支持该功能），Pipy 可以以多进程模式运行，使得 Pipy 不仅适用于 Sidecar 模式，也适用于大规模的流量处理场景。 在实践中，Pipy 独立部署的时候用作“软负载”，可以在低延迟的情况下，实现媲美硬件的负载均衡吞吐能力，同时具有灵活的扩展性。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16221838193789.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Pipy 的核心是消息流处理器：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16221838399668.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Pipy 流量处理的流程：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16221838630400.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;核心概念&#34;&gt;核心概念&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;流（Stream）&lt;/li&gt;
+&lt;li&gt;管道（Pipeline）&lt;/li&gt;
+&lt;li&gt;模块（Module）&lt;/li&gt;
+&lt;li&gt;会话（Session）&lt;/li&gt;
+&lt;li&gt;上下文（Context）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;u&gt;以下是个人浅见&lt;/u&gt;：&lt;/p&gt;
+&lt;p&gt;Pipy 使用 &lt;code&gt;pjs&lt;/code&gt; 引擎将 JavaScript格式的配置，解析成其抽象的 &lt;code&gt;Configuration&lt;/code&gt; 对象。每个 &lt;code&gt;Configuration&lt;/code&gt; 中包含了多个 &lt;code&gt;Pipeline&lt;/code&gt;，每个 &lt;code&gt;Configuration&lt;/code&gt; 中又会用到多个 &lt;code&gt;Filter&lt;/code&gt;。这些都属于 Pipy 的&lt;em&gt;静态&lt;/em&gt;配置部分。（后面会提到 Pipeline 的三种不同类型）&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223905428188.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;而属于&lt;strong&gt;运行时&lt;/strong&gt;的就是流、会话和上下文了，在 Pipy 中，数据流是由对象（Pipy 的&lt;em&gt;抽象&lt;/em&gt;）组成的。而这些对象抵达 Pipy，被抽象成不同的&lt;u&gt;事件&lt;/u&gt;。而事件触发不同的过滤器的执行。&lt;/p&gt;
+&lt;p&gt;我个人更喜欢将其核心理解为：对数据流的事件处理引擎。&lt;/p&gt;
+&lt;p&gt;理解归理解，实践出真知。“大胆假设，小心求证！”&lt;/p&gt;
+&lt;h2 id=&#34;本地编译&#34;&gt;本地编译&lt;/h2&gt;
+&lt;p&gt;从编译 Pipy 开始。&lt;/p&gt;
+&lt;h3 id=&#34;环境准备&#34;&gt;环境准备&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#安装 nodejs&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ nvm install lts/erbium 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#安装 cmake&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ brew install cmake
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;编译-pipy&#34;&gt;编译 Pipy&lt;/h3&gt;
+&lt;p&gt;从 &lt;code&gt;https://github.com/flomesh-io/pipy.git&lt;/code&gt; 克隆代码。&lt;/p&gt;
+&lt;p&gt;Pipy 的编译包括了两个部分，GUI 和 Pipy 本体。&lt;/p&gt;
+&lt;p&gt;GUI 是 Pipy 提供的一个用于开发模式下进行配置的界面，首先编译Pipy GUI。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# pipy root folder&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; gui
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ npm install
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ npm run build
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;接着编译 Pipy 的本体&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# pipy root folder&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ mkdir build
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; build
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cmake -DCMAKE_BUILD_TYPE&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;Release -DPIPY_GUI&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;ON ..
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ make
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;完成后检查根目录下的 &lt;code&gt;bin&lt;/code&gt; 目录，可以看到 pipy 的可执行文件，大小只有 11M。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223857141237.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ bin/pipy --help
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Usage: pipy &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;options&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &amp;lt;script filename&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Options:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -h, -help, --help                    Show &lt;span class=&#34;nb&#34;&gt;help&lt;/span&gt; information
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -v, -version, --version              Show version information
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --list-filters                       List all filters
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --help-filters                       Show detailed usage information &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; all filters
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --log-level&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&amp;lt;debug&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;info&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;warn&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;error&amp;gt;  Set the level of log output
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --verify                             Verify configuration only
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --reuse-port                         Enable kernel load balancing &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; all listening ports
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  --gui-port&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&amp;lt;port&amp;gt;                    Enable web GUI on the specified port
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;demohello-pipy&#34;&gt;Demo：Hello Pipy&lt;/h3&gt;
+&lt;p&gt;开发模式下可以让 Pipy 携带 GUI 启动，通过 GUI 进行配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#指定 gui 的端口为 6060，从 test 目录中加载配置&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ bin/pipy --gui-port&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6060&lt;/span&gt; test/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2021-05-30 22:48:41 &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;info&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;gui&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; Starting GUI service...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2021-05-30 22:48:41 &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;info&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;listener&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; Listening on 0.0.0.0:6060
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;浏览器中打开
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223862683344.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;配置界面
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223865498871.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;展开 &lt;code&gt;002-hello&lt;/code&gt; 子目录点选 &lt;code&gt;pipy&lt;/code&gt; 并点击运行按钮：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223866403409.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl -i localhost:6080
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;200&lt;/span&gt; OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Connection: keep-alive
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Length: &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Hello!
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;pipy-过滤器&#34;&gt;Pipy 过滤器&lt;/h3&gt;
+&lt;p&gt;通过 pipe 的命令可以输出其支持的过滤器列表，一共 31 个。通过将一系列过滤器进行组装，可以实现复杂的流处理。&lt;/p&gt;
+&lt;p&gt;比如 &lt;code&gt;007-logging&lt;/code&gt; 的配置实现了日志的功能：记录请求和响应的数据，并批量发送到 ElasticSearch。这里就用到了 &lt;code&gt;fork&lt;/code&gt;、&lt;code&gt;connect&lt;/code&gt;、&lt;code&gt;onSessionStart&lt;/code&gt;、&lt;code&gt;encodeHttpRequest&lt;/code&gt;、&lt;code&gt;decodeHttpRequest&lt;/code&gt;、&lt;code&gt;onMessageStart&lt;/code&gt;、&lt;code&gt;onMessage&lt;/code&gt;、&lt;code&gt;decodeHttpResponse&lt;/code&gt;、&lt;code&gt;replaceMessage&lt;/code&gt;、&lt;code&gt;link&lt;/code&gt;、&lt;code&gt;mux&lt;/code&gt;、&lt;code&gt;task&lt;/code&gt; 等十多种过滤器。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223878872474.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ bin/pipy --list-filters
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;connect             &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;target&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, options&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                         Sends data to a remote endpoint and receives data from it
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;demux               &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;target&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                    Sends messages to a different pipline with each one in its own session and context
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;decodeDubbo         &lt;span class=&#34;o&#34;&gt;()&lt;/span&gt;                                          Deframes a Dubbo message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;decodeHttpRequest   &lt;span class=&#34;o&#34;&gt;()&lt;/span&gt;                                          Deframes an HTTP request message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;decodeHttpResponse  &lt;span class=&#34;o&#34;&gt;()&lt;/span&gt;                                          Deframes an HTTP response message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;dummy               &lt;span class=&#34;o&#34;&gt;()&lt;/span&gt;                                          Eats up all events
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;dump                &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;tag&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                                     Outputs events to the standard output
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;encodeDubbo         &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;head&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                                    Frames a Dubbo message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;encodeHttpRequest   &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;head&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                                    Frames an HTTP request message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;encodeHttpResponse  &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;head&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                                    Frames an HTTP response message
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt;                &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                   Spawns a child process and connects to its input/output
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;fork                &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;target&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, sessionData&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                     Sends copies of events to other pipeline sessions
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;link                &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;target&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, when&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, target2&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, when2, ...&lt;span class=&#34;o&#34;&gt;]]])&lt;/span&gt;   Sends events to a different pipeline
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mux                 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;target&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, selector&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                        Sends messages from different sessions to a shared pipeline session
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onSessionStart      &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles the initial event in a session
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onData              &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a Data event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onMessageStart      &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a MessageStart event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onMessageEnd        &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a MessageEnd event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onSessionEnd        &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a SessionEnd event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onMessageBody       &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a &lt;span class=&#34;nb&#34;&gt;complete&lt;/span&gt; message body
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;onMessage           &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Handles a &lt;span class=&#34;nb&#34;&gt;complete&lt;/span&gt; message including the head and the body
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;print               &lt;span class=&#34;o&#34;&gt;()&lt;/span&gt;                                          Outputs raw data to the standard output
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceSessionStart &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;callback&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                  Replaces the initial event in a session
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceData         &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces a Data event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceMessageStart &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces a MessageStart event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceMessageEnd   &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces a MessageEnd event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceSessionEnd   &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces a SessionEnd event
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceMessageBody  &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces an entire message body
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;replaceMessage      &lt;span class=&#34;o&#34;&gt;([&lt;/span&gt;replacement&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                             Replaces a &lt;span class=&#34;nb&#34;&gt;complete&lt;/span&gt; message including the head and the body
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tap                 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;quota&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, account&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;                          Throttles message rate or data rate
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;use                 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;module, pipeline&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;, argv...&lt;span class=&#34;o&#34;&gt;])&lt;/span&gt;               Sends events to a pipeline in a different module
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;wait&lt;/span&gt;                &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;condition&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;                                 Buffers up events &lt;span class=&#34;k&#34;&gt;until&lt;/span&gt; a condition is fulfilled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;原理&#34;&gt;原理&lt;/h3&gt;
+&lt;p&gt;“Talk is cheap, show me the code.”&lt;/p&gt;
+&lt;h4 id=&#34;配置加载&#34;&gt;配置加载&lt;/h4&gt;
+&lt;p&gt;个人比较喜欢看源码来理解实现，即使是 C++。从浏览器请求入手发现运行时向&lt;code&gt;/api/program&lt;/code&gt; 发送了 &lt;code&gt;POST&lt;/code&gt; 请求，请求的内容是配置文件的地址。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223870171916.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;检查源码后，找到逻辑的实现在 &lt;code&gt;src/gui.cpp:189&lt;/code&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建新的 worker&lt;/li&gt;
+&lt;li&gt;加载配置，将 JavaScrip 代码解析成 &lt;code&gt;Configuration&lt;/code&gt; 对象&lt;/li&gt;
+&lt;li&gt;启动 worker，执行&lt;code&gt;Configuration::apply()&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;卸载旧的 worker&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16224186469477.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从 &lt;code&gt;src/api/configuration.cpp:267&lt;/code&gt; 处看：&lt;code&gt;pipeline&lt;/code&gt;、&lt;code&gt;listen&lt;/code&gt; 和 &lt;code&gt;task&lt;/code&gt; 配置实际在 Pipy 的配置中都是被抽象为 &lt;code&gt;Pipeline&lt;/code&gt; 对象，只是在类型上有差异分别为：&lt;code&gt;NAMED&lt;/code&gt;、&lt;code&gt;LISTEN&lt;/code&gt; 和 &lt;code&gt;TASK&lt;/code&gt;。比如 &lt;code&gt;listen&lt;/code&gt; 中可以通过 &lt;code&gt;fork&lt;/code&gt; 过滤器将事件的副本发送到指定的 &lt;code&gt;pipeline&lt;/code&gt; 中。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223897550113.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;基于数据流事件的处理&#34;&gt;基于数据流事件的处理&lt;/h4&gt;
+&lt;p&gt;&lt;code&gt;src/inbound.cpp:171&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://atbug.oss-cn-hangzhou.aliyuncs.com/2021/05/31/16223918853729.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;结语&#34;&gt;结语&lt;/h2&gt;
+&lt;p&gt;Pipy 虽小（只有 11M），但以其可编程的特性提供了灵活的配置能力，潜力无限。&lt;/p&gt;
+&lt;p&gt;Pipy 像处理 HTTP 一样处理任意的七层协议。内部版本支持Dubbo、Redis、Socks 等，目前正在迁移到开源版本。&lt;/p&gt;
+&lt;p&gt;期待即将开源的 Portal，以及服务网格 Flomesh。持续关注，后面考虑再写几篇。&lt;/p&gt;
+&lt;p&gt;“未来可期！”&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Istio 开源四周年回顾与展望</title>
       <link>https://cloudnative.to/blog/istio-4-year-birthday/</link>
       <pubDate>Tue, 25 May 2021 11:20:46 +0800</pubDate>
@@ -7430,6 +7844,1581 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
     </item>
     
     <item>
+      <title>Google Cloud Run详细介绍</title>
+      <link>https://cloudnative.to/blog/google-cloud-run-intro/</link>
+      <pubDate>Mon, 13 May 2019 12:20:46 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/google-cloud-run-intro/</guid>
+      <description>&lt;p&gt;在Cloud Next 2019 大会上，Google 宣布了 Cloud Run，这是一个新的基于容器运行 Serverless 应用的解决方案。Cloud Run 基于开源的 knative 项目，宣称要将 serverless 带入容器世界。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id=&#34;cloud-run介绍&#34;&gt;Cloud Run介绍&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/28a4d1a9808e275623bbbc81ee19b298.png&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在旧金山举办的 Google Cloud Next 2019 大会上，Google 宣布了 Cloud Run，这是一个新的基于容器运行 Serverless 应用的解决方案。Cloud Run 基于开源的 knative 项目，是 knative 的 Google Cloud 托管版本，也是业界第一个基于 Knative + Kubernetes 的 Serverless 托管服务。&lt;/p&gt;
+&lt;p&gt;援引来自 Google Cloud 官方网站的介绍资料，对 Cloud Run 的定位是 ：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Run stateless HTTP containers on a fully managed environment or in your own GKE cluster.&lt;/p&gt;
+&lt;p&gt;在完全托管的环境或者自己的GKE集群中运行serverless HTTP容器。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;目前 Google Cloud 还处于测试阶段，尚未GA，而且暂时只在美国地区提供。&lt;/p&gt;
+&lt;h2 id=&#34;cloud-run推出的背景&#34;&gt;Cloud Run推出的背景&lt;/h2&gt;
+&lt;p&gt;这里有一个大的背景：在 knative 出来之前，serverless 市场虽然火热，但是有一个根本性的问题，就是市场碎片化极其严重，有大大小小几十个产品和开源项目，而且存在严重的供应商绑定风险。因此，Google 牵头推出了 knative 开源项目，希望实现 serverless 的标准化和规范化。&lt;/p&gt;
+&lt;p&gt;关于knative的详细情况，这里不继续展开，有兴趣的同学可以阅读我之前的演讲分享 &lt;a href=&#34;https://www.atatech.org/articles/128783&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative: 重新定义Serverless&lt;/a&gt; 。&lt;/p&gt;
+&lt;h3 id=&#34;google-cloud上的serverless&#34;&gt;Google Cloud上的Serverless&lt;/h3&gt;
+&lt;p&gt;在 Cloud Run 出现之后，目前 Google Cloud 上就有三种 Serverless 产品了：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Cloud Functions: 事件驱动的serverless计算平台&lt;/li&gt;
+&lt;li&gt;App Engine: 高可扩展的serverless web应用&lt;/li&gt;
+&lt;li&gt;Cloud Run: 无状态的 serverless HTTP 容器，口号是 &lt;strong&gt;Bringing Serverless to Containers&lt;/strong&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/a254a5969d0da9b36796483cf73c3dbb.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-serverless-computer-on-google-cloudpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/a254a5969d0da9b36796483cf73c3dbb.png&#34; alt=&#34;serverless-computer-on-google-cloud.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      serverless-computer-on-google-cloud.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id=&#34;bring-serverless-to-containers&#34;&gt;Bring Serverless to Containers&lt;/h3&gt;
+&lt;p&gt;这是 Cloud Run/knative 区别于之前的各种 serverless 产品的本质不同之处：支持的工作负载不再局限于 Function，而是任意容器！&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：当然基本的容器运行时契约还是要遵守的，具体要求见下面的介绍。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;和 Function 相比，以 container 方式呈现的工作负载，给使用者更大的自由度，Google Cloud 对此给出的口号是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Any langurage / 不限语言&lt;/li&gt;
+&lt;li&gt;Any library / 不限类库&lt;/li&gt;
+&lt;li&gt;Any binary 不限二进制文件（备注：格式还是要限制的，要求 Linux x86_64 ABI 格式）&lt;/li&gt;
+&lt;li&gt;Ecosystem of base images / 基础镜像的生态系统&lt;/li&gt;
+&lt;li&gt;Industry standard/工业标准&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/f5e1d702207d1b633cb7482408ef7661.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-bring-serverless-to-containerpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/f5e1d702207d1b633cb7482408ef7661.png&#34; alt=&#34;bring-serverless-to-container.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      bring-serverless-to-container.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;Google Cloud Run / Knative 对容器的要求，和通用容器相比，强调 &lt;strong&gt;无状态（Stateless）&lt;/strong&gt; / &lt;strong&gt;请求驱动（request-triggered）&lt;/strong&gt; / &lt;strong&gt;可自动伸缩（autoscaled）&lt;/strong&gt;：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/f95df42e15c178258391a2a74cb51b0b.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-workload-containerpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/f95df42e15c178258391a2a74cb51b0b.png&#34; alt=&#34;workload-container.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      workload-container.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;如上图所示，请求流量通常并非均匀分布，有突发高峰，有长期低谷，甚至有时没有流量。因此，从资源使用率的角度考虑，处理这些请求流量的服务容器的实例也应该随请求流量变化，做到自动伸缩，按需使用，以节约成本。&lt;/p&gt;
+&lt;h2 id=&#34;cloud-run的特性和要求&#34;&gt;Cloud Run的特性和要求&lt;/h2&gt;
+&lt;h3 id=&#34;cloud-run-的特性概述&#34;&gt;Cloud Run 的特性概述&lt;/h3&gt;
+&lt;p&gt;下图是整理的 Cloud Run 的几个主要特性，其核心还是那句口号 &amp;ldquo;Bring Serverless to Container&amp;rdquo;：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/d3f10b6a5886a874747e4c7515498fcc.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-cloud-run-featurespng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/d3f10b6a5886a874747e4c7515498fcc.png&#34; alt=&#34;cloud-run-features.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      cloud-run-features.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;以容器形式出现的工作负载：不只是 Function，极大的丰富了 serverless 的玩法&lt;/li&gt;
+&lt;li&gt;兼容 knative API：这也是近年来 Google 的一贯打法，开源项目先行，对社区开放，拉拢盟友建立标准，以无厂商锁定的风险来吸引客户，我将其简称为&amp;quot;开源开放不锁定&amp;quot;。&lt;/li&gt;
+&lt;li&gt;GCP托管：托管的好处自然是客户无需运维，这也是 serverless 的由来和最基本的特性&lt;/li&gt;
+&lt;li&gt;流量驱动模式：请求驱动，实例数量可自动伸缩，甚至伸缩到0，因此无需在业务高峰时预先配置资源和事后手工释放资料，极大的减少运维需要。在此基础上，执行按使用付费，因此可以在不同的应用之间（在公有云上则可以在不同的客户之间）共享成本，以低成本的方式应付短期突发高并发请求。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Cloud Run 的其他特性还有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;快速从容器到生产部署&lt;/li&gt;
+&lt;li&gt;开发体验简单&lt;/li&gt;
+&lt;li&gt;高可用：自动跨区域的冗余&lt;/li&gt;
+&lt;li&gt;和 Stackdrive的集成，监控/日志/错误报告都是开箱即用&lt;/li&gt;
+&lt;li&gt;可自定义域名&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些特性容易理解，就不一一展开。&lt;/p&gt;
+&lt;h3 id=&#34;适用于更多的场景&#34;&gt;适用于更多的场景&lt;/h3&gt;
+&lt;p&gt;传统的基于 Function 负载的 serverless，受限于 Function ，适用范围相对有限，尤其不适合非 Function 方式编写的旧有应用，而将应用改造为 Function 一来工作量巨大，二来也不是所有的应用都适合用 Function 形式开发。&lt;/p&gt;
+&lt;p&gt;在以 Function 为负载的 serverless 系统中，调用往往发生在外部对 Function 的访问，类似API gateway下的南北向通信。Function 之间通常不直接相互调用（某些情况下需要调用时，往往也是走外部调用的通道），因此调用关系相对简单。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/408d2919990b81568734083f0242421b.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-serverless-north-southpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/408d2919990b81568734083f0242421b.png&#34; alt=&#34;serverless-north-south.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      serverless-north-south.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;当工作负载从 Function 转变为 Container之后，不仅仅有 serverless 原有的南北向通信，而且以容器形态出现的工作负载之间相互调用的场景大为增加，这些负载之间的相互调用类似于传统SOA/微服务框架的东西向服务间通信。Cloud Run 通过支持容器作为工作负载，极大的扩大了 serverless 的适用范围。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/b789978c94647204f33a5a1e202a9a35.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-serverless-east-westpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/b789978c94647204f33a5a1e202a9a35.png&#34; alt=&#34;serverless-east-west.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      serverless-east-west.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;除了前面列出来的两种场景之外，Cloud Run 还可以适用于其他场景，如事件驱动/异步任务/调度服务等：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/3756b025f89e554e198cc8159060cbd3.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-workload-more-stylepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/3756b025f89e554e198cc8159060cbd3.png&#34; alt=&#34;workload-more-style.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      workload-more-style.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;这也迎合了目前 serverless 的发展趋势：未来 serverless 将渗透到各种场景，任何需要按照请求自动实现资源动态调度的工作负载都应该 serverless 化。我称之为：&lt;strong&gt;万物皆可 serverless&lt;/strong&gt;！从 Function 到 Container，serverless 朝这个目标迈出了一大步。&lt;/p&gt;
+&lt;h3 id=&#34;cloud-run的并发模型&#34;&gt;Cloud Run的并发模型&lt;/h3&gt;
+&lt;p&gt;重点看一下 Cloud Run 对请求并发的处理，因为这涉及到如何动态调配服务容器实例的个数。&lt;/p&gt;
+&lt;p&gt;在 Cloud Run 中，每个服务都要自动伸缩容器的实例数量来应对请求流量。在 Cloud Run 中对并发（Concurrency）的定义是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Concurrency&lt;/strong&gt; = &amp;ldquo;maximum number of requests that can be sent at the same time to a given container instance&amp;rdquo;&lt;/p&gt;
+&lt;p&gt;并发 = &amp;ldquo;可以同时对给定容器实例发送请求的最大数量&amp;rdquo;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;也就是我们平时理解的&amp;quot;最大并发请求数&amp;quot;，或者&amp;quot;最大工作线程数&amp;quot;。在这一点上，Cloud Run 的做法和 AWS Lambda 还有 Google 自己的 Cloud Function 不同，后两者的做法是每个实例只能同时接受一个请求，相当于 “Concurrency=1”。如图，当有多个并发请求时就需要启动多个实例。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/2f69c0f3528dd313836cbdb5725762a3.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-concurrency-1png&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/2f69c0f3528dd313836cbdb5725762a3.png&#34; alt=&#34;concurrency-1.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      concurrency-1.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;而在 Cloud Run 中，并发度是可以设置的，容许的值范围是从1到80，默认值是80，如下图所示：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/311fd84e418f4c362545afa179b4daaa.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-concurrency-settingpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/311fd84e418f4c362545afa179b4daaa.png&#34; alt=&#34;concurrency-setting.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      concurrency-setting.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;如果并发度设置为 1 则 Cloud Run 的行为也就和AWS Lambda/Google Cloud Function一致了，不过对于容器形式的工作负载而言，容器启动和销毁的资源消耗和成本就有过高了，因此 Cloud Run 下通常建议根据实际业务场景设置合适的并发度/请求数上限。这样在处理请求时，可以用一个实例对应多个请求，从而不必启动太多的实例。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/e2bf7c12793ba2969f16fd6625ada7ef.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-concurrency-20png&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/e2bf7c12793ba2969f16fd6625ada7ef.png&#34; alt=&#34;concurrency-20.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      concurrency-20.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id=&#34;cloud-run对容器的要求&#34;&gt;Cloud Run对容器的要求&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/6f73d8eefad9af361963852948b010b1.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-container-runtime-contractpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/6f73d8eefad9af361963852948b010b1.png&#34; alt=&#34;container-runtime-contract.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      container-runtime-contract.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;在 Google Cloud Run 的文档中， &lt;a href=&#34;https://cloud.google.com/run/docs/reference/container-contract&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Container运行时契约&lt;/a&gt; 中列出了 Cloud Run 对容器的要求，主要包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;语言支持&lt;/p&gt;
+&lt;p&gt;可以使用任意语言编写代码，可以使用任意基础镜像，但是容器镜像必须是为64位Linux编译的; Cloud Run 支持 Linux x86_64 ABI 格式&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;请求监听&lt;/p&gt;
+&lt;p&gt;容器必须在 &lt;code&gt;0.0.0.0&lt;/code&gt; 上监听，端口由环境变量 &lt;code&gt;PORT&lt;/code&gt; 定义。目前在 Cloud Run 中，PORT 环境变量总是设置为 8080，但是为了可移植性，不能hardcode。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;启动时间和响应时间&lt;/p&gt;
+&lt;p&gt;容器实例必须在收到请求后的四分钟内启动HTTP服务器; 容器实例必须收到HTTP请求后的规定时间内发送响应，该时间由 &lt;a href=&#34;https://cloud.google.com/run/docs/configuring/request-timeout&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;request timeout setting&lt;/code&gt;&lt;/a&gt; 配置，包含容器实例的启动时间。否则请求会被终止并返回 504 错误。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;文件访问&lt;/p&gt;
+&lt;p&gt;容器的文件系统是可写的并受以下影响：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;文件系统是基于内存的，写入文件系统会使用容器实例的内存&lt;/li&gt;
+&lt;li&gt;写入到文件系统中的数据不会持久化.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;容器实例生命周期考虑&lt;/p&gt;
+&lt;p&gt;服务的每个版本都将自动伸缩，如果某个版本没有流量，则会缩减到 0 。&lt;/p&gt;
+&lt;p&gt;服务应该是无状态的，计算应该限定于请求的范围，如果没有请求则不能使用CPU。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;容器实例资源&lt;/p&gt;
+&lt;p&gt;每个容器实例分配 1 vCPU 而且不能修改。每个容器实例默认256M内存，可以修改，最多为2G。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;请注意，Cloud Run 目前处于测试阶段，因此这些要求可能会随时间而发生变化。&lt;/p&gt;
+&lt;p&gt;Container Runtime Contract 更详细的信息，请参考：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.google.com/run/docs/reference/container-contract&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Container Runtime Contract&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/knative/serving/blob/master/docs/runtime-contract.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative Container Runtime Contract&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/opencontainers/runtime-spec/blob/master/spec.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Open Container Initiative Runtime Specification&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;cloud-run的限制&#34;&gt;Cloud Run的限制&lt;/h3&gt;
+&lt;p&gt;目前 Cloud Run 的限制有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;最多 1 个vCPU 和 2 G内存&lt;/li&gt;
+&lt;li&gt;不能访问 GPU&lt;/li&gt;
+&lt;li&gt;没有 Cloud SQL （即将提供）&lt;/li&gt;
+&lt;li&gt;没有 VPS 访问（即将提供）&lt;/li&gt;
+&lt;li&gt;不支持全局负载均衡&lt;/li&gt;
+&lt;li&gt;只支持 HTTP （未来会支持gRPC）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;而这些限制，都可以通过选择使用 Cloud Run on GKE 来解决。&lt;/p&gt;
+&lt;h3 id=&#34;安全容器gvisor的使用&#34;&gt;安全容器gVisor的使用&lt;/h3&gt;
+&lt;p&gt;gVisor 是由 Google 开源的容器沙箱运行时(Container sandbox runtime)。用于在宿主机操作系统与容器中的应用之间创建一个安全的隔离边界，便于安全的对外提供大规模部署的容器服务——关于安全容器和 gVisor 的介绍就不在这里展开。&lt;/p&gt;
+&lt;p&gt;在 Cloud Run 中，容器是运行在 gVisor 之上的，而不是默认的Kubernetes runc runtime。gVisor为 Cloud Run 带来了安全容器的隔离，但是也带来了一些限制。如下图所示，gVisor 支持的 System Call 是有限的，不支持所有的 Linux System Call。但是考虑到 Cloud Run 的主要使用场景是无状态的 HTTP 容器，正常情况下应该不会触发这个限制。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/0720320c9e5ec4be828cc4286a2241ac.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-gvisorpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/0720320c9e5ec4be828cc4286a2241ac.png&#34; alt=&#34;gvisor.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      gvisor.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;和knative的关系&#34;&gt;和knative的关系&lt;/h2&gt;
+&lt;p&gt;Google Cloud 给出的一些PPT中宣称 Cloud Run 就是托管版本的 knative，当然这一点我个人有些质疑：当前开源版本的 knative 实在有些不够成熟，应该还达不到生产级强度，Google Cloud 托管的有可能是 knative 的内部版本。但可以肯定的是，Cloud Run 一定是兼容 knative API 的。&lt;/p&gt;
+&lt;p&gt;目前 Knative 发展趋势非常不错，尤其社区快速成长，聚拢了一批大小盟友。这里有一份 google 给出的长长列表，列出了当前参与 knative 开发的贡献者来自的公司：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;VMware, Huawei, Cisco, TriggerMesh, Dropbox, SAP, Microsoft, Schibsted, Apache, Independent, China Mobile NTT, CloudBees, Caicloud, Inovex, Docker, Heureka, CNCF, Liz Rice, Zalando, Douyu.com, Nebula. OpsGenie. Terracotta, Eldarion, Giant Swarm, Heroku, Revolgy, SORINT.lab, Switch, Ticketmaster, Virtustream,, Alipay, Blue Box, Cruise Automation, EPAM Systems, EVRY, Foreningen Kollegienet Odense, Giddyinc, IPB, Manifold.co, Orange, Puppet, Stark &amp;amp; Wayne, Weaveworks, Disney Interactive, Ivx, Mediative, Ministère de l&amp;rsquo;Agriculture et de l&amp;rsquo;Alimentation, NatureServe, Samsung SDS. Typeform, Wise2c&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;当然，其中最重要的力量还是来自 google 自己，以及 Redhat、Pivotal、IBM 这三位社区巨头。下图是以公司为单位的贡献度比例：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/b3c67cb6523f850996aa04d71b14bc86.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-knative-companypng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/b3c67cb6523f850996aa04d71b14bc86.png&#34; alt=&#34;knative-company.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      knative-company.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;下图是基于Knative的几个主要 serverless 产品，除了Google 的 Cloud Run 之后，还有 Redhat / Pivotal / IBM 等大厂：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/9acb6154b0842a93e2bbd9349231ba2a.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-knative-based-productspng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/9acb6154b0842a93e2bbd9349231ba2a.png&#34; alt=&#34;knative-based-products.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      knative-based-products.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;serverless计算平台选择&#34;&gt;Serverless计算平台选择&lt;/h2&gt;
+&lt;p&gt;Cloud Run是一个serverless计算平台，用于运行无状态HTTP应用程序。 它有两种风格：完全托管的环境或Google Kubernetes Engine集群。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Cloud Run：完全托管，完整的serverless体验，客户不需要管理集群，按使用付费。&lt;/li&gt;
+&lt;li&gt;Cloud Run on GKE：只具有 serverless 的开发体验，客户需要在自己的 GKE 集群中运行，价格包含在 GKE 集群中。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/be5f759c8e6d22b7e7cfab20fb8a58d4.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-cloud-run-on-gkepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/be5f759c8e6d22b7e7cfab20fb8a58d4.png&#34; alt=&#34;cloud-run-on-gke.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      cloud-run-on-gke.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;Cloud Run on GKE 具有和 Cloud Run 相同的开发体验，但是 Cloud Run on GKE 运行在 k8s 上，有更多的灵活性和控制力，不过需要自己运维。Cloud Run on GKE 可以集成基于k8s的策略、控制和管理。允许访问自定义计算机类型，额外的网络和GPU支持，以扩展Cloud Run服务的运行方式。&lt;/p&gt;
+&lt;p&gt;可以在 Cloud Run 和 Cloud Run on GKE 之间按需要选择，另外 Google Cloud 容许在 Cloud Run 和 Cloud Run on GKE 之间切换，无需改动应用。&lt;/p&gt;
+&lt;p&gt;Cloud Run 和 Cloud Run on GKE 的详细对比：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Cloud Run&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;GKE上的Cloud Run&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;价钱&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;按使用付费（见下文）。&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;作为Kubernetes Engine的一部分提供。定价将在GA之前确定。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;机器类型&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;每个实例一个vCPU，可以更改内存&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;GKE上的标准或自定义机器类型，包括GPU。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;身份和政策&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;管理允许调用服务的身份（或允许未经身份验证的调用）。&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;将服务发布到Internet或仅将其提供给群集或VPC网络。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;联网&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;无法访问VPC /计算引擎网络。服务不是Istio服务网格的一部分。&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;访问VPC /计算引擎网络。服务参与Istio服务网格。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;网址&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;自动提供URL和SSL证书&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;自定义域仅包含手动SSL证书。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;考虑到 Cloud Run 是 knative 的 google cloud 托管版本，对于客户，则理论上在 Cloud Run 和 Cloud Run on GKE 之外还存在另外一种选择：直接使用开源版本的 knative。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/12c9e1173c8c479185aa9aadc5954302.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-serverless-whereverpng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/12c9e1173c8c479185aa9aadc5954302.png&#34; alt=&#34;serverless-wherever.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      serverless-wherever.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;或者 google 之外的其他基于 knative 的产品，如Redhat / IBM / Pivotal 等，从而避免了供应商锁定的风险。&lt;/p&gt;
+&lt;p&gt;这也是google 在宣传 Cloud Run 产品是一直反复强调的：开源、开放、不绑定。&lt;/p&gt;
+&lt;p&gt;回到在 google cloud上进行 serverless 平台选择这个话题，现在 google cloud 上的 serverless 有 function/app/container三种模式，而其中的 container 模式又可以细分为 Cloud Run 和 Cloud Run on GKE 两种形态，还有一个自由度极高可以自由发挥的GKE。下图摘录自 google 的演讲PPT，做了很好的分类和总结：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/575484dad6e1988bcb23bfe9b9208a7e.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-serverless-hosting-on-gcppng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/575484dad6e1988bcb23bfe9b9208a7e.png&#34; alt=&#34;serverless-hosting-on-gcp.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      serverless-hosting-on-gcp.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;cloud-run的计费&#34;&gt;Cloud Run的计费&lt;/h2&gt;
+&lt;p&gt;最后关注一下 Cloud Run的计费，Cloud Run 的官方文档 &lt;a href=&#34;https://cloud.google.com/run/pricing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pricing&lt;/a&gt; 对此有详细的描述，这里摘录部分内容。&lt;/p&gt;
+&lt;p&gt;首先，完全托管式的 Cloud Run 仅为使用的资源收取费用，计费到最近的100毫秒。而 Cloud Run on GKE 则不同，GKE上的 Cloud Run 是Google Kubernetes Engine集群的附加组件。而 Cloud Run on GKE部署的工作量包含在GKE定价中。而GKE上 Cloud Run 的最终定价要到 GA 才确定。&lt;/p&gt;
+&lt;p&gt;Cloud Run 的计费模型也颇具创新性，不是完全按请求数量计费，而是同时考量三个指标：CPU/内存/请求数量。搬运一下官方文档作为示意：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;CPU&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Memory&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Requests&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Networking&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;First 180,000 vCPU-seconds free&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;First 360,000 GB-seconds free&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;2 million requests free&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Free during beta.&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;0.00002400/vCPU−secondsbeyondfreequota|0.00002400/vCPU−secondsbeyondfreequota|0.00000250 / GB-second beyond free quota&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;$0.40 / million requests beyond free quota&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;测试期间免费&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;按照这个计费模型，将 concurrency 设置为合适的数值（起码不是1），让一个容器实例可以同时服务多个请求，分享CPU和内存，在费用上会更合适。另外上面的计费信息中可以看到，CPU/内存/请求数量都有免费配额，只有超过免费配额的使用才需要付费。免费配额会每月重置。&lt;/p&gt;
+&lt;p&gt;Cloud Run 对可计费时间的计算比较良心，只有在容器实例有请求在处理时才计算，从第一个请求开始到最后一个请求结束。而容器实例启动的时间和空闲的时间不计算在内，如下图所示：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/e4ff1e6e6272e8ead0ef539c275559a3.png&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-屏幕快照-2019-05-13-上午95621png&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://ata2-img.cn-hangzhou.oss-pub.aliyun-inc.com/e4ff1e6e6272e8ead0ef539c275559a3.png&#34; alt=&#34;屏幕快照 2019-05-13 上午9.56.21.png&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      屏幕快照 2019-05-13 上午9.56.21.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id=&#34;cloud-run-分析&#34;&gt;Cloud Run 分析&lt;/h2&gt;
+&lt;p&gt;总结前面的功能介绍，我们可以看到，在 serverless 的常规特性和托管带来的运维便利之外，Cloud Run 的主要特性和卖点在于：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;拥抱容器生态&lt;/p&gt;
+&lt;p&gt;将 serverless 与容器结合，极大的扩展了 serverless 的适用范围，对于 serverless 市场是一个巨大的创新。对于习惯使用容器/微服务技术的客户，可以更好的迁移过来。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;拥抱社区&lt;/p&gt;
+&lt;p&gt;基于开源的 knative，拉拢社区和盟友，通过 knative 实现 serverless 的标准化和平台化，解决了 serverless 市场碎片化的问题。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;极佳的可迁移性&lt;/p&gt;
+&lt;p&gt;为客户提供了没有供应商锁定风险的解决方案。理论上 客户可以根据实际需要选择完全托管的 Cloud Run 或 Cloud Run on GKE，或者开源版本的 knative，以及其他基于 knative 的托管平台，。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;拥抱云原生技术栈&lt;/p&gt;
+&lt;p&gt;结合使用 servicemesh 技术和安全容器技术，配合容器/kubernetes，用 Cloud Native 技术栈打通了从底层到上层应用的通道。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;总结说，Cloud Run 是 Google Cloud 在 serverless 领域的全新尝试，具有创新的产品思路，未来的发展值得关注和借鉴。&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;p&gt;Cloud Run 刚刚发布才一个多月，目前能找到的资料不多，基本都是Google Cloud放出来的新闻稿/博客和官方文档，还有Cloud Next大会上的介绍演讲及PPT。第三方的介绍文章非常的少，因此在调研和整理资料时不得不大量引用来自Cloud Run官方渠道的资料和图片。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.google.com/run/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloud Run官网&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=gx8VTa1c8DA&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloud Run Overview&lt;/a&gt;: 不到2分钟的介绍视频，官方宣传片&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=RVdhyprptTQ&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Differences between Cloud Run and Cloud Run on GKE&lt;/a&gt;: 官方视频，5分钟长度，展示 cloud run 和 Cloud Run on GKE 之间的相同点和不同点。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.withgoogle.com/next/sf/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Cloud Next&amp;rsquo; 19 大会上和 serverless 相关的演讲&lt;/a&gt;：主要信息还是来自 Next&amp;rsquo; 19 的演讲，在这个页面中选择 &amp;ldquo;serverless&amp;rdquo; 会列出本次大会和 serverless 相关的演讲，大概十余个，视频可以回放，也提供PPT下载。（本文的大部分的信息和图片来自这些演讲内容），数量比较多就不一一列举了。&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Google Traffic Director详细介绍</title>
+      <link>https://cloudnative.to/blog/google-traffic-director-detail/</link>
+      <pubDate>Thu, 09 May 2019 21:38:59 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/google-traffic-director-detail/</guid>
+      <description>&lt;h2 id=&#34;traffic-director介绍&#34;&gt;Traffic Director介绍&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/google-traffic-director-logo.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Traffic Director 是 Google Cloud 推出的完全托管的服务网格流量控制平面。&lt;/p&gt;
+&lt;p&gt;援引来自Traffic Director官方网站的介绍资料，Traffic Director的定位是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Enterprise-ready traffic management for open service mesh.&lt;/p&gt;
+&lt;p&gt;适用于开放式服务网格的企业级流量管理工具。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;目前 Traffic Director 还处于测试阶段，尚未GA：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在2018年7月的 Cloud Next ‘18 大会上，Google Cloud 推出了 Traffic Director 的 alpha 版本&lt;/li&gt;
+&lt;li&gt;在2019年4月的 Cloud Next ‘19 大会上，Google Cloud 推出了 Traffic Director 的 beta 版本&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;traffic-director推出的背景&#34;&gt;Traffic Director推出的背景&lt;/h2&gt;
+&lt;p&gt;在详细介绍 Traffic Director 的功能之前，我们先看一下 Traffic Director 推出的背景。由于 Traffic Director 刚推出不久，资料非常少，所以下面的内容有很多来自仅有的一点 Traffic Director 的演讲和官方文档。&lt;/p&gt;
+&lt;p&gt;在Cloud Next ‘18 /19 介绍Traffic Director的演讲中，都谈到 Traffic Director 推出和下列两个趋势有关：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;微服务的普及和Service Mesh技术的兴起&lt;/li&gt;
+&lt;li&gt;混合云和多云部署&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;从微服务到service-mesh&#34;&gt;从微服务到Service Mesh&lt;/h3&gt;
+&lt;p&gt;近年来微服务架构大热，传统的单体应用按照微服务的理念进行拆分。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/microservices.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;但是当应用从单个巨型单体拆分为数量大增的微服务之后，新的问题出现：如果高效的部署、连接、管理这些服务，并提供安全和监控能力？如果按照传统的侵入式微服务框架的思路，则开发人员就不得不在进行微服务改造时，承受微服务拆分带来的各种技术复杂度。&lt;/p&gt;
+&lt;p&gt;但是，当将单体应用拆分到微服务时，客户关注的并不是微服务或者和微服务相关的各种技术，他们真正关注的是：微服务可以给他们带来什么。因此，必须要有一种解决方案，抽象并屏蔽掉微服务实现的技术细节。&lt;/p&gt;
+&lt;p&gt;服务网格就是这样一种功能强大的抽象层，在微服务交付方面得到了越来越多的使用。其核心价值有两点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Separates applications from app networking / 分离应用和网络&lt;/li&gt;
+&lt;li&gt;Decouples operation from development / 解耦开发和运维&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;混合云和多云环境&#34;&gt;混合云和多云环境&lt;/h3&gt;
+&lt;p&gt;考虑另一个趋势：在混合云和多云环境下部署和管理服务。客户可能使用公有云，如GCP或其他公有云，也可能混合使用私有云。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/multicloud.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这种场景下，该如何简化混合和多云服务的部署？Traffic Director的思路是这样：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;引入ServiceMesh技术：通过ServiceMesh将通用的核心部分从服务中移除，典型如网络通信代码中的负载均衡，错误注入，失败恢复，流量管理，路由，安全等。&lt;/li&gt;
+&lt;li&gt;托管：需要ServiceMesh来管理服务，但最好不要自己直接管理ServiceMesh，而是使用提供托管的基础设施&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;控制平面与托管&#34;&gt;控制平面与托管&lt;/h3&gt;
+&lt;p&gt;在服务网格中，服务网格数据平面与服务代理一起传输流量，而服务网格控制平面为这些服务代理提供政策、配置和智能建议:&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/servicemesh.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Traffic Director 是 GCP 专为服务网格打造的完全托管式流量控制平面，其架构如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-global-lb/images/Traffic_Director_for_service_mesh.max-1200x1200.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;托管式服务的好处是有服务等级协议 (SLA) 的保障，下面是Google Cloud官方对此的声明：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;作为 Google 的一项托管式服务，Traffic Director 提供生产级 99.99% 可用性的 SLA：如果出现问题，收到通知并负责解决问题是我们的运营人员，而不是您的。您不必担心部署和管理控制平面，因而您的员工可以专注于发展业务。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;当然目前 Traffic Director 还是beta测试阶段，上述SLA保障需要在GA之后才能提供。&lt;/p&gt;
+&lt;p&gt;最后我们援引 Matt Klein（Envoy 作者）的这段致辞作为Traffic Director推出的背景总结，虽然这段话有做托的嫌疑：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;“Traffic Director 可以更加便捷地将 Envoy 和服务网格的优势运用到生产环境。由于 Envoy 提供通用型数据平面，Traffic Director 可提供具有开放接口的完全托管式流量控制平面，避免锁定于某一种产品。Traffic Director 的 SLA、全球负载平衡和丰富的流量控制措施可帮助企业和云原生最终用户减少流量管理工作。”&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这里列出的功能我们后面会详细解析，重点看”开放接口”/“避免锁定” 这两个关键词：这可以说是Google乃至整个CNCF/Cloud Native社区一直念念不忘反复提醒的关键字，极其强调标准接口和避免供应商绑定。&lt;/p&gt;
+&lt;p&gt;与此对应的是，Traffic Director 采用了开放的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS v2 API&lt;/a&gt; 与数据平面中的服务代理进行通信。xDS v2 API 来自 Envoy， 目前已经成为 Service Mesh 的事实API标准。Traffic Director 通过采用 xDS v2 API 这样的开发API实现了其倡导的避免绑定。&lt;/p&gt;
+&lt;h2 id=&#34;traffic-director的功能&#34;&gt;Traffic Director的功能&lt;/h2&gt;
+&lt;h3 id=&#34;全局负载均衡&#34;&gt;全局负载均衡&lt;/h3&gt;
+&lt;p&gt;这个功能是 Traffic Director 在各种演讲和介绍中强调的最多的功能，其官方介绍为：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Traffic Director 将服务作为虚拟机或容器部署在多个区域中来保证它正常运行，并使用 Traffic Director 通过自动化的跨区域溢出和故障转移来提供全局负载均衡。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;“作为虚拟机或容器”我们在下一节展开，先看看 Traffic Director 提供的全局负载均衡是什么。&lt;/p&gt;
+&lt;p&gt;这是 Traffic Director 官方给出的示例，图中的三个服务分别部署在两个不同的区域。在 Traffic Director 的控制下，流量按照就近原则被发送到具有可用容量的最近的服务实例：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-global_load_balancingmax-1400x1400&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-global-lb/images/Global_load_balancing.max-1400x1400.png&#34; alt=&#34;Global_load_balancing.max-1400x1400&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Global_load_balancing.max-1400x1400
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;故障转移是指，如果最接近客户端服务的实例已关闭或过载，则 Traffic Director 会控制流量无缝转移到下一个最近区域中的健康实例。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-traffic_director_intelligencemax-1400x1400&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-global-lb/images/Traffic_Director_intelligence.max-1400x1400.png&#34; alt=&#34;Traffic_Director_intelligence.max-1400x1400&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Traffic_Director_intelligence.max-1400x1400
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;跨区域溢出则是指当流量超出当前区域部署的实例的承受能力之后，会突破就近路由的原则，将部分流量导流到其他区域。这背后的逻辑是：就近路由的收益的是本地访问的低网络延迟，在流量突发时，宁可牺牲延迟也要将流量引导到其他区域以保证可用性。&lt;/p&gt;
+&lt;p&gt;下面这个动画可以更生动的展示上述描述的”全局负载均衡”/“故障转移”和”跨区域溢出”的功能：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/Traffic_Director_for_open_service_mesh.gif&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;适用于虚拟机和容器&#34;&gt;适用于虚拟机和容器&lt;/h3&gt;
+&lt;p&gt;在上面的示例中，提到”Traffic Director 将服务作为虚拟机或容器部署在多个区域中”，这是 Traffic Director 重点强调的另外一个重要功能：支持虚拟机和容器，而且支持混合使用。&lt;/p&gt;
+&lt;p&gt;下面这张图片强调了服务部署的多样性：三个服务分别是自己管理的 docker 服务 / 基于虚拟机的服务 / 部署在 GKE 的服务。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/mixed-service.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Traffic Director 官方文档给出的解释是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;“按您的节奏进行现代化改造”&lt;/p&gt;
+&lt;p&gt;Traffic Director 既适用于基于虚拟机 (Compute Engine) 的应用，也适用于容器化应用（Google Kubernetes Engine 或自行管理的 Kubernetes），并可以增量方式逐步应用于您的服务。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这背后的考虑是：service mesh 和 k8s 的普及，不会一蹴而就，基于虚拟机的服务会长期存在，因此提供对基于虚拟机服务的支持和打通与容器服务的交互访问就至关重要。这个思路同样出现在AWS的app mesh产品中，app mesh也是强调同时支持VM服务和容器服务。&lt;/p&gt;
+&lt;p&gt;Service Mesh技术的典型使用场景是运行和管理已经拆解为微服务并按照云原生理念开发的服务，但是考虑到大量遗留应用存在的现实， Traffic Director 通过支持VM服务，可以为这些非云原生服务引入高级功能。这个做法在我们之前的介绍中，被戏称为”先上车再买票”，即在不做应用大规模改造的前提下先体现享受Service Mesh带来的部分红利，再慢慢逐步和分批做应用改造。&lt;/p&gt;
+&lt;p&gt;注意：在 Traffic Director 的支持中，基于虚拟机的服务和基于容器的服务采用一致的流量管理功能，两者并没有功能上的差别。&lt;/p&gt;
+&lt;h3 id=&#34;混合云和多云支持&#34;&gt;混合云和多云支持&lt;/h3&gt;
+&lt;p&gt;最近看到 Google Cloud 提出要”All in Hybird Cloud”，在这个大背景下，Traffic Director 提供对混合云和多云环境的支持：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/hybird-multicloud.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是完整的应用改造示意，从原有在私有环境下运行的单体应用，转换到在公有云和私有云上的 service mesh 中运行的多个微服务：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/hybird-support.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;集中式健康检查&#34;&gt;集中式健康检查&lt;/h3&gt;
+&lt;p&gt;Traffic Director 官方文档对集中式健康检查给出的介绍是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;大规模执行运行状况检查&lt;/p&gt;
+&lt;p&gt;Traffic Director 通过 GCP 进行大规模运行状况检查。因此，运行状况检查从 Envoy/服务代理分流到 Google 的弹性系统，这样您就可以对各种规模的部署进行大规模运行状况检查。另外，您的实例本身不会因网格规模的运行状况检查而不堪重负。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;解释一下这里所说的”因网格规模的运行状况检查而不堪重负”：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;大型服务网格会生成大量的健康检查流量，因为每个sidecar代理都必须对服务网格中的所有服务实例进行健康检查。随着网格的增长，让每个客户端代理健康检查每个服务器实例，这种做法会产生一个 n^2 健康检查问题，这将成为增长和扩展部署的障碍。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;Traffic Director 对此给出的解决方案是提供集中式健康检查，Traffic Director 会提供一个全局分布的弹性系统监控所有服务实例。然后，Traffic Director使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EDS API&lt;/a&gt; 将聚合的健康检查结果分发到全局网格中的所有代理。如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/health-check.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这样Proxy就不需要自行实现健康检测，只要接受 EDS 更新即可（当然客户端被动健康检测还是需要的，当发生无法连接等错误时还是需要处理的）。&lt;/p&gt;
+&lt;p&gt;这里 Traffic Director 的做法和 Istio 的标准做法是很类似的，Istio 在 k8s 上部署时，是依赖 k8s 的探测机制来做服务的探活的。Traffic Director 的 health check 机制没有找到详细的介绍资料，暂时不清楚具体的机制，Traffic Director 的介绍中只是提到这个功能是由 GCP 统一提供。&lt;/p&gt;
+&lt;p&gt;集中式健康检查这个功能也算是一个卖点，毕竟，虽然 Envoy 自带健康检测机制，但是如果由客户端来实现健康检测，的确是需要每个客户端都检查所有其他服务，连接太多，请求太多，而且随着服务数量和实例数量的增加，健康检测的开销会直线上涨。由平台/基础设施/云等来统一提供集中式健康检查，再通过 xDS/EDS API 下发结果应该会是一个通用的做法。&lt;/p&gt;
+&lt;h3 id=&#34;流量控制&#34;&gt;流量控制&lt;/h3&gt;
+&lt;p&gt;Traffic Director 目前提供流量控制功能，包括流量路由和策略执行。官方文档的介绍描述如下：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;通过请求路由和丰富的流量政策进行流量控制（Alpha 版）&lt;/p&gt;
+&lt;p&gt;Traffic Director 支持高级请求路由功能，如流量拆分、启用 Canary 更新等用例、网址重写/重定向、故障注入、流量镜像，以及基于各种标头值的高级路由功能，包括 Cookie。此外，Traffic Director 还支持许多高级流量政策，包括多种负载平衡方案、熔断和后端异常检测。&lt;/p&gt;
+&lt;p&gt;您可以使用 Traffic Director 轻松部署一切功能：从简单的负载平衡，到请求路由和基于百分比的流量拆分等高级功能。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;从最新的 Traffic Director 的介绍PPT上看到，Traffic Director 的流量控制功能包含两个部分：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Routing Rules&lt;/strong&gt;：定义请求如何路由到网格中的服务
+&lt;ul&gt;
+&lt;li&gt;Traffic splitting&lt;/li&gt;
+&lt;li&gt;Traffic steering&lt;/li&gt;
+&lt;li&gt;Timeouts and retries&lt;/li&gt;
+&lt;li&gt;Fault Injection&lt;/li&gt;
+&lt;li&gt;Mirroring&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Traffic Policies&lt;/strong&gt;：用于服务的路由相关策略
+&lt;ul&gt;
+&lt;li&gt;Load balancing schemes.&lt;/li&gt;
+&lt;li&gt;Outlier detection.&lt;/li&gt;
+&lt;li&gt;Circuit breakers&lt;/li&gt;
+&lt;li&gt;Timeouts&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;熟悉 Istio API 和 Envoy xDS API 的同学就会发现这些功能非常眼熟，基本上和 Istio / Envoy 提供的功能相同。&lt;/p&gt;
+&lt;p&gt;和包括Istio在内的所有Service Mesh产品一致， Traffic Director 也在强调说这些功能都是可以在不修改应用代码的前提下获得，这是理所当然的重要卖点。&lt;/p&gt;
+&lt;p&gt;但是注意：目前这些功能都还是 alpha 阶段，因此支持度应该不会像 Istio 那么齐全。&lt;/p&gt;
+&lt;p&gt;我们快速过一下目前提供的功能（图片来自 Google Traffic Director 的演讲PPT）：&lt;/p&gt;
+&lt;p&gt;Traffic Splitting/流量拆分，支持百分比拆分，这是 version based routing，用于实现金丝雀发布/蓝绿部署/AB测试等：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/traffic-splitting.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Traffic Steering，这是 content based routing，支持 Host / Path / Header 匹配：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/traffic-steering.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在匹配完成之后，除了做流量拆分之外，还可以由其他的功能，如错误注入。Traffic Director 支持的错误注入同样有 Delay 和 Abort 两种：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/fault-injection.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;熔断和异常检测，支持每服务配置，具体的配置方式也和 Istio / Envoy 差不多。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/circuit-breakers.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;流量镜像功能，也称为影子流量。流量会复制一份发送给接受镜像流量的服务，Traffic Director的实现会在发送给镜像服务的请求的 Host/Authority header 中增加一个 “-shadow” 后缀。镜像请求是发出去就不管的，无视应答，和Istio的处理方式一致。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/traffic-mirror.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;总结：在流量控制这块功能上，Traffic Director 除了因为是 alpha 版本，可能功能支持不够齐全之外，基本和 Istio / Envoy 是一致的。考虑到 Traffic Director 支持 xDS V2 API，和目前只支持Envoy（理论上兼容任何支持 xDS v2的代理，但是实际只测试过Envoy） 的现状，Traffic Director 在流量控制上和 Istio / Envoy 高度一致也就非常容易理解。&lt;/p&gt;
+&lt;p&gt;需要特别指出的是：目前 beta 版本的 Traffic Director 只支持用 GCP 的 API 来设置流量控制的规则，目前还不支持直接使用 Istio 的API （CRD）。但是，预计未来将提供支持，从Roadmap上也看到有和 Istio 集成的规划。&lt;/p&gt;
+&lt;h3 id=&#34;基于流量的自动伸缩&#34;&gt;基于流量的自动伸缩&lt;/h3&gt;
+&lt;p&gt;Traffic Director 前面支持的功能，基本都有不出意外的感觉，毕竟熟悉 Istio/Envoy 体系的同学对这些功能都了如指掌。而 自动伸缩这个功能是一个特例。&lt;/p&gt;
+&lt;p&gt;援引 Traffic Director 官方文档对此功能的描述：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;根据您的服务规模智能快速进行地自动扩缩&lt;/p&gt;
+&lt;p&gt;Traffic Director 可根据您的需求自动扩缩，您只需按实际用量付费，并且快速智能地进行扩容，无需联系云服务提供商也不必进行任何预热。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;看到这段描述，第一反应是：这不是 serverless 吗？按需伸缩，按使用付费。&lt;/p&gt;
+&lt;p&gt;Traffic Director 在提供标准的 service mesh 功能的同时，也引入了 serverless 的特性。下面是 Traffic Director 中自动伸缩功能的实现方式：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Traffic Director 根据代理向其报告的负载信号启用自动伸缩。Traffic Director通知 Compute Engine autoscaler 流量变化，并让 autoscaler 一次性增长到所需的大小（而不是像其他 autoscaler 那样重复步骤），从而减少 autoscaler 对流量峰值做出反应所需的时间。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;自动伸缩的功能不仅仅可以用于常规的按照请求流量进行扩容和缩容，也支持某些特殊场景，如前面在介绍全局负载均衡时提到的：如果最接近客户端服务的实例已关闭或过载，则 Traffic Director 会控制流量无缝转移到下一个最近区域中的健康实例。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-traffic_director_intelligencemax-1400x1400&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-global-lb/images/Traffic_Director_intelligence.max-1400x1400.png&#34; alt=&#34;Traffic_Director_intelligence.max-1400x1400&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Traffic_Director_intelligence.max-1400x1400
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此时由于原来两个区域的流量都进入了一个区域的Shopping Car服务，可能出现流量超出当前承受能力的情况，此时 Traffic Director 会指示 Compute Engine autoscaler 增加Shopping Car服务的容量。同理，Payments 服务的容量也会随之增加。&lt;/p&gt;
+&lt;p&gt;按照 Google Cloud 官方博客文章的介绍， Traffic Director 在这块的处理非常的复杂而智能：在新增加的容量生效之前，Traffic Director 会暂时将流量重定向到其他可用实例 - 即使在其他区域也是如此。（也就是前面所说的跨区域溢出，其指导原则是可用性目标高于低延迟目标）一旦 autoscaler 增加了足够的工作负载容量以维持峰值，Traffic Director 就会将流量移回最近的zone和region，再次优化流量分配以最小化每个请求的RTT。&lt;/p&gt;
+&lt;p&gt;从这里可以看到， Traffic Director 结合使用了 Service Mesh 的路由控制能力和 Serverless 的按需自动伸缩的资源调度能力，在故障处理和自动运维上表现非常突出。&lt;/p&gt;
+&lt;p&gt;可以说，Traffic Director 在 servicemesh 和 serverless 整合的道路上迈出了重要的一步。这是一个非常有创新的想法，值得借鉴和学习。&lt;/p&gt;
+&lt;h3 id=&#34;功能限制&#34;&gt;功能限制&lt;/h3&gt;
+&lt;p&gt;Traffic Director 官方文档中列出了一些目前的功能限制，这里摘录其中比较重要的部分：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Beta版本的Traffic Director仅支持GCP API。Beta版本的Traffic Director不支持Istio API。&lt;/li&gt;
+&lt;li&gt;Traffic Director仅支持HTTP流量。&lt;/li&gt;
+&lt;li&gt;Traffic Director流量控制功能是 Alpha 状态。&lt;/li&gt;
+&lt;li&gt;本文档讨论了Envoy代理，但您可以将任何 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开放标准API（xDS v2）代理&lt;/a&gt; 与Traffic Director一起使用。但请注意，Google仅使用Envoy代理测试了Traffic Director。在此测试期间，Traffic Director仅支持Envoy版本1.9.1或更高版本。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;和istio的关系&#34;&gt;和Istio的关系&lt;/h2&gt;
+&lt;p&gt;在了解 Traffic Director 之后，相信很多人会和我一样有同样的问题：Traffic Director 和 Istio 到底有什么关系？&lt;/p&gt;
+&lt;p&gt;简单介绍Istio：Istio提供控制平面来保护，连接和监控微服务。它有三个组成部分：Pilot 负责流量管理，Mixer 负责可观察性，Istio Security（Citadel） 负责服务到服务的安全性。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/istio.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Traffic Director 和 Istio 的基本区别在于，Istio 是一个开源产品，而 Traffic Director 是一个完全托管的服务。&lt;/p&gt;
+&lt;p&gt;在具体的功能模块上，Traffic Director 将取代 Pilot 的位置：所有 Pilot 能提供的功能，Traffic Director 都将提供。这也是采用 open xDS v2 API的原因，以便在开源的 Pilot 和 Traffic Director 之间切换。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/pilot-replace.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;总结说：Traffic Director 提供了 GCP 托管的 Pilot ，以及全局负载均衡和集中式健康检查等其他功能。&lt;/p&gt;
+&lt;p&gt;但请注意，当前 Traffic Director Beta 版本还无法使用 Istio API 配置 Traffic Director，暂时只能使用GCP API进行配置。&lt;/p&gt;
+&lt;p&gt;在 Sidecar 的注入上，Istio 支持自动注入，而 Traffic Director 目前需要手工注入 Sidecar，不过未来 Traffic Director 应该会支持自动注入，毕竟这个功能实现上并不复杂。&lt;/p&gt;
+&lt;p&gt;Traffic Director 的 Roadmap 中，有和 Istio 进一步集成的计划，从下图上看是准备引入 Istio Security（Citadel），以提供安全特性如mTLS，RBAC等。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/istio-integration.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;暂时未看到有引入 Mixer 的信息。&lt;/p&gt;
+&lt;h2 id=&#34;traffic-director-roadmap&#34;&gt;Traffic Director Roadmap&lt;/h2&gt;
+&lt;p&gt;援引最新 Traffic Director 介绍的PPT，Traffic Director 的 Roadmap 中未来准备加入以下内容：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/roadmap.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;安全方面的集成，要支持 mTLS/RBAC，看前面的图片是打算引入Istio Security （Citadel）模块。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;可观测性集成：按说是Istio Mixer模块，但是没见到介绍，怀疑是不是因为 Mixer 在性能上的拙劣表现，导致Traffic Director 可能采用其他方案，后续关注。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;hybird/Multi-cloud支持&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;通过 Istio API 来进行控制&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;和其他控制平面组建联邦&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://skyao.io/post/201905-google-traffic-director-detail/images/federation.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;traffic-director-分析&#34;&gt;Traffic Director 分析&lt;/h2&gt;
+&lt;p&gt;从前面的功能介绍中可以看到，Traffic Director 的重要卖点和特色在于：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;对混合云/多云的支持&lt;/li&gt;
+&lt;li&gt;对VM服务（或者说非云原生服务）的支持&lt;/li&gt;
+&lt;li&gt;整合了 serverless 的部分特性&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;其他功能不是说不重要，而是相对来说比较常规化，即托管的服务网格理论上说应该都会提供这些功能：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;完全托管，无需运维，GA后提供SLA保证&lt;/li&gt;
+&lt;li&gt;流量管理（包括路由和策略）/安全/可观测性&lt;/li&gt;
+&lt;li&gt;全局负载均衡&lt;/li&gt;
+&lt;li&gt;集中式健康检查&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;从产品定位上说，Traffic Director 只提供控制平面，对于数据平面理论上只要兼容xDS v2 API即可，也就是说 Traffic Director 完全关注在控制平面，前面列出来的几个重要的卖点也都属于控制平面的创新和深耕，和数据平面关系不大，或者说数据平面只需简单的提供底层支持。从这点上看，和Istio专注在控制平面，而将数据平面完全委托给 Envoy 的做法可谓一脉相承。&lt;/p&gt;
+&lt;p&gt;在API的选择上，Traffic Director 的做法是支持开放的 xDS v2 API，以及计划中的通过 Istio API 来进行配置。一方面在产品层面上和开源的Envoy/Istio保持一致，另一方面也通过这种方式实现了其一直宣传的不锁定的目标，对于市场宣传和争取客户应该是有利的，也有助于实现混合云和多云战略。&lt;/p&gt;
+&lt;p&gt;目前 Traffic Director 还处于 beta 测试阶段，尤其流量配置更是还在 alpha 阶段，产品的成熟度还不够高，roadmap中也还有很多非常重要甚至急迫（如可观测性）的内容有待完成。因此不适合对 Traffic Director 过早的做判断和评论，我的观点是 Traffic Director 代表的产品方向应该是非常有前途，可以给客户带来实际价值。这是Google 在ServiceMesh领域（甚至是Serverless领域）新的探索和尝试，期望有好的结果。&lt;/p&gt;
+&lt;p&gt;对 Traffic Director 的理解，我的观点是不能单独的只看 Traffic Director 这一个产品，而是要结合近期 Google 陆续推出的几个相关产品：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Google Cloud Service Mesh：ServiceMesh产品，简单理解为 Istio 的GCP托管版本（猜测可能是兼容Istio API的内部实现/扩展版本），探索方向为在公有云上提供 Service Mesh 托管服务&lt;/li&gt;
+&lt;li&gt;Google Cloud Run：Serverless 产品，简单理解为 knative 的GCP托管版本（猜测依然可能是兼容 Knative API的内部实现/扩展版本），探索方向为在公有云上提供 Serverless 托管服务&lt;/li&gt;
+&lt;li&gt;Anthos：Hybird/Multi-Cloud产品，号称业界”第一个真正的混合和多云平台”，探索方向为 Google 宣称要 “All in”的混合云市场&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;然后再来看，作为托管版 Service Mesh 控制平台而推出 Traffic Director 产品，我们前面列出的三个卖点和特色：对混合云/多云的支持；对VM服务（或者说非云原生服务）的支持；整合 serverless 的部分特性。和这三个新产品可谓交相呼应。&lt;/p&gt;
+&lt;p&gt;摘录两句从最近的 Google Cloud Next 大会信息中看到的话，是不是更有体会？&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Write once, Run Anywhere/一次写好，哪都能跑&lt;/li&gt;
+&lt;li&gt;Use open-source technology easily and in a cloud-native way / 以云原生的方式，轻松使用开源技术&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;Google / Google Cloud 在下一盘很大的棋，一盘围绕云和云原生的大棋:&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;以云为战场，以kubernetes为根据地，以开源开放不锁定为口号，以云原生为旗帜，以ServiceMesh和Serviceless为桥梁连接起应用和基础设施，以混合云为突破口……剑指当前云计算市场排名第一/第二的AWS/Azure。&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;p&gt;Traffic Director目前能找到的资料不多，基本都是Google Cloud放出来的新闻稿/博客和官方文档，还有两次cloud next大会上的介绍演讲及PPT。第三方的介绍文章非常的少，因此在调研和整理资料时不得不大量引用来自Traffic Director官方渠道的资料和图片。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.google.com/traffic-director/docs/traffic-director-concepts&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traffic Director concepts&lt;/a&gt;: Google Cloud 上的 Traffic Director 官方文档&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloud.google.com/blog/products/networking/traffic-director-global-traffic-management-for-open-service-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Cloud networking in depth: How Traffic Director provides global load balancing for open service mesh&lt;/a&gt;：来自Google Cloud网站的官方博客文章，发表时间为 2019-04-18&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/cloudzone/google-clouds-traffic-director-what-is-it-and-how-is-it-related-to-the-istio-service-mesh-c199acc64a6d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google Cloud’s Traffic Director — What is it and how is it related to the Istio service-mesh?&lt;/a&gt;：来自Medium网站的博客文章，原作者为 &lt;a href=&#34;https://medium.com/@iftachsc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Iftach Schonbaum&lt;/a&gt;，发表时间 2019-04-16&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.infoq.com/news/2019/04/google-traffic-director&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Introducing Traffic Director: Google’s Service Mesh Control Plane&lt;/a&gt;：来自 InfoQ 网站的文章，发布时间 2019-04-25&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=FUITCYMCEhU&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traffic Director &amp;amp; Envoy-Based L7 ILB for Production-Grade Service Mesh &amp;amp; Istio&lt;/a&gt;: Google 在 Cloud Next ‘19 大会上的主题演讲，发表时间 2019-04-10（本文的很多图片摘录自这个演讲的ppt）&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?time_continue=2759&amp;amp;v=4U4X_OzJaNY&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hybrid and Open Services with GCP, Envoy and Istio: A Talk with Google and Lyft &lt;/a&gt;: Google 在 Cloud Next ‘18 大会上的主题演讲，发表时间 2018-07-26&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>从边车模式到 Service Mesh</title>
+      <link>https://cloudnative.to/blog/from-sidecar-to-servicemesh/</link>
+      <pubDate>Thu, 11 Apr 2019 16:56:23 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/from-sidecar-to-servicemesh/</guid>
+      <description>&lt;p&gt;所谓边车模式（ Sidecar pattern ），也译作挎斗模式，是分布式架构中云设计模式的一种。因为其非常类似于生活中的边三轮摩托车而得名。该设计模式通过给应用程序加上一个“边车”的方式来拓展应用程序现有的功能。该设计模式出现的很早，实现的方式也多种多样。现在这个模式更是随着微服务的火热与 Service Mesh 的逐渐成熟而进入人们的视野。&lt;/p&gt;
+&lt;h2 id=&#34;什么是边车模式&#34;&gt;什么是边车模式&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/from-sidecar-to-servicemesh/ad5fbf65ly1g18zhnoh76j20dw0dw752_hu5ea7a3b635d69403a699ad3a6df9d413_39103_16bba8c6e6ef846f84afee7ba3963a5a.webp 400w,
+               /blog/from-sidecar-to-servicemesh/ad5fbf65ly1g18zhnoh76j20dw0dw752_hu5ea7a3b635d69403a699ad3a6df9d413_39103_284f0a010985b5a210461b2b161651b1.webp 760w,
+               /blog/from-sidecar-to-servicemesh/ad5fbf65ly1g18zhnoh76j20dw0dw752_hu5ea7a3b635d69403a699ad3a6df9d413_39103_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/from-sidecar-to-servicemesh/ad5fbf65ly1g18zhnoh76j20dw0dw752_hu5ea7a3b635d69403a699ad3a6df9d413_39103_16bba8c6e6ef846f84afee7ba3963a5a.webp&#34;
+               width=&#34;500&#34;
+               height=&#34;500&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 &lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Azure Architecture Center&lt;/a&gt; 的云设计模式中是这么介绍边车模式的：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Deploy components of an application into a separate process or container to provide isolation and encapsulation.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&amp;mdash; &lt;em&gt;&lt;strong&gt;&lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sidecar pattern&lt;/a&gt;&lt;/strong&gt;&lt;/em&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;这里要注意的是： 这里的 Sidecar 是分布式架构中云设计模式的一种，与我们目前在使用的 Istio 或 Linkerd 中的 Sidecar 是设计与实现的区别，后文中提到的边车模式均是指这种设计模式，请勿与 Istio 或 其他 Service Mesh 软件 中的 Sidecar 混淆。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;边车模式&lt;/strong&gt;是一种分布式架构的设计模式。如上图所示，边车就是加装在摩托车旁来达到拓展功能的目的，比如行驶更加稳定，可以拉更多的人和货物，坐在边车上的人可以给驾驶员指路等。边车模式通过给应用服务加装一个“边车”来达到&lt;strong&gt;控制&lt;/strong&gt;和&lt;strong&gt;逻辑&lt;/strong&gt;的分离的目的。&lt;/p&gt;
+&lt;p&gt;比如日志记录、监控、流量控制、服务注册、服务发现、服务限流、服务熔断等在业务服务中不需要实现的控制面功能，可以交给“边车”，业务服务只需要专注实现业务逻辑即可。如上图那样，应用服务你只管开好你的车，打仗的事情就交给边车上的代理就好。这与分布式和微服务架构完美契合，真正的实现了控制和逻辑的分离与解耦。&lt;/p&gt;
+&lt;h2 id=&#34;边车模式设计&#34;&gt;边车模式设计&lt;/h2&gt;
+&lt;p&gt;在设计上边车模式与网关模式有类似之处，但是其粒度更细。其为每个服务都配备一个“边车”，这个“边车“可以理解为一个 agent ，这个服务所有的通信都是通过这个 agent 来完成的，这个 agent 同服务一起创建，一起销毁。像服务注册、服务发现、监控、流量控制、日志记录、服务限流和服务服务熔断等功能完全可以做成标准化的组件和模块，不需要在单独实现其功能来消耗业务开发的精力和时间来开发和调试这些功能，这样可以开发出真正高内聚低耦合的软件。&lt;/p&gt;
+&lt;p&gt;这里有两种方法来实现边车模式：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;通过 SDK 、 Lib 等软件包的形式，在开发时引入该软件包依赖，使其与业务服务集成起来。&lt;/p&gt;
+&lt;p&gt;这种方法可以与应用密切集成，提高资源利用率并且提高应用性能。但是这种方法是对代码有侵入的，受到编程语言和软件开发人员水平的限制，但当该依赖有 bug 或者需要升级时，业务代码需要重新编译和发布。同时，如果该依赖宣布停止维护或者闭源，那么会给该服务带来不小的影响。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;以 Sidecar 的形式，在运维的时候与应用服务集成在一起。&lt;/p&gt;
+&lt;p&gt;这种方式对应用服务没有侵入性，不受编程语言和开发人员水平的限制，做到了控制与逻辑分开部署。但是会增加应用延迟，并且管理和部署的复杂度会增加。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;边车模式解决了什么问题&#34;&gt;边车模式解决了什么问题&lt;/h2&gt;
+&lt;p&gt;边车模式在概念上是比较简单的，但是在实践中还是要了解边车模式到底解决了什么问题，我们为什么要使用边车模式？&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;控制与逻辑分离的问题&lt;/p&gt;
+&lt;p&gt;边车模式是基于将控制与逻辑分离和解耦的思想，通俗的讲就是让专业的人做专业的事，业务代码只需要关心其复杂的业务逻辑，其他的事情”边车“会帮其处理，从这个角度看，可能叫跟班或者秘书模式也不错 :)&lt;/p&gt;
+&lt;p&gt;日志记录、监控、流量控制、服务注册、服务发现、服务限流、服务熔断、鉴权、访问控制和服务调用可视化等，这些功能从本质上和业务服务的关系并不大，而传统的软件工程在开发层面完成这些功能，这导致了各种各样维护上的问题。&lt;/p&gt;
+&lt;p&gt;就好像一个厨师不是必须去关心食材的产地、饭店的选址、是给大厅的客人上菜还是给包房的客人上菜&amp;hellip;他只需要做好菜就好，虽然上面的这些事他都可以做。而传统的软件工程就像是一个小饭店的厨师，他即是老板又是厨师，既需要买菜又需要炒菜，所有的事情都要他一个人做，如果客人一多，就会变的手忙脚乱；而控制与逻辑分离的软件，其逻辑部分就像是高档酒店的厨师，他只需要将菜做好即可，其他的事情由像”边车“这样的成员帮其处理。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;解决服务之间调用越来越复杂的问题&lt;/p&gt;
+&lt;p&gt;随着分布式架构越来越复杂和微服务越拆越细，我们越来越迫切的希望有一个统一的控制面来管理我们的微服务，来帮助我们维护和管理所有微服务，这时传统开发层面上的控制就远远不够了。而边车模式可以很好的解决这个问题。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;从边车模式到-service-mesh&#34;&gt;从边车模式到 Service Mesh&lt;/h2&gt;
+&lt;p&gt;边车模式有效的分离了系统控制和业务逻辑，可以将所有的服务进行统一管理，让开发人员更专注于业务开发，显著的提升开发效率。而遵循这种模式进行实践从很早以前就开始了，开发人员一直试图将上文中我们提到的功能（如：流量控制、服务注册、服务发现、服务限流、服务熔断等）提取成一个标准化的 Sidecar ，通过 Sidecar 代理来与其他系统进行交互，这样可以大大简化业务开发和运维。而随着分布式架构和微服务被越来越多的公司和开发者接受并使用，这一需求日益凸显。&lt;/p&gt;
+&lt;p&gt;这就是 Service Mesh 服务网格诞生的契机，它是 CNCF（Cloud Native Computing Foundation，云原生基金会）目前主推的新一代微服务架构。 William Morgan 在 &lt;a href=&#34;https://buoyant.io/2017/04/25/whats-a-service-mesh-and-why-do-i-need-one/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;What&amp;rsquo;s a service mesh? And why do I need one?&lt;/a&gt; 【&lt;a href=&#34;https://blog.maoxianplay.com/posts/whats-a-service-mesh-and-why-do-i-need-one/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;译文&lt;/a&gt;】中解释了什么是 Service Mesh 。&lt;/p&gt;
+&lt;p&gt;Service Mesh 有如下几个特点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;应用程序间通讯的中间层&lt;/li&gt;
+&lt;li&gt;轻量级网络代理&lt;/li&gt;
+&lt;li&gt;应用程序无感知&lt;/li&gt;
+&lt;li&gt;解耦应用程序的重试/超时、监控、追踪和服务发现&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Service Mesh 将底层那些难以控制的网络通讯统一管理，诸如：流量管控，丢包重试，访问控制等。而上层的应用层协议只需关心业务逻辑即可。Service Mesh 是一个用于处理服务间通信的基础设施层，它负责为构建复杂的云原生应用传递可靠的网络请求。&lt;/p&gt;
+&lt;h2 id=&#34;你真的需要-service-mesh-吗&#34;&gt;你真的需要 Service Mesh 吗？&lt;/h2&gt;
+&lt;p&gt;正如 NGINX 在其博客上发表的一篇文章名叫 &lt;a href=&#34;https://www.nginx.com/blog/do-i-need-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Do I Need a Service Mesh? &lt;/a&gt; 【&lt;a href=&#34;http://www.servicemesher.com/blog/do-i-need-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;译文&lt;/a&gt;】 的文章中提到：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;As the complexity of the application increases, service mesh becomes a realistic alternative to implementing capabilities service-by-service.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;随着应用程序复杂性的增加，服务网格将成为实现服务到服务的能力的现实选择。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/from-sidecar-to-servicemesh/ad5fbf65gy1g1yqgvxvzrj20sg0fxgnw_hu7f2c31cb17c6b91aa8599714a1cd3d05_118336_879002e6defc9884e34f2dda316b5368.webp 400w,
+               /blog/from-sidecar-to-servicemesh/ad5fbf65gy1g1yqgvxvzrj20sg0fxgnw_hu7f2c31cb17c6b91aa8599714a1cd3d05_118336_acee6b25883424001aa8a5819152cc68.webp 760w,
+               /blog/from-sidecar-to-servicemesh/ad5fbf65gy1g1yqgvxvzrj20sg0fxgnw_hu7f2c31cb17c6b91aa8599714a1cd3d05_118336_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/from-sidecar-to-servicemesh/ad5fbf65gy1g1yqgvxvzrj20sg0fxgnw_hu7f2c31cb17c6b91aa8599714a1cd3d05_118336_879002e6defc9884e34f2dda316b5368.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;425&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;随着我们的微服务越来越细分，我们所要管理的服务正在成倍的增长着，Kubernetes 提供了丰富的功能，使得我们可以快速的部署和调度这些服务，同时也提供了我们熟悉的方式来实现那些复杂的功能，但是当临界点到来时，可能就是我们真正要去考虑使用 Service Mesh 的时候了。&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Sidecar pattern ： &lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;What&amp;rsquo;s a service mesh? And why do I need one?： &lt;a href=&#34;https://buoyant.io/2017/04/25/whats-a-service-mesh-and-why-do-i-need-one/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://buoyant.io/2017/04/25/whats-a-service-mesh-and-why-do-i-need-one/&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Do I Need a Service Mesh?：https://www.nginx.com/blog/do-i-need-a-service-mesh/&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>你真的需要服务网格吗？</title>
       <link>https://cloudnative.to/blog/do-i-need-a-service-mesh/</link>
       <pubDate>Mon, 01 Apr 2019 11:39:27 +0800</pubDate>
@@ -7589,6 +9578,182 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;/p&gt;
 &lt;p&gt;随着应用程序复杂性的增加，服务网格将成为实现服务到服务的能力的现实选择。&lt;/p&gt;
 &lt;p&gt;但是，不要让缺乏稳定成熟的服务网格延误你今天正在考虑的任何计划。正如我们所看到的，Kubernetes和其他编排平台提供了丰富的功能，使得我们可以遵循熟悉的、易于理解的方式来实现复杂的功能。现在继续沿着这些路径前进，使用经过验证的解决方案，如入口路由器和内部负载均衡器。当你到达临界点时，将会知道是时候考虑使用服务网格去实现它们了。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Envoy Proxy构建控制平面指南</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</link>
+      <pubDate>Wed, 06 Mar 2019 12:17:02 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh-badb6c36a2af&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者案&#34;&gt;编者案&lt;/h2&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Envoy 作为最受欢迎的早期网络组件，现在已经可以说是云原生架构中的通用数据平面。本文作者指引我们更方便的使用Envoy，及其定制控制平面，作者通过收集到的数据给出定制控制平面不同的意见，非常中肯，后续系列会更深入，欢迎关注该系列文章。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 最近成为一个受欢迎的网络组件。 几年前 Matt Klein &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;写了一篇博客&lt;/a&gt; ，讨论了Envoy的动态配置API，以及Envoy发展的历史和动机。 他称该博客为“通用数据平面API”。 由于许多其他项目采用&lt;a href=&#34;https://www.envoyproxy.io/community&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 作为其产品的核心组件，因此对于应用程序/L7网络解决方案而言，毫不夸张地说，“Envoy已成为云原生架构中的通用数据平面”，而不仅仅是简单建立了API标准。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_d73177a85f459e7e9ae645c9c638a24a.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_2e55f3eb8e7f29cf53d207262cf81594.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_d73177a85f459e7e9ae645c9c638a24a.webp&#34;
+               width=&#34;490&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此外，由于 &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy的通用数据平面API&lt;/a&gt; ，我们已经看到了许多 &lt;em&gt;管理层&lt;/em&gt; 的实现， 用于配置和驱动基于Envoy的基础架构。 我们将深入探讨为Envoy构建控制平面所需的内容，以便您可以使用此信息来评估哪种类型的基础架构最适合您的组织和使用情况。 因为这是一个广泛的主题，我们将在未来几天发布的多部系列博客中解决它。&lt;/p&gt;
+&lt;p&gt;在EnvoyCon/KubeCon上 有一些 &lt;a href=&#34;https://blog.envoyproxy.io/envoycon-recap-579d53576511&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;精彩的演讲&lt;/a&gt; ，一些组织分享了他们采用Envoy的经验，包括他们如何构建自己的控制平面。 人们选择自己建立控制平面的一些原因：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;现有的解决方案，建立在已有不同数据平面的控制平面，需要改造Envoy（与已有方案且冲突）&lt;/li&gt;
+&lt;li&gt;为没有任何现有开源或其他Envoy控制平面（即VM，AWS ECS等）的基础架构构建（商业公司必须重新建方案）&lt;/li&gt;
+&lt;li&gt;不需要使用Envoy的所有功能; 只是一个子集（功能太多，需要精简）&lt;/li&gt;
+&lt;li&gt;首选适用于Envoy配置的特定于域的API/对象模型，以更好地适应其工作流程/世界观（与已有方案冲突）&lt;/li&gt;
+&lt;li&gt;当其组织准备部署时，暂时没有成熟的控制平面（走的太快）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_299b4200e7b50938d5e8b268bfc26bd9.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_feae416aa92cd7eaa0dea21fc7cb0e50.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_299b4200e7b50938d5e8b268bfc26bd9.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;486&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;若是因为一些早期采用者建立了他们自己的定制控制平面，并不意味着你现在也要自己重新开发控制平面。 因为Envoy构建控制平面的项目在去年已经成熟了很多，若你决定重新开发另一个控制平面前你应该探索使用它们。 其次，正如Datawire的人们发现的那样，&lt;a href=&#34;https://twitter.com/danielbryantuk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;丹尼尔·布莱恩特&lt;/a&gt; 最近明确表示， &lt;a href=&#34;https://www.infoq.com/articles/ambassador-api-gateway-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为Envoy建造一个控制平面并不适合胆小的人&lt;/a&gt; 。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我参与&lt;/a&gt; 了 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几个&lt;/a&gt;为Envoy构建控制平面的&lt;a href=&#34;https://github.com/solo-io/gloo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源项目&lt;/a&gt; 。 例如， &lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo&lt;/a&gt; 是 &lt;a href=&#34;https://medium.com/solo-io/announcing-gloo-the-function-gateway-3f0860ef6600&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个功能网关&lt;/a&gt; ，可以充当非常强大的Kubernetes入口，API网关或功能网关，以简化单体应用到微服务的过渡。 Gloo &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;有一个Envoy的控制平面&lt;/a&gt; ，我们可以在这一系列的帖子中作为一个例子来说明如何构建一个简单的抽象，允许在你需要的控制点上实现可插拔性和可扩展性。 您可以用作参考的其他可靠的控制平面实现是 &lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio Contour&lt;/a&gt; 我们将在整个系列博客中使用这些作为很好的例子。 如果不出意外，您可以了解Envoy控制平面存在哪些选项，并使用它来指导您的实施，如果您必须走这条路。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_6aaf308f76bb1b435deb0087ecfe2110.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_b2e5f9814c349379607a6f32d75ebee2.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_6aaf308f76bb1b435deb0087ecfe2110.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;205&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个博客系列中，我们将看看以下几个方面：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;采用动态更新机制的Envoy路由、服务发现和其他配置&lt;/li&gt;
+&lt;li&gt;确定构成控制平面的组件，包括后端存储、服务发现API、安全组件等。&lt;/li&gt;
+&lt;li&gt;为您和组织最适合的用例，建立任何特定于域的配置对象和API&lt;/li&gt;
+&lt;li&gt;考虑如何最好地将控制平面插入您需要的地方&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的选项&lt;/li&gt;
+&lt;li&gt;通过控制平面的测试工具进行思考&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;为了开始这个系列，我们来看看使用Envoy的动态配置API在运行时更新Envoy以处理拓扑和部署的变化。&lt;/p&gt;
+&lt;h2 id=&#34;使用xds-api动态配置envoy&#34;&gt;使用xDS API动态配置Envoy&lt;/h2&gt;
+&lt;p&gt;构建在Envoy之上的主要优势之一是它的数据平面API。 使用数据平面API，我们可以 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态配置Envoy的大部分重要运行时设置&lt;/a&gt; 。 Envoy通过其xDS API的配置 &lt;a href=&#34;https://blog.envoyproxy.io/embracing-eventual-consistency-in-soa-networking-32a5ee5d443d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最终一致的&lt;/a&gt;  - 即无法影响集群中所有代理的“原子更新”。 当控制平面具有配置更新时，它通过xDS API使它们可用于数据平面代理，并且每个代理将彼此独立地应用这些更新。&lt;/p&gt;
+&lt;p&gt;以下是我们可以通过xDS动态配置的Envoy运行时模型的部分：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务API -&lt;/a&gt; 用于发布监听流量的端口的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LDS&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务API-&lt;/a&gt; 用于服务发现的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EDS&lt;/a&gt; ，&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/http_conn_man/rds#config-http-conn-man-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务API-RDS&lt;/a&gt; 用于流量路由决策&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务 -&lt;/a&gt; 用于后端服务的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CDS&lt;/a&gt; ，我们可以将流量路由到该服务&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;secret发现服务 -&lt;/a&gt; 用于分发Secret的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SDS&lt;/a&gt; （证书和密钥）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_0c1afe2df3b97beb6f7307a91377b67e.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_38f347eb1be2ded7ed2a98ff57214ba7.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_0c1afe2df3b97beb6f7307a91377b67e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;505&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;API使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/overview/v2_overview#config-overview-v2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proto3 Protocol Buffers&lt;/a&gt; 定义， 甚至还有一些参考实现可用于引导您自己的控制平面：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/java-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;java的控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;虽然这些领域（LDS/EDS/RDS/CDS/SDS，一起“xDS”）中的每一个都是动态可配置的，但这并不意味着您必须动态配置所有内容。 您可以拥有静态定义的部分组合以及动态更新的部分组合。 例如，要实现一种 &lt;code&gt;endpoints&lt;/code&gt; 预期为动态但 &lt;code&gt;clusters&lt;/code&gt; 在部署时众所周知 的服务发现类型 ，您可以静态定义 &lt;code&gt;clusters&lt;/code&gt; 并使用 Envoy中 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务&lt;/a&gt; 。 如果您不确定在部署时将使用哪些 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/terminology&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;上游集群，&lt;/a&gt; 则可以使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务&lt;/a&gt; 动态地找到那些。 关键是，您可以构建一个工作流程和流程，静态配置您需要的部分，同时使用动态xDS服务来发现运行时所需的部分。 您看到不同的控制平面实现的原因之一并不是每个人都有一个完全动态和可互换的环境，其中所有部分都应该是动态的。 在给定现有约束和可用工作流程的情况下，采用最适合您系统的动态级别。&lt;/p&gt;
+&lt;p&gt;在Gloo的情况下，我们使用&lt;a href=&#34;https://github.com/solo-io/gloo/blob/ac3bddf202423b297fb909eb6eff498745a8c015/projects/gloo/pkg/xds/envoy.go#L76&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于go-control-plane的控制平面&lt;/a&gt; 来实现xDS API以服务Envoy的动态配置。 与Heptio Contour一样，Istio也使用此实现。 此控制平面API利用 &lt;a href=&#34;https://grpc.io/docs/guides/concepts.html#server-streaming-rpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC流&lt;/a&gt; 调用和存根API，因此您可以使用实现填充它。 &lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Turbine Labs’ Rotor项目&lt;/a&gt; 是另一个不幸被弃用但可以用来学习的&lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;项目&lt;/a&gt; 。 这是将Envoy的数据平面API与控制平面集成的高效方法。&lt;/p&gt;
+&lt;p&gt;gRPC流不是更新Envoy配置的唯一方式。 在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.5.0/api-v1/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以前版本的Envoy xDS API中&lt;/a&gt; ，轮询是确定新配置是否可用的唯一选项。 虽然这是可以接受的，并且符合“最终一致”配置更新的标准，但它在网络和计算使用方面效率都较低。 也可能难以适当地调整轮询配置以减少浪费的资源。&lt;/p&gt;
+&lt;p&gt;最后，一些Envoy管理实施选择生成 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态Envoy配置文件，&lt;/a&gt; 并定期替换Envoy磁盘上的配置文件，然后执行 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy进程&lt;/a&gt; 的 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热重新加载&lt;/a&gt; 。 在高度动态的环境中（如Kubernetes，但实际上是任何基于ephemeral-compute的平台），此文件生成，交付，热重启等的管理可能变得难以处理。 Envoy最初是在一个执行此类更新的环境中运行的（Lyft，它是在哪里创建的），但它们逐渐转向使用xDS API。&lt;/p&gt;
+&lt;h2 id=&#34;takeaway&#34;&gt;Takeaway&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt; 认为使用gRPC流和xDS API是实现Envoy动态配置和控制的理想方式。 同样，如果您不需要，并非所有Envoy配置都应动态提供，但是如果您在高度动态的环境中运行（例如，Kubernetes），则动态配置Envoy的选项至关重要。 其他环境可能没有这种需求。 无论哪种方式，动态的g​​RPC流API都是理想的选择。 这种方法的一些好处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;事件驱动的配置更新; 当配置在控制平面中可用时，配置被推送到Envoy&lt;/li&gt;
+&lt;li&gt;无需轮询更改&lt;/li&gt;
+&lt;li&gt;没有必要热加载Envoy&lt;/li&gt;
+&lt;li&gt;没有中断流量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;下一步是什么&#34;&gt;下一步是什么&lt;/h2&gt;
+&lt;p&gt;在第一部分中，我们通过介绍xDS API以及为Envoy提供动态配置的不同选项，为如何为Envoy构建控制平面建立了一些基本背景。 在接下来的部分中，将在几天内发布，将涵盖将您的控制平面分解为可部署组件，确定您需要哪些部分，特定于域的配置对象模型，以及如何考虑控件的可插拔性平面。 关注twitter（ &lt;a href=&#34;https://twitter.com/christianposta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@christianposta&lt;/a&gt; ， &lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@ solio_in&lt;/a&gt; ）或博客（ &lt;a href=&#34;https://medium.com/solo-io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://medium.com/solo-io&lt;/a&gt; ）&lt;/p&gt;
 </description>
     </item>
     
@@ -8337,6 +10502,111 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
     </item>
     
     <item>
+      <title>微服务生态从百家争鸣阶段演化到服务网格</title>
+      <link>https://cloudnative.to/blog/from-fragmented-microservices-ecosystem-to-service-mesh/</link>
+      <pubDate>Thu, 13 Dec 2018 19:23:09 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/from-fragmented-microservices-ecosystem-to-service-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://blog.avinetworks.com/from-fragmented-microservices-ecosystem-to-service-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;在过去几年中，我们注意到应用程序架构正在迅速转变为分布式微服务架构——单体和庞大的应用程序被分解为更小的单个服务，其可被独立修改、构建、部署和管理。这种模式的主要优点就是简洁和快速，同时由于其对其他服务的依赖性很小或者完全没有依赖，更易于升级和独立扩展。这与敏捷和DevOps理念非常吻合，这种模式也已经被许多规模化的Web公司成功采用。过去的许多年中，这些公司中的大多数都能够很好地采用这种模式，但是近几年中成功将这种模式发扬光大的两大推手非Docker和Kubernetes莫属。Docker简化了将微服务构建为Linux容器的过程，Kubernetes则能够以资源优化的方式来部署、管理和扩展服务。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6290u94jj30p70cn763_hu256c4b7089550d7a772476741821216b_53684_d1ad04b0065ff1799f2f6c9185c80be5.webp 400w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6290u94jj30p70cn763_hu256c4b7089550d7a772476741821216b_53684_0762cbe556cb8b0f70b70a33ff603ff1.webp 760w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6290u94jj30p70cn763_hu256c4b7089550d7a772476741821216b_53684_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6290u94jj30p70cn763_hu256c4b7089550d7a772476741821216b_53684_d1ad04b0065ff1799f2f6c9185c80be5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;381&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;应用架构演进&#34;&gt;应用架构演进&lt;/h2&gt;
+&lt;p&gt;在这篇博客中，我们不会花太多时间讨论微服务架构的优缺点。相反，我们将专注于在向基于微服务构建的云原生架构的重大转变上。&lt;/p&gt;
+&lt;p&gt;虽然微服务架构提供了灵活性，但其也带有复杂性。Kubernetes在部署和管理微服务方面发挥了非常重要的作用，但我们需要的不仅仅是单一的运行在生产环境中的云原生应用程序——还需要在服务发现、安全性、流量管理等方面需要更加深入的了解。尤其是在相互通信的成千上百个服务经常被删除、生产、扩展和更新的复杂环境下，深入的了解更加有必要性。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6296ogt3j30qf0b9wfx_huddc5a70ed1fde762be0e65622e51fd2b_41433_95b554d68509ecdc94ee5aecea2855d5.webp 400w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6296ogt3j30qf0b9wfx_huddc5a70ed1fde762be0e65622e51fd2b_41433_1a4568dd4d4b7baa9860518836e1719b.webp 760w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6296ogt3j30qf0b9wfx_huddc5a70ed1fde762be0e65622e51fd2b_41433_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy6296ogt3j30qf0b9wfx_huddc5a70ed1fde762be0e65622e51fd2b_41433_95b554d68509ecdc94ee5aecea2855d5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;324&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;微服务架构面临的挑战&#34;&gt;微服务架构面临的挑战&lt;/h2&gt;
+&lt;p&gt;这种规模化和动态化对于早期运行单体程序和管理应用程序的基础设施带来了具体的转变。为支持这种动态环境，新一代架构需要在生态系统中补充大量的新技术。为了交付所有的用户场景，我们需要在基础架构栈的每个级别上提供多个解决方案。根据需要，基础架构人员开始将这些技术集成到平台上，但这也意味着程序开发人员需要额外的负担来支持这些技术。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy629doo63j30rd0cedif_hu4ac12c2f7930e076ff1cec64f97b4603_72134_0101c53b3c274ca063b03daf8b45b1bc.webp 400w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy629doo63j30rd0cedif_hu4ac12c2f7930e076ff1cec64f97b4603_72134_a5d87365d649ba4ffbf72270f0f3ee56.webp 760w,
+               /blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy629doo63j30rd0cedif_hu4ac12c2f7930e076ff1cec64f97b4603_72134_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/from-fragmented-microservices-ecosystem-to-service-mesh/006tNbRwly1fy629doo63j30rd0cedif_hu4ac12c2f7930e076ff1cec64f97b4603_72134_0101c53b3c274ca063b03daf8b45b1bc.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;344&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;基础架构栈高层视图&#34;&gt;基础架构栈高层视图&lt;/h2&gt;
+&lt;p&gt;这不是人们所期望的，并且也绝对不是微服务架构做出的的敏捷性、易于开发和部署的承诺。&lt;/p&gt;
+&lt;p&gt;此后出现了服务网格的理念，这也是Avi Networks在此术语被创造之前一直专注于为客户提供的内容，并且由Istio和Linkerd等开源项目推动下形成了事实上的标准。我们很高兴看到社区热情拥抱了服务网格，而且我们也认为服务网格是微服务基础架构的必要组成部分。&lt;/p&gt;
+&lt;p&gt;那么什么是 “服务网格” ，其如何帮助解决这些问题的呢？服务网格实质上是提供了上面图中在基础架构中的多层服务，与此同时程序开发者无需集成或修改代码就可以利用这些服务。它不仅使服务之间的通信快速可靠，而且服务网络还提供细粒度的流量管理、故障恢复、安全（加密、授权和认证）和可观察性（如跟踪、日志和监控）。所有这些都是从使用某种架构的开发人员中抽象出来的，其中所有服务间的通信都流经sidecar代理，代理与每个服务一起部署，从而创建一个服务网格。Sidecar由集中控制平面管理配置，用于流量路由和策略实施。尽管运行与应用程序容器一样多的sidecar容器一直是争论的焦点，但服务网格的优势和功能似乎超过了运维问题。&lt;/p&gt;
+&lt;p&gt;在本博客系列的其余部分，我将深入探讨如何实现服务网格，并使用Istio的参考架构来完成旅程，因为Istio是当前最广泛使用和最知名的服务网格解决方案之一。但Istio是否解决了所有问题，并且在处理当今微服务世界中存在的重要场景方面是否完整？我们将深入探讨这一点，并在本系列的后续部分讨论所有内容。 敬请关注！&lt;/p&gt;
+&lt;p&gt;Manish Chugtu - CTO Cloud Infrastructure和Microservices@Avi Networks，是一位创新思想领军人物，在架构，设计和产品开发方面拥有 18 年以上的经验，在架构和开发高度可扩展的企业解决方案方面拥有丰富的经验。目前，他致力于推动Avi在容器和云基础架构领域的战略， &lt;a href=&#34;https://www.linkedin.com/in/manishchugtu/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;他的 LinkedIn&lt;/a&gt;。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Service Mesh Meetup #4 上海站</title>
       <link>https://cloudnative.to/event/service-mesh-meetup-04/</link>
       <pubDate>Sun, 25 Nov 2018 13:00:00 +0800</pubDate>
@@ -8441,6 +10711,84 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;p&gt;**如果组织架构希望使用服务网格替代某些中间件，则必须重新评估其组织流程和方法论。**尽管服务网格有助于多个容器间的通信，中间件仍然是单体应用间消息传递的理想选择。它们构建在不同的范例中，组织机构可能不得不从根本上改变他们构建应用和基础设施的方式，并且支持做出变化。&lt;/p&gt;
 &lt;p&gt;在DevOps工具和实践框架落实到位之前，组织机构并不能撤下部分遗留中间件。这将促进技术栈的基础设施（如代码、服务、安全性、监控和CI/CD）之间的动态协同。应用的中间件或者服务网格必须反映它们之间进行通信的组件。&lt;/p&gt;
 &lt;p&gt;DevOps转型将有助于确保组织的文化和决策过程与其使用工具进行创新的速度保持一致。联系我们，[了解如何改变、支持和发展您的DevOps和云原生实践。](mailto: &lt;a href=&#34;mailto:info@cloudops.com&#34;&gt;info@cloudops.com&lt;/a&gt;)&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>容器编排无法解决微服务的所有问题，你还需要服务网格</title>
+      <link>https://cloudnative.to/blog/going-beyond-container-orchestration/</link>
+      <pubDate>Thu, 11 Oct 2018 19:28:26 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/going-beyond-container-orchestration/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://aspenmesh.io/2018/09/going-beyond-container-orchestration/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;最近的几次关于容器使用情况的调研都得到了相似的结果，开发团队不仅采用而且开始拥抱容器技术。大多数人并没有像超大型组织那样大规模的使用容器。在一项思科赞助的调研中发现有超过8000家企业在生产环境中使用容器。这听起来令人印象深刻，但他们使用容器的规模有限。在戴尔EMC，英特尔和红帽委托的Forrester报告中，63％使用容器的企业运行的实例超过100个，82％预计到2019年会达到这一规模。这与超大型技术公司使用的数十万的规模相距甚远。&lt;/p&gt;
+&lt;p&gt;虽然采用率很高，这并不是说组织使用容器的道路就是一帆风顺的。采纳任何一样新技术都是存在挑战的。人们使用容器时最关心的是：网络和管理。其次才去关注安全性和不一致性。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4i0hfkbgj30s80koq5c_hue2d39e6776f6d0011cc73032f0780e88_89838_78a2d9d543dc04f14b41724a4cb93b6f.webp 400w,
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4i0hfkbgj30s80koq5c_hue2d39e6776f6d0011cc73032f0780e88_89838_feb02bf23334f7564ef4c64fbd0035eb.webp 760w,
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4i0hfkbgj30s80koq5c_hue2d39e6776f6d0011cc73032f0780e88_89838_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/going-beyond-container-orchestration/006tNbRwly1fw4i0hfkbgj30s80koq5c_hue2d39e6776f6d0011cc73032f0780e88_89838_78a2d9d543dc04f14b41724a4cb93b6f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;557&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;网络挑战是由于Kubernetes等流行的容器编排软件所带来的。Kubernetes构建的就是要支持微服务架构。这允许开发和运维人员将功能抽象成一组pod，并将其作为“service”暴露出来，并通过定义好的API进行访问。Kubernetes支持DNS和基于TCP的L4负载均衡。&lt;/p&gt;
+&lt;p&gt;基于TCP L4负载均衡的问题是它无法与L7（应用程序和API层）交互。对于任何L4负载均衡都是如此；它不是容器和Kubernetes独有的东西。L4负载均衡提供了对连接级别（TCP）协议和指标的可见性，但仅此而已。这使得很难（真的不可能）解决高阶问题，例如每秒请求数或事务等L7指标以及基于路径分割流量（路由请求）。这也意味着您无法在API层进行速率限制或支持重试和断路等关键功能。&lt;/p&gt;
+&lt;p&gt;因为缺乏这些功能，开发人员就不得不将它们编码到每个微服务中。这导致运维代码包含在业务逻辑中。这明显不太合适，因为它显然违反了微服务设计的原则。因为它为微服务增加了构建和技术债。&lt;/p&gt;
+&lt;p&gt;虽然Kubernetes特别擅长处理容器化应用程序的构建和部署，但是它缺乏在运行时监控基于微服务的应用程序所需的关键功能。Kubernetes只能提供基本的健康检查存活探针和就绪探针，不能为开发和运维人员提供在执行期间快速有效地诊断问题所需的度量和追溯微服务的调用。让开发人员使用微服务来生成一致的指标可能是一项重大挑战，尤其是当他们要在限定时间内完成客户所需功能时，这会给他们带来很大的压力。&lt;/p&gt;
+&lt;p&gt;而Service Mesh是解决kubernetes在网络和管理方面问题的完美解决方案。&lt;/p&gt;
+&lt;h2 id=&#34;service-mesh如何应对挑战&#34;&gt;Service Mesh如何应对挑战&lt;/h2&gt;
+&lt;p&gt;Service Mesh通过在Kubernetes的一些列pod中注入sidecar代理能够很好的解决这些问题。通过直接注入到容器环境，sidecar代理能够透明化网络和一致度量指标。由于所有流量都通过sidecar代理进行有效路由，因此它可以自动生成并将所需的指标提供给网格的其它部分。对于在容器环境中部署传统应用程序的组织而言，这非常有价值。传统应用程序不太可能适用于现代环境。使用Service Mesh及其sidecar代理基本使这些应用程序能够产生正确的指标，而无需或很少需要添加/修改代码。&lt;/p&gt;
+&lt;p&gt;这也意味着您不必花时间协调由各种运行时代理生成的不同指标。您可以依靠服务网格在所有应用程序和微服务中生成一致的度量标准集合。&lt;/p&gt;
+&lt;p&gt;这些指标包含提供给网格的更高阶数据点，并启用更高级的网络以确保对请求的最快可用响应。在Service Mesh中重试和断路器由sidecar代理处理，这减轻了开发人员将运维代码引入其微服务的负担。由于sidecar代理不受限于L4负载均衡（TCP），所以靠L7负载均衡（应用程序和API层）它支持更高级别的消息路由技术。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4jtsdrhyj31df0lpdlt_hu4787ae26958a6cd58fdd34c586a3a287_210861_7615a2b13b46fbcd4e11ad4841266739.webp 400w,
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4jtsdrhyj31df0lpdlt_hu4787ae26958a6cd58fdd34c586a3a287_210861_fa2c4c3441d7738ccaf4d5f0c3825b66.webp 760w,
+               /blog/going-beyond-container-orchestration/006tNbRwly1fw4jtsdrhyj31df0lpdlt_hu4787ae26958a6cd58fdd34c586a3a287_210861_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/going-beyond-container-orchestration/006tNbRwly1fw4jtsdrhyj31df0lpdlt_hu4787ae26958a6cd58fdd34c586a3a287_210861_7615a2b13b46fbcd4e11ad4841266739.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;334&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;容器编排是一个很好的基础设施，但企业组织需要的不仅仅是一个良好的基础设施。他们需要能够与堆栈上层的服务进行交互的能力，这需要使用指标和现代架构去实现。&lt;/p&gt;
+&lt;p&gt;服务网格可以很好的提供这两种服务。当您需要超越容器编排时，请使用服务网格。&lt;/p&gt;
 </description>
     </item>
     
@@ -9566,6 +11914,52 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;p&gt;&lt;strong&gt;杨文（JEX）——Kubernetes、Service Mesh、CI/CD 实践&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;Topic摘要：本次主题我将跟大家分享我们在提升研发团队工程效率上的一些思考和实践，包括如何构建自动化 CI/CD 平台，如何提升持续交付能力，以及我们在这一系列演化过程中所踩过一些坑。&lt;/p&gt;
 &lt;p&gt;讲师介绍：JEX 技术VP，前小恩爱技术总监，开源爱好者，TiDB、logkit 等多个开源项目的 Contributor，Go 夜读发起人。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Google 加持 Istio：这可能比 Kubernetes 和 Serverless 产生更大影响力</title>
+      <link>https://cloudnative.to/blog/google-istio-bigger-kubernetes-serverless/</link>
+      <pubDate>Mon, 20 Aug 2018 16:14:16 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/google-istio-bigger-kubernetes-serverless/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://raw.githubusercontent.com/servicemesher/website/master/content/blog/google-istio-bigger-kubernetes-serverless/00704eQkly1fug8z3tpgcj30lc0ao44a.jpg&#34; alt=&#34;&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://diginomica.com/2018/08/03/google-istio-bigger-kubernetes-serverless/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Google Cloud采用了Istio服务网格技术来管理微服务，这可能比Kubernetes和无服务器产生更大的影响。&lt;/p&gt;
+&lt;p&gt;随着现代数字计算基础设施的不断发展，新的自动化层加速了创新和提升了适应性。一旦实现容器化微服务几秒之内部署一个新功能成为可能。那么Kubernetes和类似工具的出现增加了一层业务流程，以便大规模协调容器部署。在基础设施中一个功能很容易抽象成为一个满足需求的serverless模型。现在，正在形成一个称为“service mesh”的新层，以便在所有这些功能中添加服务间治理、管理和通信功能。8月1号一个名为Istio的service mesh的新开源框架1.0版本发布生产版本，像之前的Kubernetes一样，由谷歌以及IBM支持。&lt;/p&gt;
+&lt;h2 id=&#34;比kubernetes更有价值&#34;&gt;比Kubernetes更有价值&lt;/h2&gt;
+&lt;p&gt;您可能没有听说过Istio，但如果您进行任何形式的敏捷数字开发或运维工作，您很快就会知道Istio。 Google云计算CTO（UrsHölzle）上周告诉我，他预计service mesh将会被普遍采用：“我希望看到的是，在两年后90％的Kubernetes用户将会使用Istio。Istio与Kubernetes提供的产品非常吻合，几乎感觉就像Kubernetes的下一次迭代。这是由同一个团队完成的，Istio和Kubernetes的功能能够很好的互补。”&lt;/p&gt;
+&lt;p&gt;Hölzle没有明确地说Istio一定会比Kubernetes更大，但他非常确信Istio会和Kubernetes具有一样大的应用前景，甚至超过Kubernetes。&lt;/p&gt;
+&lt;h2 id=&#34;istiokubernetes和serverless&#34;&gt;Istio、Kubernetes和Serverless&lt;/h2&gt;
+&lt;p&gt;在某种程度上，Hölzle的信心源于谷歌决定将Istio标准化为其云服务平台（&lt;a href=&#34;https://cloudplatform.googleblog.com/2018/07/cloud-services-platform-bringing-the-best-of-the-cloud-to-you.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloud Services Platform &lt;/a&gt;）的管理层，该服务于上周在Cloud Next会议上宣布。这与上周推出的另外两个新项目同时启动。一个是&lt;a href=&#34;https://www.infoq.com/news/2018/07/knative-kubernetes-serverless&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative&lt;/a&gt;—一个基于Kubernetes的开源框架，用于构建、部署和管理serverless工作负载，正如Kurt Marko本周早些时候在他的&lt;a href=&#34;https://diginomica.com/2018/07/30/google-cloud-platform-removes-barriers-between-it-business/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cloud Next文章&lt;/a&gt;中所解释的那样，“Knative不仅仅是一个serverless的容器包装器，而是一个容器化应用的开发框架“。另一个是谷歌GKE（Google Kubernetes Engine）私有云版本，是云供应商的容器管理工具。结合Istio的管理层，这实际上意味着组织可以从私有云到公有云使用CSP管理整个IT基础架构中的容器生态系统和serverless。&lt;/p&gt;
+&lt;p&gt;Istio是Google、IBM和Lyft共同努力在一年多前推出的一项开放式技术框架，用于连接、保护、管理和监控云的服务网络。这三家公司都贡献了他们单独开发的现有技术。&lt;/p&gt;
+&lt;h2 id=&#34;减轻企业上云难度&#34;&gt;减轻企业上云难度&lt;/h2&gt;
+&lt;p&gt;Hölzle认为，Istio将加速企业采用公有云，因为它可以在私有化部署和云之间实现更高的同质化：“公司决定将所有内容（包括他们不想重写的旧代码）移至Istio，去包装旧代码而不去重写它这是非常合理的。我们相信GKE私有化部署将带领更多客户深入云技术。因为它与现代云思维非常融合，它保留了它们的地址以及何时何地去迁移的选择机会。你可以在任何你喜欢的云提供商之间自由迁移，且使你上云之路更加平稳。一旦人们熟悉了Kubernetes和Istio的管理和编排方式，上云就不会变得可怕了。”&lt;/p&gt;
+&lt;p&gt;Hölzle认为BigQuery这样的云原生功能将继续为它们提供最终结果。与此同时，它依靠思科等合作伙伴提供GKE和Knative的私有化版本，而不是成为该技术本身的直销商。&lt;/p&gt;
+&lt;h2 id=&#34;合作伙伴和开发者&#34;&gt;合作伙伴和开发者&lt;/h2&gt;
+&lt;p&gt;合作伙伴还将发现Istio有助于他们从硬件产品转向安全等领域的软件和服务云转型。Hölzle认为：“许多合作伙伴正在转向销售软件和销售服务，这是进入该领域的理想切入点。如果您是正在使用Istio的服务安全提供商，将服务从本地迁移到云将不受影响，只有位置发生变化了。在当前模型中，如果您是本地提供商，所有API都不同，所有需要回答的问题都是新的，您可能会失去现任状态，因为您无法轻松移植到云端”。&lt;/p&gt;
+&lt;p&gt;开发人员也需要得到说服。但谷歌开发者关系部副总裁亚当·塞利格曼认为，他对Istio为他们开放的东西感到很兴奋：“使用Istio不需要大量的重新编程。现有的应用程序、功能和服务可以使用Istio进行流量路由，并立即看到当前各维度的运行状态。你将没有使用Istio的应用程序加入Istio，你会获得以前无法获得的所有可见性。我认为这会刺激很多开发人员，加速Istio被采用的速度。我认为开发人员需要接受SLO（服务级别目标）监控、金丝雀部署、流量控制、A/B测试甚至多变量测试等技术培训。”&lt;/p&gt;
+&lt;h2 id=&#34;我的见解&#34;&gt;我的见解&lt;/h2&gt;
+&lt;p&gt;Istio不是唯一实现service mesh的技术框架，linkerd—由Buoyant支持的开源项目，早于Istio，已经投入生产。但谷歌、IBM和思科等重量级合作伙伴给Istio带来了比Bouyant对linkerd更大的支持。最后，重要的是服务网格的原则而不是具体的实现。一直存在着反对过度使用微服务的争论，因为你拥有的自主服务越多，管理它们就越复杂。在Istio的支持下，Google正在验证解决这个棘手问题的微服务架构，以便所有这些松散耦合的端点可以合理地协调以产生有用的业务成果。这似乎应该是云计算发展中非常重要的进展。&lt;/p&gt;
 </description>
     </item>
     

@@ -13,6 +13,192 @@
     </image>
     
     <item>
+      <title>如何为 Envoy 构建一个控制面来管理集群网络流量</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/</link>
+      <pubDate>Sat, 21 Nov 2020 08:45:20 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/</guid>
+      <description>&lt;p&gt;本文译自：&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Guidance for Building a Control Plane to Manage Envoy Proxy at the edge, as a gateway, or in a mesh&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这篇文章我看了之后非常想翻译，为什么呢？一方面我也在学习 Envoy，并且在公司的实际项目中使用 Envoy，另一方面，我确实也在设计一个控制管理端来统一管控多个集群的所有流量，没错我说的是所有的流量管控。目前这个管理系统在内部已经在逐步使用起来了。所以翻译这篇文章，即学习 Envoy 技术，也是想做一个参考，印证我的想法是不是 OK 的，取长补短。&lt;/p&gt;
+&lt;h2 id=&#34;指导在服务边缘构建控制面来管理-envoy-proxy让它作为服务网关或者在服务网格中使用&#34;&gt;指导在服务边缘构建控制面来管理 Envoy Proxy，让它作为服务网关或者在服务网格中使用&lt;/h2&gt;
+&lt;p&gt;Envoy 已经成为了一个非常流行的网络组件了。Matt Klein &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几年前写过一篇博文&lt;/a&gt;，就在讨论 Envoy 的动态配置 API 和它如何成为 Envoy 被采用越来越多的原因之一。他在博文中说这是“统一数据面板 API”（UDPA）。随着很多其它项目都采用 Envoy 作为其核心组件，可以毫不夸张的说 Envoy 不仅仅建立了标准 API，而且对于应用 7 层的网络解决方案来说：“Envoy 已经变成了在云原生架构下的统一数据平面”。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vlafpmj30dm07f74o_hu3616e9bfdb0d17aaf1c980a75942f7ec_15411_a7c8d0b410df016eb4219eaaa9c41d03.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vlafpmj30dm07f74o_hu3616e9bfdb0d17aaf1c980a75942f7ec_15411_714771d51150d4bf2d5cc7ed31a83221.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vlafpmj30dm07f74o_hu3616e9bfdb0d17aaf1c980a75942f7ec_15411_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vlafpmj30dm07f74o_hu3616e9bfdb0d17aaf1c980a75942f7ec_15411_a7c8d0b410df016eb4219eaaa9c41d03.webp&#34;
+               width=&#34;490&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;而且，由于 Envoy 的统一数据平面 API，我们可以看到业界开发了很多针对基于 Envoy 技术设施进行配置管理的管理系统。本文将会深入讨论为 Envoy 构建一个控制平面需要什么，大家可以通过这些信息来评估什么样的基础设施最适合你的组织和场景。因为这个是一个很大的话题，作者会出一个系列文章来对此进行详细说明（后面我也会挑一些我感兴趣的文章进行翻译学习）。&lt;/p&gt;
+&lt;p&gt;在 &lt;a href=&#34;https://blog.envoyproxy.io/envoycon-recap-579d53576511&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EnvoyCon/KubeCon 论坛有很多非常好的讨论&lt;/a&gt;，这里好多组织都分享了他们采用 Envoy 的经验，也包括了如何构建他们自己的控制平面。下面是一些他们为什么选择自建控制平面的原因：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;现有的解决方案构建在不同的数据平面上，而且已经有了控制平面，需要在这里兼容 Envoy。&lt;/li&gt;
+&lt;li&gt;为不包含任何开源基础设施来构建，或者使用其它的 Envoy 控制平面（比如：VMs， AWS，ECS 等）。&lt;/li&gt;
+&lt;li&gt;不需要使用所有 Envoy 的特性，只是需要一部分。&lt;/li&gt;
+&lt;li&gt;为了更好适配自己的工作流和工作视图而需要为 Envoy 配置开发专属领域的 API 对象模型。&lt;/li&gt;
+&lt;li&gt;要线上使用，但是发现其它的控制平面并不够成熟。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vmv5i7j30go0di7a5_hu27a8aee5179c83a88e9d719b7a147aa0_24313_949277edc4b1bc2310dc6fe0b6885b37.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vmv5i7j30go0di7a5_hu27a8aee5179c83a88e9d719b7a147aa0_24313_18289fd7fdf0d0599d815cea1fc9f372.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vmv5i7j30go0di7a5_hu27a8aee5179c83a88e9d719b7a147aa0_24313_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vmv5i7j30go0di7a5_hu27a8aee5179c83a88e9d719b7a147aa0_24313_949277edc4b1bc2310dc6fe0b6885b37.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;486&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;然而，仅仅因为有些早期使用者构建了他们自己的控制平面，这并不意味着你也应该做这样的事情。首先在去年中很多为 Envoy 开发的控制平面已经相当成熟了，所以你应该在决定要重新开发另外一个控制平面之前先来研究一下这些已经存在的。其次，正如 Datawire 的人们发现，并且 Daniel Bryant 最近也发文章说，为 Envoy 构建一个控制平面并不是那么容易的。&lt;/p&gt;
+&lt;p&gt;我参与开发几个为 Enovy 构建控制平面的开源项目。比如，Gloo 是一个功能性网关，它可以作为强大的 Kubernetes 接入服务，API 网关，或者作为从单体服务到微服务过度的功能网关。Gloo 有一个针对 Envoy 的控制平面，它可以作为我这个系列文章的例子，来说明如何在控制平面上按照需求来抽象设计，以实现插件管理和扩展性管理。其它可以参考的已经实现的控制平面如 istio 和 &lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio Contour&lt;/a&gt;，这些也是贯穿我这个系列文章中的好例子。如果你确定要自己开发控制平面，那么除了这些，你还可以参考其它一些已经存在的控制平面。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vly994j31200a875u_hu166d8c69cfacf573deb3d9da866b69e2_48218_0dd4e56181f4403bb8b5aea30b4b064c.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vly994j31200a875u_hu166d8c69cfacf573deb3d9da866b69e2_48218_f3c4774eb24a1224d6e7e2750d0e9837.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vly994j31200a875u_hu166d8c69cfacf573deb3d9da866b69e2_48218_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vly994j31200a875u_hu166d8c69cfacf573deb3d9da866b69e2_48218_0dd4e56181f4403bb8b5aea30b4b064c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;205&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个系列文章中，我们将会关注以下一些关键点：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;采用一种机制可以动态更新 Envoy 的路由，服务发现和其它配置。&lt;/li&gt;
+&lt;li&gt;识别使用哪些组件来构成你的控制平面，包括了后端存储，服务发现 API，安全组件等等。&lt;/li&gt;
+&lt;li&gt;根据场景和团队组织以最合适的方式建立任意制定区域的配置对象和 API。&lt;/li&gt;
+&lt;li&gt;思考如何在需要的地方以最好方式嵌入控制平面。&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的方式。&lt;/li&gt;
+&lt;li&gt;思考如何测试控制平面。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;要开始这一系列的讨论，我们首先来看看如何在 Envoy 运行时，使用 Envoy 的动态配置 API 来更新 Envoy，以处理拓扑和部署中的变更。&lt;/p&gt;
+&lt;h2 id=&#34;使用-envoy-的-xds-api-动态配置-envoy&#34;&gt;使用 Envoy 的 xDS API 动态配置 Envoy&lt;/h2&gt;
+&lt;p&gt;在 Envoy 之上构建构控制平面的主要方便支持处在于它的数据平面 API。有了数据平面 API，我们可就可以动态的配置 Envoy 的大多数重要运行时设置。通过 xDS API 进行的 Envoy 配置是被设计为最终一致性的，没有一种方法可以对集群中的所有代理进行原子性的更新。当控制平面上有配置更新时，它就通过 xDS API 让数据平面代理都可以获取到，每个代理都是相互独立的来获取应用这些配置。&lt;/p&gt;
+&lt;p&gt;下面是我们可以通过 xDS 动态配置 Envoy 的部分运行时模型：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听发现服务（LDS）API&lt;/a&gt; - LDS 用于下发服务监听的端口。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;终端发现服务（EDS）API&lt;/a&gt;- EDS 用户服务发现。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/http_conn_man/rds#config-http-conn-man-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务（RDS）API&lt;/a&gt;- RDS 用于流量路由决策。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务（CDS）&lt;/a&gt;- CDS 用于可以路由流量过去的后端服务。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;密钥发现服务（SDS）&lt;/a&gt; - SDS 用户分发密钥（证书和密钥）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vnd41kj30p00gmjwe_huba43c03e627f7eba547a3ce827b9cfa2_47289_8dc9ed2f916d2a6a5ac718e84ebd1d35.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vnd41kj30p00gmjwe_huba43c03e627f7eba547a3ce827b9cfa2_47289_46801a894460f2556c36691879f4af90.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vnd41kj30p00gmjwe_huba43c03e627f7eba547a3ce827b9cfa2_47289_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/0081Kckwly1gkx5vnd41kj30p00gmjwe_huba43c03e627f7eba547a3ce827b9cfa2_47289_8dc9ed2f916d2a6a5ac718e84ebd1d35.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;505&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这些 API 使用 proto3 的 Protocol Buffer 来定义的，并且已经有一些相关实现了，可以提供大家在构建自己的控制平面时参考：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go-control-plane&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/envoyproxy/java-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;java-control-plane&lt;/a&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;虽然每个 xDS（LDS/EDS/RDS/CDS/SDS，这些统称xDS）都是可以动态可配置的，但是这并不意味着你必须动态配置所有内容。你可以组合适应，区分静态配置和动态配置。例如，要通过配置实现一种类型的服务发现：希望终端是动态的，但是集群在部署的时候就是已经知道路由信息了，所以你可以使用 Envoy 中的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Endpoint Discovery Service&lt;/a&gt; 来静态的定义集群的配置。如果在部署的时候你不确定是那个上游集群，那你可以使用&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cluster Discovery Service&lt;/a&gt;来动态的配置发现上游。关键是你可以构建一个工作流和处理流程来静态的配置你需要的部分，而且可以使用动态 xDS 服务在运行时发现你需要的部分。为什么有不同的控制平面实现，其中一个原因就是并不是所有人都有一个完全动态和可替代的环境（这个环境下所有的配置都应该是动态的），这点几乎不可能。根据现有条件的约束和可用工作流，要为你的系统采取合适级别的动态配置，而不是全动态配置。&lt;/p&gt;
+&lt;p&gt;在 Gloo 的实现中，我们基于 go-control-plane 的实现来构建控制平面，实现了 xDS API 到 Envoy 的动态配置。Istio 和 Heptio Contour 也是使用这种方式。这个控制平面的 API 使用 gRPC streaming 实现，并且留了实现接口，所以我们在实现的时候只需要实现这些接口就可以了。这种方式可以以非常高效的方式把 Envoy 数据平面 API 集成到控制平面中。&lt;/p&gt;
+&lt;p&gt;gRPC streaming 方式并不是唯一的更新 Envoy 配置的方法。在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.5.0/api-v1/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 早期版本中的 xDS API&lt;/a&gt;，轮询是唯一检测是否有新配置可用的方式。虽然这也是接受的，并且也符合配置更新最终一致性的原则，但是在网络和计算使用上还是不够高效。也比较困难去调整优化轮询配置以减少资源浪费。&lt;/p&gt;
+&lt;p&gt;最后，一些 Envoy 管理系统的实现采取生成&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态 Envoy 配置文件&lt;/a&gt;和给 Envoy 周期性的覆盖写入磁盘上的配置文件，再执行&lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 进程的热重启&lt;/a&gt;。在高度动态环境中（像 Kubernetes，实际上任何短暂的计算平台都算），管理这种文件的生成，传递，热重启等等会显得非常笨重。Envoy 最初就是在这样操作的（Lyft公司创建这个项目是就是这样），但是它逐步发展到现在的 xDS API了。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;Gloo 团队相信使用 gRPC streaming 和 xDS API 来实现对 Envoy 的动态配置和控制是一种比较好的方式。同样，并不是所有的 Envoy 配置都应该是动态的，尤其是你不需要动态配置的内容。但是如果你是在一个高度动态的环境（比如在 Kubernetes 中），动态配置 Envoy 就很关键了。其它的环境或许也有这样的需要。不管怎么样，动态配置使用 gRPC streaming API 是最理想的，主要有以下一些好处：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;事件驱动配置更新；在控制平面中配置会在可用的时候下发到 Envoy。&lt;/li&gt;
+&lt;li&gt;不需要轮询配置变化了。&lt;/li&gt;
+&lt;li&gt;不需要热重启 Envoy。&lt;/li&gt;
+&lt;li&gt;不会中断流量。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;下一步&#34;&gt;下一步&lt;/h2&gt;
+&lt;p&gt;这是系列文章的第一部分，我们只是建立了为 Envoy 构建控制平面的基本概念，简述了 xDS API 和对 Envoy 动态配置不同的考虑。在下一节，会在几天后发布，将会把控制面分解成为可部署的组件，确定你需要的组件，特定领域对象会是什么样子？以及对控制平面扩展插件的思考。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>使用了 Service Mesh 后我还需要 API 网关吗</title>
       <link>https://cloudnative.to/blog/do-i-need-an-api-gateway-if-i-have-a-service-mesh/</link>
       <pubDate>Fri, 07 Feb 2020 10:42:00 +0800</pubDate>
@@ -435,6 +621,352 @@
     </item>
     
     <item>
+      <title>为Envoy构建控制面指南第2部分：识别组件</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/</link>
+      <pubDate>Fri, 28 Jun 2019 10:41:16 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-for-envoy-identify-components/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;编者按&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;本文介绍如何为 Envoy 构建控制面指南的第2部分：识别控制平面的各个组件。对实施Envoy控制平面需要了解的基础知识很有帮助。也算是Envoy的概念介绍。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这个系列文章的前一篇&lt;/a&gt;中，我们浏览了Envoy动态配置对于在云原生环境中运行Envoy是多么的重要。在这篇文章中，我们来一起看看为了支持控制平面，我们需要如何协调各个组件。&lt;/p&gt;
+&lt;p&gt;由于操作环境的变化很大，因此为Envoy实施控制平面所需的组件也是如此。例如，在一个极端情况下，如果你需要构建时静态生成Envoy文件并发送给Envoy的需求，你需要以下组件来满足：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;模板引擎&lt;/li&gt;
+&lt;li&gt;数据存储/ VCS，用于输入模板的值&lt;/li&gt;
+&lt;li&gt;任何特定于服务的配置，可能/可能不与服务/应用程序一起存储&lt;/li&gt;
+&lt;li&gt;一个将各个部分组合在一起的编排器&lt;/li&gt;
+&lt;li&gt;一种将这些传递给Envoy的方法&lt;/li&gt;
+&lt;li&gt;一种触发配置文件重新加载/热重启的方法&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;另一方面，如果您选择使用gRPC流式xDS实现，则需要：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;核心xDS服务接口和实现&lt;/li&gt;
+&lt;li&gt;用于处理向服务注册表注册/取消注册服务的组件&lt;/li&gt;
+&lt;li&gt;服务注册表&lt;/li&gt;
+&lt;li&gt;描述您的Envoy配置的抽象对象模型（可选）&lt;/li&gt;
+&lt;li&gt;用于保存配置的数据存储&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;您最有可能需要支持Envoy操作的其他辅助组件：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;证书/ CA存储&lt;/li&gt;
+&lt;li&gt;统计收集引擎&lt;/li&gt;
+&lt;li&gt;分布式跟踪后端/引擎&lt;/li&gt;
+&lt;li&gt;外部认证&lt;/li&gt;
+&lt;li&gt;限速服务&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;通常，您需要考虑构建控制平面，以便组件独立运行，并且可以松散协作以满足控制平面的需求。您要做的最后一件事是通过部署整体控制平面来支持Envoy的微服务部署。例如，在&lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源Gloo项目&lt;/a&gt; 中，我们有以下驱动控制平面的组件：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;Gloo&lt;/code&gt; - 一个事件驱动的组件，负责为核心xDS服务生成配置并为其提供服务，并配置自定义Envoy过滤器&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;Discovery&lt;/code&gt; - 一个可选组件，知道如何使用服务发现服务（Consul，Kubernetes等）来发现和通告上游集群和端点。 它还可以发现REST端点（通过swagger），gRPC功能（基于gRPC反射）和AWS / GCP / Azure云功能。 该组件创建配置（在Kubernetes上，用&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CustomResourceDefinitions&lt;/a&gt;表示）&lt;code&gt;Gloo&lt;/code&gt;组件可用于 构建通过xDS表示的规范Envoy配置。 我们将在本系列博客的后续部分中看到更多内容。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;Gateway&lt;/code&gt; - 该组件允许用户使用更舒适的对象模型来根据其角色（即边缘网关，共享代理，knative群集入口等）配置Envoy代理。 控制平面的这一部分还生成“Gloo”控制平面可用于通过xDS生成Envoy配置的配置。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/gloo-control-plane_huf9a4583338679be33bb1f87ca6d83396_125219_53a706a1b99715c923f5bd9af64bbe91.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/gloo-control-plane_huf9a4583338679be33bb1f87ca6d83396_125219_4f8e0c8c337f73195425c64d23dc3306.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/gloo-control-plane_huf9a4583338679be33bb1f87ca6d83396_125219_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/gloo-control-plane_huf9a4583338679be33bb1f87ca6d83396_125219_53a706a1b99715c923f5bd9af64bbe91.webp&#34;
+               width=&#34;522&#34;
+               height=&#34;373&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;正如您所看到的，这些基本组件被部署为协同工作的服务，以构建通过xDS提供的相应Envoy配置。 Gloo通过使用这些松散协调的控制平面组件来实现其强大的发现功能，对函数的语义理解等，这些组件可用于服务Envoy配置。当Gloo部署到Kubernetes时，存储和配置非常具有“kube-native”的感觉：所有内容都由&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自定义资源定义&lt;/a&gt;表示。具体而言，所有面向用户的配置以及驱动xDS端点的核心配置都是CRDs。您可以使用Kubernetes API和kubectl与Gloo进行交互。但是，我们还提供了一个&lt;code&gt;glooctl&lt;/code&gt; &lt;a href=&#34;https://gloo.solo.io/cli/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CLI工具来简化与Gloo控制平面的交互&lt;/a&gt; - 特别是如果你不想的话，你不必为了YAML而烦恼。通过这种方式，Gloo非常注重开发人员的体验和简化YAML的配置，对开发人员（或任何人？）来说这些可能非常繁琐。&lt;/p&gt;
+&lt;p&gt;Istio也采用类似的方法来使用通过Kubernetes CRDs配置的松散协调的控制平面组件。 Istio的控制平面由以下部分组成：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;Istio Pilot&lt;/code&gt;  - 核心xDS服务&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Istio Galley&lt;/code&gt;  - 配置/存储抽象&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Istio Citadel&lt;/code&gt;  -  CA /证书引擎&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Istio Telemetry&lt;/code&gt; - 遥测信号的接收器&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Istio Policy&lt;/code&gt; - 一个可插拔的策略引擎&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/istio-control-plane_hud2540a37c6b85d4dab535e516aa66b7a_338382_6b34bed9fd8534417c1c3acd997317d6.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/istio-control-plane_hud2540a37c6b85d4dab535e516aa66b7a_338382_63d17ce0a2ea63db715a02bf596b71a8.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/istio-control-plane_hud2540a37c6b85d4dab535e516aa66b7a_338382_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/istio-control-plane_hud2540a37c6b85d4dab535e516aa66b7a_338382_6b34bed9fd8534417c1c3acd997317d6.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;249&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Heptio Contour实际上只有两个组件组成了它的控制平面，但是，由于它完全基于Kubernetes，它实际上利用了很多内置的Kubernetes工具，如Kubernetes API / Storage和CRDs来驱动配置。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;contour&lt;/code&gt;服务器&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;init-container&lt;/code&gt; 启动引导&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;img&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/contour-control-plane_hu2a057ba7226cc62cf6679e317e980f10_121148_58280002d969bdca6c437464e0d99853.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/contour-control-plane_hu2a057ba7226cc62cf6679e317e980f10_121148_de1f33742309890cbfb2c1a3588b15be.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/contour-control-plane_hu2a057ba7226cc62cf6679e317e980f10_121148_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-2-identify-components/contour-control-plane_hu2a057ba7226cc62cf6679e317e980f10_121148_58280002d969bdca6c437464e0d99853.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;181&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Contour使用&lt;code&gt;init-container&lt;/code&gt;为Envoy生成一个静态引导配置文件，告诉它在哪里找到xDS服务。 xDS服务器是控制平面中的第二个组件，默认情况下与数据平面一起部署，并提供单独部署的选项。 我们将在本系列“部署控制平面组件”的第5部分中介绍这种架构及其权衡。&lt;/p&gt;
+&lt;h3 id=&#34;总结&#34;&gt;总结&lt;/h3&gt;
+&lt;p&gt;确定控制平面所需的核心组件。不要试图构建一个单体的控制平面抽象，因为这将成为维护和更新的噩梦。在松散耦合的体系结构中构建控制平面所需的组件。如果您可以构建在Kubernetes之上，那么这样做：&lt;a href=&#34;https://medium.com/@allingeek/kubernetes-as-a-common-ops-data-plane-f8f2cf40cd59&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes提供了一个非常强大的集成数据平面&lt;/a&gt;用于操作分布式系统，例如Envoy控制平面。如果你在Kubernetes之上构建一个控制平面，你应该利用&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自定义资源定义&lt;/a&gt;来驱动配置你的控制平面。有些人选择使用&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;入口定义&lt;/a&gt;，&lt;a href=&#34;https://www.getambassador.io/reference/configuration/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务注释&lt;/a&gt;，或&lt;a href=&#34;https://www.youtube.com/watch?v=a1tXFUrqt5M&amp;amp;list=PLj6h78yzYM2PF_iYEBntfR0m4KAZET18Q&amp;amp;index=14&amp;amp;t=0s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;配置映射&lt;/a&gt;来构建他们的控制平面。在Kubernetes CRDs可用之前，这些可能是适当的解决方法，但此时你应该避免这些方法并坚持使用CRDs。就像&lt;a href=&#34;https://kubernetespodcast.com/episode/041-ingress/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tim Hockin（Kubernetes的创始人）在最近的播客中所说的那样&lt;/a&gt;，用于驱动Ingress Gateway资源的注释是一个糟糕的选择。&lt;/p&gt;
+&lt;p&gt;本系列的下一篇文章实际上已经发布：&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-for-envoy-domain-specific-configuration-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为Envoy构建控制平面的指南第3部分 - 域特定配置API&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>构建Envoy的控制平面手册第5部分 - 部署的权衡</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/</link>
+      <pubDate>Fri, 14 Jun 2019 10:30:32 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://blog.christianposta.com/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;作为探索为Envoy构建控制平面系列文章的第5部分，本文介绍了部署控制平面的选项与权衡，着重阐述了保持控制平面与数据平面解耦的几大好处，并且在文章结尾建议构建一个可拔插的控制平面以支持各种新特性、拓展和适配。&lt;/p&gt;
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;这是探索为Envoy构建控制平面&lt;a href=&#34;https://blog.christianposta.com/envoy/guidfor-build-a-control-plane-to-management-Envoy-Proxy-based-infrastructure/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;系列文章&lt;/a&gt;的第5部分。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-to-manage-envoy-proxy-based-infrastructure/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;采用一种机制来动态更新Enovy的路由、服务发现和其他配置&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-for-envoy-identify-components/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;识别构成控制平面的组件，包括支持存储、服务发现api、安全组件等&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/envoy/guidance-for-building-a-control-plane-for-envoy-domain-specific-configuration-api/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;构建最适合你的使用场景和组织架构的特定域的配置对象和api&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/guidance-for-building-a-control-plane-for-envoy-build-for-pluggability/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;考虑如何最好地使你的控制平面可插在你需要它的地方&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的选项 (本文)&lt;/li&gt;
+&lt;li&gt;基于控制平面的测试工具的思考&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在上一篇文章中，我们探讨了为什么可拔插控制平面对于跟上快速迭代的Envoy API以及与组织可能采用的不同工作流集成至关重要。在本文中，我们将讨论部署各种控制平面组件时的权衡。&lt;/p&gt;
+&lt;h2 id=&#34;部署控制平面组件&#34;&gt;部署控制平面组件&lt;/h2&gt;
+&lt;p&gt;一旦您构建并设计了控制平面及其各种支持组件，您就需要准确地决定如何部署它的组件。在确定最适合您的实现时，您需要权衡各种安全性、可伸缩性和可用性问题。这些选项里包括将控制平面组件与数据平面一起部署，以及将控制平面与数据平面完全解耦。这里也有一个折中方案：部署一些与控制平面共存的组件，并保持一些集中。让我们来看看。&lt;/p&gt;
+&lt;p&gt;在Istio service-mesh项目中，控制平面组件与数据平面分别部署和运行。这在服务网格实现中非常常见。也就是说，数据平面与应用程序一起运行，处理所有的应用程序流量，并通过gRPC流上的xDS API与控制平面通信。控制平面组件通常在它们自己的命名空间中运行，并且在理想情况下，不当操作或者意外使用将导致组件被锁定。&lt;/p&gt;
+&lt;p&gt;Gloo项目作为一个API网关，遵循类似的部署模型。控制平面组件与数据平面解耦，Envoy数据平面使用xDS gRPC流来收集关于监听器、路由、端点和集群等的配置。您可以使用Gloo部署与数据平面代理共存的控制面板组件，但不建议这样做。我们稍后会看一些权衡。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-separatecontrolplane&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;separatecontrolplane&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_a651071f50eaa71ceb37c3e28b1e2568.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_120b92ca1f1516fda4abe3a7aac586ac.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_a651071f50eaa71ceb37c3e28b1e2568.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;375&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      separatecontrolplane
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;最后，我们研究了控制平面组件与数据平面的协同部署。在Contour项目中，默认情况下，控制平面组件是与数据平面一起部署的，尽管&lt;a href=&#34;https://github.com/heptio/contour/blob/master/docs/deploy-seperate-pods.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;存在一个拆分部署的选项&lt;/a&gt;。Contour实际上利用CRD或Ingress资源进行配置，所以所有的配置文件处理和监控都发生在Kubernetes中。然而，xDS服务却是与数据平面共同部署(同样，这是默认情况—您依然可以将它们拆分)。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-codeployed&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;codeployed&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/codeployed_hu2e5f4d5fbc8d87f9c2d950e759df9c70_8897_4600f5795ce4ab7b0321764abfd91021.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/codeployed_hu2e5f4d5fbc8d87f9c2d950e759df9c70_8897_d100aca9c02191713b3068cc33463e30.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/codeployed_hu2e5f4d5fbc8d87f9c2d950e759df9c70_8897_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/codeployed_hu2e5f4d5fbc8d87f9c2d950e759df9c70_8897_4600f5795ce4ab7b0321764abfd91021.webp&#34;
+               width=&#34;231&#34;
+               height=&#34;174&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      codeployed
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当&lt;a href=&#34;https://www.youtube.com/watch?v=a1tXFUrqt5M&amp;amp;list=PLj6h78yzYM2PF_iYEBntfR0m4KAZET18Q&amp;amp;index=14&amp;amp;t=0s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBay为他们的Envoy部署构建了控制平面&lt;/a&gt;时，他们还将控制平面(discovery pieces)的&lt;em&gt;部分组件&lt;/em&gt;与数据平面联合部署。他们基本上自己实现了一个控制器来监视CRD、Ingress和服务资源，并且生成配置映射。然后，这些配置映射将由与Pod一起运行的&lt;code&gt;discovery&lt;/code&gt;容器使用，并随着改动重新热启动，以及更新Envoy。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/ebay-control-plane_hu20d9f643d17bb9560af9b322a623721a_343064_5df639fb9b4e9f28a9ed5d7949974d16.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/ebay-control-plane_hu20d9f643d17bb9560af9b322a623721a_343064_1d55db1a70d1b864ef0295ae0f2c52d6.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/ebay-control-plane_hu20d9f643d17bb9560af9b322a623721a_343064_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/ebay-control-plane_hu20d9f643d17bb9560af9b322a623721a_343064_5df639fb9b4e9f28a9ed5d7949974d16.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;220&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/double-click-ebay-control-plane_hub16ca4b77d7d4ef34eeecd11f5e28575_475483_28ced7fab1aefdac2b95193054e22b49.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/double-click-ebay-control-plane_hub16ca4b77d7d4ef34eeecd11f5e28575_475483_efef68d3d8f151fd763584f98d8901d0.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/double-click-ebay-control-plane_hub16ca4b77d7d4ef34eeecd11f5e28575_475483_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/double-click-ebay-control-plane_hub16ca4b77d7d4ef34eeecd11f5e28575_475483_28ced7fab1aefdac2b95193054e22b49.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;239&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在Ebay的案例中，我们看到了一种“混合”的方法，并且深受其架构其余部分的具体影响。那么，在为Envoy评估控制平面时，或者考虑自己构建控制平面时，应该如何部署控制平面组件?&lt;/p&gt;
+&lt;h3 id=&#34;我应该将控制平面与数据平面分开吗&#34;&gt;我应该将控制平面与数据平面分开吗?&lt;/h3&gt;
+&lt;p&gt;各种方法都有优缺点。&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt;认为，对于大多数应用场景来说，保持控制平面独立是正确的选择，应该避免将控制平面与数据平面完全部署在一起。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_a651071f50eaa71ceb37c3e28b1e2568.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_120b92ca1f1516fda4abe3a7aac586ac.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-deployment-tradeoffs/separatecontrolplane_hue97d3de236d7a671560014c079e9f5fb_34730_a651071f50eaa71ceb37c3e28b1e2568.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;375&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果Envoy是L7网络的核心和灵魂，那么控制平面就是大脑。部署与数据平面分离的控制平面非常重要，原因如下:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;安全性—如果您的数据平面中的某个节点受到攻击，您肯定不希望因为允许您的控制平面受到攻击而放弃对其他应用程序和网络的控制，从而加剧您的情况。此外，控制平面可以处理密钥、证书或其他机密的分发，这些机密信息应该与数据平面分开保存。&lt;/li&gt;
+&lt;li&gt;伸缩性—您可能最终会以不同的方式伸缩数据平面和控制平面。例如，如果您的控制平面正在轮询Kubernetes中的服务/端点等，那么您肯定不希望将这些组件与您的数据平面放在一起—您将扼杀任何可伸缩性的机会。&lt;/li&gt;
+&lt;li&gt;分组—您的数据平面可能具有不同的角色和职责；例如，您可能在边缘有数据平面Envoy，这将需要不同的安全性和网络状态，而不是用于微服务的共享代理池与您可能部署的任何sidecar代理。将控制平面与数据平面放在一起会使数据和配置分开变得更加困难。&lt;/li&gt;
+&lt;li&gt;资源利用—您可能希望根据组件分配或限制某些资源使用。例如，您的数据平面可能比控制平面更需要计算(控制平面可能更需要内存)，并且您将使用不同的资源限制来满足这些角色的需求。将它们分开可以让您获得更多细粒度的资源池选项，而不只是将它们集中在一起。此外，如果控制平面和数据平面被配置在一起，并且争夺相同的资源，您可能会得到难以诊断的奇怪的尾延迟(Tail Latency)。&lt;/li&gt;
+&lt;li&gt;部署/生命周期—您可能希望独立于数据平面对控制平面进行补丁、升级或其他服务。&lt;/li&gt;
+&lt;li&gt;存储—如果您的控制平面需要任何类型的存储，那么您可以单独配置它，如果您将组件分离出来，则不需要涉及数据平面。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;由于这些原因，我们建议保持控制平面与数据平面解耦。&lt;/p&gt;
+&lt;h2 id=&#34;要点&#34;&gt;要点&lt;/h2&gt;
+&lt;p&gt;为Envoy构建控制平面并不容易，一旦您了解了工作流需要从控制平面得到什么，您就需要了解如何最好地部署它。Gloo团队建议构建一个可拔插的控制平面，并将其与数据平面分开，原因如上所述。Gloo的体系结构是这样构建的，它使&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt;能够快速添加任何新特性和扩展，以支持任何平台、配置、过滤器，以及更多。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>API Gateway的身份认同危机</title>
       <link>https://cloudnative.to/blog/api-gateways-are-going-through-an-identity-crisis/</link>
       <pubDate>Mon, 13 May 2019 20:08:37 +0800</pubDate>
@@ -637,6 +1169,730 @@
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;http://blog.christianposta.com/microservices/application-network-functions-with-esbs-api-management-and-now-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://blog.christianposta.com/microservices/application-network-functions-with-esbs-api-management-and-now-service-mesh/&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>为 Envoy 构建控制面指南第4部分：构建的可扩展性</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/</link>
+      <pubDate>Mon, 22 Apr 2019 10:41:16 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility-40f8ac8e48e&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;编者按&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;本文介绍如何为 Envoy 构建控制面指南的第4部分：构建的可扩展性。Gloo团队建议将重点放在控制平面的简单核心上，然后通过插件和微服务控制器的可组合性扩展它。Gloo的体系结构是这样构建的，它使Gloo团队能够快速添加任何新特性，以支持任何平台、配置、过滤器，以及更多的新特性。这就是为什么，尽管Gloo是非常kubernets原生的，但它是为在任何云上的任何平台上运行而构建的。核心控制平面的设计允许这样做。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这是探究为 Envoy 代理构建控制平面系列文章的第4部分。请关注&lt;a href=&#34;https://twitter.com/christianposta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@christianposta&lt;/a&gt;和&lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@soloio_inc&lt;/a&gt;将在一周内推出下一部分内容。&lt;/p&gt;
+&lt;p&gt;在本系列博客中，我们将关注以下领域:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh-badb6c36a2af&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;采用一种机制来动态更新 Envoy 的路由、服务发现和其他配置&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-for-envoy-proxy-part-2-identify-components-2d0731b0d8a4&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;确定控制平面由哪些组件组成，包括支持存储、服务发现 API、安全组件等&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;./Guidance-for-Building-a-Control-Plane-for-Envoy-Part-3-Domain-Specific-Configuration.md&#34;&gt;建立最适合您的使用场景和组织架构的特定于域的配置对象和 API&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;考虑如何让控制平面支持可拔插(本博客)&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的选项&lt;/li&gt;
+&lt;li&gt;为你的控制平面考虑测试套件&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在&lt;a href=&#34;./Guidance-for-Building-a-Control-Plane-for-Envoy-Part-3-Domain-Specific-Configuration.md&#34;&gt;上一篇文章&lt;/a&gt;中，我们探讨了为您的控制平面构建一个特定于领域的API，使得该API最适合您的组织和工作流并满足首选条件/约束。&lt;/p&gt;
+&lt;h2 id=&#34;构建可插拔的控制平面引擎&#34;&gt;构建可插拔的控制平面引擎&lt;/h2&gt;
+&lt;p&gt;Envoy是一个非常强大的软件，每天都有&lt;a href=&#34;https://github.com/envoyproxy/envoy/pull/4950&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;新的用例和贡献被提交给社区&lt;/a&gt;。尽管Envoy的核心非常稳定，但它建立在&lt;a href=&#34;https://github.com/envoyproxy/envoy-filter-example&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;可插拔的过滤器架构&lt;/a&gt;之上，因此人们可以为不同的L7协议编写新的编解码器或添加新的功能。目前，Envoy过滤器是用C++编写的，可以选择使用&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http_filters/lua_filter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Lua&lt;/a&gt;扩展Envoy，但是也有&lt;a href=&#34;https://github.com/envoyproxy/envoy/issues/4272&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一些讨论支持Web Assembly实现&lt;/a&gt;可扩展性。同样值得注意的是，&lt;a href=&#34;https://cilium.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium&lt;/a&gt;社区的很多人正在围绕一个&lt;a href=&#34;https://cilium.io/blog/2018/10/23/cilium-13-envoy-go/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于Go的Envoy可扩展机制&lt;/a&gt;开展工作。伴随着Envoy社区的快速发展和需要配置这些新功能，还需要新的特定于领域的对象模型来支持想利用Envoy新平台的需求。在本节中，我们将探索沿着这两个维度扩展Envoy控制平面。&lt;/p&gt;
+&lt;p&gt;通过编写C++过滤器，扩展Envoy非常简单。我们在&lt;a href=&#34;https://github.com/solo-io/envoy-gloo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo项目&lt;/a&gt;上创建的Envoy过滤器包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/solo-io/squash&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Squash&lt;/a&gt;调试器
+(&lt;a href=&#34;https://github.com/envoyproxy/envoy/tree/master/api/envoy/config/filter/http/squash&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/envoyproxy/envoy/tree/master/api/envoy/config/filter/http/squash&lt;/a&gt;)&lt;/li&gt;
+&lt;li&gt;Caching(目前为封闭源码;应该在不久的将来开放源代码)&lt;/li&gt;
+&lt;li&gt;Request/Response 传输 (&lt;a href=&#34;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/transformation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/transformation&lt;/a&gt;)&lt;/li&gt;
+&lt;li&gt;AWS lambda (&lt;a href=&#34;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/aws_lambda&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/aws_lambda&lt;/a&gt;)&lt;/li&gt;
+&lt;li&gt;NATS streaming (&lt;a href=&#34;https://github.com/solo-io/envoy-nats-streaming&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-nats-streaming&lt;/a&gt;, &lt;a href=&#34;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/nats/streaming&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-gloo/tree/master/source/extensions/filters/http/nats/streaming&lt;/a&gt;)&lt;/li&gt;
+&lt;li&gt;Google Cloud Functions (&lt;a href=&#34;https://github.com/solo-io/envoy-google-function&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-google-function&lt;/a&gt;)&lt;/li&gt;
+&lt;li&gt;Azure function (&lt;a href=&#34;https://github.com/solo-io/envoy-azure-functions&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/solo-io/envoy-azure-functions&lt;/a&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLgy1g202enyhmsg30q10iajsu.gif&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在上面的图示中，您可以看到请求是如果通过Envoy并经过一些过滤器的，这些过滤器具有应用于请求和响应的特定任务。你可以在&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Solo.io&lt;/a&gt;首席执行官/创始人&lt;a href=&#34;https://medium.com/@idit.levine_92620&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Idit Levine&lt;/a&gt;和Solo.io首席架构师&lt;a href=&#34;https://medium.com/@yuval.kohavi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Yuval Kohavi&lt;/a&gt;写的一篇博客文章中读到更多关于&lt;a href=&#34;https://medium.com/solo-io/building-a-control-plane-for-envoy-7524ceb09876&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy的功能和构建Gloo的控制平面所做的权衡&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;因为Envoy功能非常多，而且一直在添加新特性，所以值得花一些时间来考虑是否要将控制平面构建为可扩展的，以便能够使用这些新特性。在Gloo项目中，选择在以下几个层次上进行扩展：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在核心Gloo配置对象的基础上构建更容易进行自定义特定域的配置对象&lt;/li&gt;
+&lt;li&gt;控制平面插件化以增强控制平面的现有行为&lt;/li&gt;
+&lt;li&gt;创建工具来加速前面两点&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;让我们来看看每一个层次，以及它们是如何构建可扩展和灵活的控制平面的。&lt;/p&gt;
+&lt;h2 id=&#34;核心api对象构建时要考虑灵活性&#34;&gt;核心API对象，构建时要考虑灵活性&lt;/h2&gt;
+&lt;p&gt;在上一节中，我们重点讨论了用于配置控制平面的特定于域的配置对象。在Gloo中，我们有&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/proxy.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最低级别的配置对象&lt;/a&gt;，称为&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/proxy.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy&lt;/a&gt;和&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/upstream.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upstream&lt;/a&gt;。&lt;code&gt;Proxy&lt;/code&gt;定义了我们可以对底层代理(在本例中是Envoy)进行的最低级别配置。使用&lt;code&gt;Proxy&lt;/code&gt;对象，我们定义请求如何路由到&lt;code&gt;Upstream&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;下面是Proxy对象的一个例子(在Kubernetes中是CRD)：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo.solo.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;clusterName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;creationTimestamp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;2019-02-15T13:27:39Z&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;generation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;created_by&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway-proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resourceVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;5209108&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selfLink&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/apis/gloo.solo.io/v1/namespaces/gloo-system/proxies/gateway-proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;uid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;771377f2-3125-11e9-8523-42010aa800e0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;bindAddress&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;::&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;bindPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;httpListener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;virtualHosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;domains&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo-system.default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matcher&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;exact&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/petstore/findPet&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routeAction&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;single&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;destinationSpec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;functionName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;findPetById&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;parameters&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-petstore-8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matcher&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;exact&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/sample-route-1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routeAction&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;single&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-petstore-8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routePlugins&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prefixRewrite&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prefixRewrite&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/pets&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;reported_by&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;state&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您可以看到&lt;code&gt;Proxy&lt;/code&gt;对象指定监听器、类型以及路由信息。如果您仔细观察，您会发现它在一定程度上遵循Envoy的配置，但在支持附加功能方面有所不同。在路由中，您可以看到请求被发送到“Upstream”。Gloo知道如何路由到&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/upstream.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upstream&lt;/a&gt;，您可以在上面的&lt;code&gt;Proxy&lt;/code&gt;对象中看到这些定义。&lt;code&gt;Proxy&lt;/code&gt;对象是由Gloo的控制平面转换为Envoy xDS API的对象。您会看到如下的Gloo的组件：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                             READY   STATUS    RESTARTS   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;discovery-676bcc49f8-n55jt       1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          8m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gateway-d8598c78c-425hz          1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          8m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gateway-proxy-6b4b86b4fb-cm2cr   1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          8m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gloo-565659747c-x7lvf            1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          8m
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;gateway-proxy&lt;/code&gt;组件是Envoy代理。控制平面由以下组件组成：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;gateway&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;discovery&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;gloo&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;负责此&lt;code&gt;Proxy&lt;/code&gt;-&amp;gt;Envoy xDS转换的组件是&lt;code&gt;gloo&lt;/code&gt;，它是一个事件驱动组件，通过将&lt;code&gt;Proxy&lt;/code&gt;对象转换为Envoy的LDS/RDS/CDS/EDS API，负责核心xDS服务和自定义Envoy过滤器的配置。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222c27h5dj30ht06174i_hu1778a6c6262e4e8bd0c8540046891d07_32272_ba6e37969e66affc7747bbfac14bb030.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222c27h5dj30ht06174i_hu1778a6c6262e4e8bd0c8540046891d07_32272_7a33cd03c7ca78b8c11060bc2ad15929.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222c27h5dj30ht06174i_hu1778a6c6262e4e8bd0c8540046891d07_32272_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222c27h5dj30ht06174i_hu1778a6c6262e4e8bd0c8540046891d07_32272_ba6e37969e66affc7747bbfac14bb030.webp&#34;
+               width=&#34;641&#34;
+               height=&#34;217&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Gloo知道如何路由到&lt;code&gt;Upstream&lt;/code&gt;和它上面的函数。&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/upstream.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upstream&lt;/a&gt;也是Gloo的核心配置对象。我们需要这个&lt;code&gt;Upstream&lt;/code&gt;对象的原因是，它封装了上游集群功能的更多实现，而不是Envoy所知道的开箱即用的功能。Envoy知道“集群”，但是Gloo(位于Envoy之上)知道其上的函数。此功能支持&lt;a href=&#34;https://medium.com/solo-io/announcing-gloo-the-function-gateway-3f0860ef6600&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;功能级路由&lt;/a&gt;，功能级路由是用于组合新应用程序和API的更强大的路由结构。Envoy从“host:port”端点方面了解集群，但是使用Gloo，我们可以为这些集群附加额外的上下文，以便它们理解“函数”，这些函数可以是REST方法/路径、gRPC操作或Lambda之类的云函数。例如，这里有一个名为&lt;code&gt;default-petstore-8080&lt;/code&gt;的Gloo上游：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;discoveryMetadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;discovered_by&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetesplugin&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;petstore&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sevice&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;petstore&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default-petstore-8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;reportedBy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gloo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;state&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Accepted&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstreamSpec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kube&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;petstore&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;petstore&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceNamespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceSpec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;swaggerInfo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://petstore.default.svc.cluster.local:8080/swagger.json&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transformations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;addPet&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{&amp;#34;id&amp;#34;: {{ default(id, &amp;#34;&amp;#34;) }},&amp;#34;name&amp;#34;: &amp;#34;{{ default(name, &amp;#34;&amp;#34;)}}&amp;#34;,&amp;#34;tag&amp;#34;:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s1&#34;&gt;                &amp;#34;{{ default(tag, &amp;#34;&amp;#34;)}}&amp;#34;}&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:method&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;POST&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/pets&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;application/json&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;deletePet&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:method&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DELETE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/pets/{{ default(id, &amp;#34;&amp;#34;) }}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;application/json&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;findPetById&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:method&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/pets/{{ default(id, &amp;#34;&amp;#34;) }}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-length&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;0&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transfer-encoding&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;findPets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:method&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/pets?tags={{default(tags, &amp;#34;&amp;#34;)}}&amp;amp;limit={{default(limit,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;)}}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-length&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;0&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;content-type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transfer-encoding&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意，我们有更多责任来确定upstream的函数要公开哪些部分。在这种情况下，上游恰好是一个REST服务，它公开了一个&lt;a href=&#34;https://github.com/OAI/OpenAPI-Specification&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Open API Spec/Swagger&lt;/a&gt;文档。Gloo自动发现这些信息，并用这些信息丰富这个Upstream对象，然后可以在代理对象中使用这些信息。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222ij2oucj30ht0ep0ti_hu198615d58dfc80fe09193f13f6604b29_59586_262a217785b47c713a4315a354512809.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222ij2oucj30ht0ep0ti_hu198615d58dfc80fe09193f13f6604b29_59586_28d1b15c08cbb5586a5a9683a52b0d91.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222ij2oucj30ht0ep0ti_hu198615d58dfc80fe09193f13f6604b29_59586_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g222ij2oucj30ht0ep0ti_hu198615d58dfc80fe09193f13f6604b29_59586_262a217785b47c713a4315a354512809.webp&#34;
+               width=&#34;641&#34;
+               height=&#34;529&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;回到Gloo控制平面的组件，您将看到一个&lt;code&gt;discovery&lt;/code&gt;组件，它通过添加“Upstream Discovery Service”(UDS)和“Function Discovery Service”(FDS)来增强Envoy的服务发现API。UDS使用一组插件(参见下一节)自动地从各自的运行时目录中发现&lt;code&gt;Upstream&lt;/code&gt;。最简单的例子是在Kubernetes中运行时，我们可以自动发现&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Services&lt;/a&gt;。Gloo还可以发现来自Consul、AWS和&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/plugins.proto.sk/#a-name-upstreamspec-upstreamspec-a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;其他&lt;/a&gt;的&lt;code&gt;Upstream&lt;/code&gt;。函数发现服务(FDS)评估已经发现的每个&lt;code&gt;Upstream&lt;/code&gt;，并尝试发现它们的类型(REST、gRPC、GraphQL、AWS Lambda等)。如果FDS能够发现关于上游的这些附加属性，它就会用这些“函数”丰富upstream元数据。&lt;/p&gt;
+&lt;p&gt;Gloo控制平面中的&lt;code&gt;discovery&lt;/code&gt;组件仅使用其UDS和FDS服务来发现&lt;code&gt;Upstream&lt;/code&gt;对象并将其写入Kuberentes CRDs。从这里，用户可以创建从Envoy代理上的特定API路径到&lt;code&gt;Upstream&lt;/code&gt;上的特定函数的路由规则。Envoy代理不直接与这个控制平面组件交互(请回忆一下，Envoy只使用&lt;code&gt;gloo&lt;/code&gt;组件公开的xDS API)。相反，&lt;code&gt;discovery&lt;/code&gt;组件促进了向&lt;code&gt;Upstream&lt;/code&gt;的创建，然后可以由&lt;code&gt;Proxy&lt;/code&gt;对象使用。这是一个使用支持微服务(本例中的&lt;code&gt;discovery&lt;/code&gt;服务)来为控制平面的整体功能做出贡献的好例子。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;Proxy&lt;/code&gt;和&lt;code&gt;Upstream&lt;/code&gt;是上一节中提到的较底层特定于域的配置对象。更有趣的是，我们如何在此之上分层一组配置对象，以满足具有更自定义工作流的用户特定用例。&lt;/p&gt;
+&lt;h2 id=&#34;扩展特定于域的配置层&#34;&gt;扩展特定于域的配置层&lt;/h2&gt;
+&lt;p&gt;在Gloo的控制平面中，还有另一个组件称为&lt;code&gt;gateway&lt;/code&gt;。该组件实现更高级别的特定于域的配置，用户最终将与之交互(直接通过YAML文件或通过&lt;code&gt;glooctl&lt;/code&gt; CLI工具间接地交互)。&lt;code&gt;gateway&lt;/code&gt;组件涉及两个特定于域的对象：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gateway/api/v1/gateway.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway&lt;/a&gt; — 指定特定监听器端口上可用的路由和API端点，以及每个API的安全性&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gateway/api/v1/virtual_service.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualService&lt;/a&gt; — 将API路由分组到一组“虚拟API”中，这些“虚拟API”可以路由到支持的函数(gRPC、http/1、http/2、lambda等)；让开发人员控制路由如何处理&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/plugins/transformation/transformation.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;不同的转换&lt;/a&gt;，以便将前端API与后端API(以及后端可能引入的任何破坏性更改)分离开来&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g223285hajj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_1320fce50b96e47d6c5c20a038c11b5a.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g223285hajj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_700cfaa0b12c2538df14bdb10e0cea98.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g223285hajj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g223285hajj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_1320fce50b96e47d6c5c20a038c11b5a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;440&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这些对象允许与&lt;code&gt;Proxy&lt;/code&gt;对象解耦。当用户使用符合标准的API或是不标准的API创建新的&lt;code&gt;Gateway&lt;/code&gt;或&lt;code&gt;VirtualService&lt;/code&gt;对象时，Gloo的&lt;code&gt;Gateway&lt;/code&gt;组件将接受这些对象(Kubernetes中的crd、Consul中的配置)并更新底层&lt;code&gt;Proxy&lt;/code&gt;对象。这是扩展Gloo的一种常见模式：首选控件平面组件的可组合性。这允许我们为主观的领域特定对象构建更专门化的控制器，以支持不同的使用。比如&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Solo.io&lt;/a&gt;团队还为Gloo构建了一个名为&lt;a href=&#34;https://sqoop.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sqoop&lt;/a&gt;的开源控制器，该控制器遵循相同的模式，并扩展了Gloo API，用于声明基于&lt;a href=&#34;https://graphql.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GraphQL引擎&lt;/a&gt;的路由规则。在Sqoop中，我们引入&lt;a href=&#34;https://sqoop.solo.io/introduction/concepts/api_objects/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Schema和ResolverMap&lt;/a&gt;对象，它们最终组合进Proxy对象，然后将代理对象转换为Envoy xDS。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g2235n0elij30m80i5jsa_hu441c4b56517a61a6e554bdc3e4f748e9_86833_ffe6210b028a3757dcd18151d247f676.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g2235n0elij30m80i5jsa_hu441c4b56517a61a6e554bdc3e4f748e9_86833_ce13d02e2cbe2737525470ac71864c73.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g2235n0elij30m80i5jsa_hu441c4b56517a61a6e554bdc3e4f748e9_86833_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-4-build-for-extensibility/006gLaqLly1g2235n0elij30m80i5jsa_hu441c4b56517a61a6e554bdc3e4f748e9_86833_ffe6210b028a3757dcd18151d247f676.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;620&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;构建在基本Gloo对象上的领域特定配置分层的另一个例子是，我们最近在&lt;a href=&#34;https://medium.com/solo-io/gloo-by-solo-io-is-the-first-alternative-to-istio-on-knative-324753586f3a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative中使用Gloo代理作为Istio的替代方案&lt;/a&gt;。Knative有一个用来声明集群入口资源的特定对象，称为&lt;a href=&#34;https://github.com/knative/serving/blob/master/pkg/client/clientset/versioned/typed/networking/v1alpha1/clusteringress.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ClusterIngress&lt;/a&gt;对象，如下图所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.internal.knative.dev/v1alpha1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIngress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serving.knative.dev/route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;helloworld-go&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serving.knative.dev/routeNamespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;helloworld-go-txrqt&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;generation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;helloworld-go.default.example.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;helloworld-go.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;helloworld-go.default.svc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;helloworld-go.default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;appendHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;knative-serving-namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;knative-serving-revision&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;helloworld-go-00001&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;retries&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;attempts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;perTryTimeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;10m0s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;splits&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;percent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;activator-service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceNamespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;knative-serving&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;10m0s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;visibility&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ExternalIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;为了支持Gloo中的这个用例，我们所做的就是&lt;a href=&#34;https://github.com/solo-io/gloo/blob/ac3bddf202423b297fb909eb6eff498745a8c015/projects/clusteringress/pkg/translator/translate.go#L19&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;构建一个新的控制器&lt;/a&gt;，用于监视和将&lt;a href=&#34;https://github.com/knative/serving/blob/master/pkg/client/clientset/versioned/typed/networking/v1alpha1/clusteringress.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ClusterIngress&lt;/a&gt;对象转换为Gloo的&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/proxy.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy&lt;/a&gt;。有关在Knative中使用Gloo以简化&lt;a href=&#34;https://github.com/knative/serving&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative Serving&lt;/a&gt;安装以使用Gloo作为集群入口的更多信息，请参阅&lt;a href=&#34;https://blog.christianposta.com/guidance-for-building-a-control-plane-for-envoy-build-for-pluggability/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;本博客&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;控制平面插件化以增强现有行为&#34;&gt;控制平面插件化以增强现有行为&lt;/h2&gt;
+&lt;p&gt;在上一节中，我们讨论了通过在核心对象之上分层特定于域的配置对象来扩展控制平面的功能。另一个扩展点直接位于控件平面核心对象本身中。在Istio中是&lt;code&gt;VirtualService&lt;/code&gt;和&lt;code&gt;DestinationRule&lt;/code&gt;，在Contour中是&lt;code&gt;IngressRoute&lt;/code&gt;，在Gloo中是&lt;code&gt;Proxy&lt;/code&gt;和&lt;code&gt;Upstream&lt;/code&gt;对象。例如，Gloo的&lt;a href=&#34;https://github.com/solo-io/gloo/blob/7a5c3a9a7a060841a7047efce79e5b7b3ed981be/projects/gloo/api/v1/proxy.proto#L30&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy对象&lt;/a&gt;包含&lt;a href=&#34;https://github.com/solo-io/gloo/blob/7a5c3a9a7a060841a7047efce79e5b7b3ed981be/projects/gloo/api/v1/proxy.proto#L90&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Listeners&lt;/a&gt;、&lt;a href=&#34;https://github.com/solo-io/gloo/blob/7a5c3a9a7a060841a7047efce79e5b7b3ed981be/projects/gloo/api/v1/proxy.proto#L124&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualHosts&lt;/a&gt;和&lt;a href=&#34;https://github.com/solo-io/gloo/blob/7a5c3a9a7a060841a7047efce79e5b7b3ed981be/projects/gloo/api/v1/proxy.proto#L154&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Routes&lt;/a&gt;的扩展点。这意味着在Proxy配置中有一些定义良好的点，我们可以以最小的修改代价将新功能引入到我们的配置中(例如，如果我们希望公开新的Envoy功能，或者为我们希望公开配置的Envoy编写新的过滤器等)。例如，我们&lt;a href=&#34;https://github.com/solo-io/gloo/blob/a27e1018640c46f7a25e4c1a0dc1f4cadf1773f5/projects/gloo/api/v1/plugins.proto#L44&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;编写了一些插件丰富了Envoy的路由和转换功能&lt;/a&gt;。例如，要将一个请求转换为Envoy并发送到一个名为&lt;code&gt;foo-service&lt;/code&gt;的服务，我们可以使用&lt;a href=&#34;https://github.com/pantor/inja&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Inja template&lt;/a&gt;手工插入头或正文。有关更多信息，请参见&lt;a href=&#34;https://gloo.solo.io/user_guides/function_routing/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo文档中的函数路由指南&lt;/a&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matcher&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routeAction&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;single&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;upstream&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;routePlugins&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transformations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;requestTransformation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;transformationTemplate&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;x-canary-foo&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;foo-bar-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;:path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;text&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/v2/canary/feature&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;passthrough&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;要查看Gloo &lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/proxy.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy&lt;/a&gt;和&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/upstream.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upstream&lt;/a&gt;对象上可用插件的完整列表，请参阅这里的&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/plugins.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;一旦向控制平面添加了新的插件，就可以扩展面向用户的特定于域的配置对象，以利用这些新功能。您可以增强现有的控制器来实现这一点，或者添加新的控制器(遵循微服务松散协调的原则)。我们已经编写了&lt;a href=&#34;https://gloo.solo.io/dev/example-proxy-controller/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;大量的例子来帮助您编写控制器&lt;/a&gt;来增强您的控制平面功能，或者在&lt;a href=&#34;https://slack.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slack&lt;/a&gt;上寻找更多关于这方面的指南。&lt;/p&gt;
+&lt;h2 id=&#34;利用工具加快前面两个工作的实施&#34;&gt;利用工具加快前面两个工作的实施&lt;/h2&gt;
+&lt;p&gt;在前几节中，我们了解了如何考虑控制平面的可扩展性和灵活性。我们了解了如何使用多层特定于域的配置对象，通过添加新对象和控制器来实现可扩展性。在&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Solo.io&lt;/a&gt;我们创建了一个名为&lt;a href=&#34;https://github.com/solo-io/solo-kit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;solo-kit&lt;/a&gt;的开源项目，它通过从&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;protobuf&lt;/a&gt;对象开始，并通过代码生成正确的类型安全客户机，以便在平台上与这些对象交互，从而加快为您的控制平面构建新的、声明性的、自定义的API对象。例如，在Kubernetes上，&lt;a href=&#34;https://github.com/solo-io/solo-kit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;solo-kit&lt;/a&gt;将这些原型转换为&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CustomResourceDefinitions&lt;/a&gt;，并生成Golang Kubernetes客户机，用于监视和与这些资源交互。如果不在Kubernetes上，还可以使用Consul、Vault和其他组件作为后端存储。&lt;/p&gt;
+&lt;p&gt;一旦您创建了资源并生成了类型安全的客户端，您就需要检测用户何时创建新资源或更改现有资源。使用&lt;a href=&#34;https://github.com/solo-io/solo-kit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;solo-kit&lt;/a&gt;，您只需指定希望查看哪些资源，或者称为“快照”的资源组合，客户端运行一个事件循环来处理任何通知。在事件循环中，可以更新协作对象或核心对象。事实上，这就是Gloo分层的特定于域的配置对象的工作方式。有关更多信息，请参见&lt;a href=&#34;https://gloo.solo.io/operator_guide/gloo_declarative_model/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo声明性模型文档&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;小结&#34;&gt;小结&lt;/h2&gt;
+&lt;p&gt;控制平面可以简单到您需要的程度，也可以复杂到您需要的程度。Gloo团队建议将重点放在控制平面的简单核心上，然后通过插件和微服务控制器的可组合性扩展它。Gloo的体系结构是这样构建的，它使&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt;能够快速添加任何新特性，以支持任何平台、配置、过滤器，以及更多的新特性。这就是为什么，尽管Gloo是非常kubernets原生的，但它是为在任何云上的任何平台上运行而构建的。核心控制平面的设计允许这样做。&lt;/p&gt;
+&lt;p&gt;在本系列的下一篇文章中，我们将讨论部署控制平面组件的优缺点，包括可伸缩性、容错、独立性和安全性。请&lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;继续关注！&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>选择FaaS还是微服务？</title>
+      <link>https://cloudnative.to/blog/faas-vs-microservices/</link>
+      <pubDate>Tue, 09 Apr 2019 22:42:29 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/faas-vs-microservices/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://dzone.com/articles/faas-vs-microservices&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;在做项目的云原生改造时我们可以采用微服务架构。DevOps和自动化构建两方面的成功经验对微服务的实践很有帮助。经过一段时间的实践，你可能会有将微服务架构推广到其他部门的想法。而你担心微服务本身的复杂性和分布式系统的高维护成本会让其他部门难以接受它。可能在我们想方设法解决微服务带来的问题时，总会有些人觉得这样做毫无意义。因为现在技术发展如此之快，总会出现更好的技术方案，你能保证自己在微服务领域所做的工作最后没有白费吗？&lt;/p&gt;
+&lt;p&gt;我认为不会白费！&lt;/p&gt;
+&lt;p&gt;现在“serverless”和“functions-as-a-service”（FAAS）还处于早期的炒作阶段。有些人觉得serverless就是下一代的微服务，所以我们应该跳过当前的微服务模式而直接采用serverless。其实这种说法是有点夸大其词。作为架构师或开发者，我们通过学习新技术来提升自身能力让自己变得更&amp;quot;值钱&amp;quot;并没有错。但我们也要以务实态度来判断是否应该采用新技术。虽然持续跟进最新技术是我们作为架构师的职责所在，但掌握在之前的产品和IT部门引用新技术的时机也很重要。我们可以通过下面的模块来理解微服务架构和serverless，从而让它们可以更好的融入我们的技术栈。&lt;/p&gt;
+&lt;p&gt;首先，我们需要知道为什么我们需要微服务。选用微服务架构的主要原因就是避免项目的体量阻碍产品的迭代，所有微服务其他的优势都是基于这点。更快的迭代速度意味着可以更快的为客户交付新功能/修改，从而更快的验证这些改动能够带来的效果。我们需要快速的知道自己所做的努力是否能够带来好的效果，如果不能就要马上调整方向。快速迭代就是微服务架构的核心优势。&lt;/p&gt;
+&lt;p&gt;对于大多数的团队而言，至少有一部分应用能从微服务的迭代过程中获益。因此作为架构师或开发者，我们不要因为采用微服务有门槛就对其失去信心。实践微服务的重要步骤就是确定和测量改进指标。改进指标一般可以为每天迭代应用的次数、保证迭代应用稳定性的方法等。&lt;/p&gt;
+&lt;p&gt;另一方面，不是所有的应用都需要用这种松散而复杂的方式来保证服务的迭代速度。如果只想简单做个应用来验证自己创意的商业价值，那你完全可以选择更加适合的架构。这时采用MVP测试（最小可行性测试）就是个很好的方案。如果你因为商业价值很低而打算放弃的话，那也只是放弃了一个MVP应用。你可以非常快的迭代它并从潜在的用户中获得反馈。在这种情况下，你可能需要根据反馈反复修改API、功能边界、组件等。所以过早就将组件功能做成分布式的服务也会拖慢产品的发布速度。你想修改分布式组件和它的api就必须在各个团队间进行协调。&lt;/p&gt;
+&lt;p&gt;上述观点能够反映出微服务架构和单体架构适用不同的场景。而事实上并没有所谓&amp;quot;一招鲜吃遍天“的方案。当我们在微服务架构和单体架构之间纠结时，还需要考虑到所需服务是否已经存在以及它提供服务的方式（第三方服务/公司内部服务）。我们完全可以充分利用当前已有服务来构建我们的应用，不必重新购买硬件、安装和修补操作系统，以及优化服务从而达到最高吞吐量，而这也正是云及其服务存在的意义。云供应商和他们的合作伙伴能提供数据库、消息队列、缓存、CDN和其他更高级的功能： 例如语言翻译、地图/地理空间地图、天气等。我们可以组合各种按量付费的服务来构建自己的应用。如果在使用某个服务的时候无需关心安装、参数和容量等问题，其实我们就已经在采用serverless架构了。serverless架构的特点就是可以重用已经存在的service，而无需关心运行服务需要消耗些什么。&lt;/p&gt;
+&lt;p&gt;函数即服务和serverless具有某种联系，因为它利用了缩小到单个应用程序函数的范围的计算模型，而这有助于将各种服务组合在一起构建应用。在这种模型下，功能按需分解，你只需为使用的功能付费。它特别适合对我们使用的服务进行按需计费和按量付费。这样一来我们能够构建弹性应用，而不需要考虑复杂的技术问题。将这些复杂的技术问题外包给别人可以让你更专注于为客户提供商业价值。&lt;/p&gt;
+&lt;p&gt;但是将这部分能力外包不总是可行的。如果选择云服务，我们就丧失了对程序运行时、具体功能、bug修复和接受监管的控制力。这也是需要考虑的一部分。&lt;/p&gt;
+&lt;p&gt;serverless不一定是完整的“公有云或无云”方案。如果以单个组织的角度来看，&amp;ldquo;serverless&amp;quot;可能只是代表整个体系的其他部分。例如：零售业务可以为组织内部其他服务或第三方提供“购买“服务以支持诸如分析、推荐以及其他使用“购买”服务的应用。利用定义良好的API和订阅并消费API的工作负载，你可以在自己的基础设施为微服务应用或单体应用提供serverless能力。在很多时候这其实就是服务向SOA架构进化的方向。但它们之间最大的不同就是在你将组织看作一个整体时，自己给自己的其他部分提供服务并不算serverless。因为此时还是需要自己手动的去安装、管理和更新应用。&lt;/p&gt;
+&lt;p&gt;最终采用哪种方案其实取决于很多因素，例如：业务、商业目标、软件部门对该技术的熟练度和历史遗留问题等。如果你觉得应该采用微服务架构，那就不要因为其他新技术而分心。我们可以持续跟进最新技术，从而保证适时的采用它们。总的来讲，不管是微服务架构、单体架构还是serverless架构，它们都有自己的应用场景。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>为 Envoy 构建控制平面指南第3部分：领域特定配置</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/</link>
+      <pubDate>Thu, 04 Apr 2019 18:00:43 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration-c97e8124b9d1&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这是探索为 Envoy 代理构建控制平面系列文章的第3部分。&lt;/p&gt;
+&lt;p&gt;在本系列博客中，我们将关注以下领域:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh-badb6c36a2af&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;采用一种机制来动态更新 Envoy 的路由、服务发现和其他配置&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-for-envoy-proxy-part-2-identify-components-2d0731b0d8a4&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;确定控制平面由哪些组件组成，包括支持存储、服务发现 api、安全组件等&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;建立最适合您的使用场景和组织架构的特定于域的配置对象和 api（本博客）&lt;/li&gt;
+&lt;li&gt;考虑如何最好地使您的控制平面可插在您需要它的地方&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的选项&lt;/li&gt;
+&lt;li&gt;通过控制平面的测试工具来思考&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在前面的&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-for-envoy-proxy-part-2-identify-components-2d0731b0d8a4&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;博客部分&lt;/a&gt;中，我们评估了控制平面可能需要的组件。在本节中，我们将探索特定于域的 API 在您的控制平面上可能是什么样子的。&lt;/p&gt;
+&lt;h2 id=&#34;建立您的控制平面交互点和-api-面&#34;&gt;建立您的控制平面交互点和 API 面&lt;/h2&gt;
+&lt;p&gt;一旦您考虑了哪些组件可能构成您的控制平面体系结构(请参阅前面的部分)，您就需要考虑您的用户将如何与控制平面交互，甚至更重要的是，您的用户将是谁?要回答这个问题，您必须决定基于 Envoy 的基础设施将扮演什么角色，以及流量将如何通过体系结构。它可以是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;API 管理网关（南北向流量）&lt;/li&gt;
+&lt;li&gt;简单 Kubernetes 边缘负载均衡器/反向代理/入口控制（南北向流量）&lt;/li&gt;
+&lt;li&gt;共享服务代理（东西向流量）&lt;/li&gt;
+&lt;li&gt;每个服务的 sidecar（东西向流量）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio 项目旨在成为服务网格平台，用户通过平台，可以在此基础上构建工具来驱动服务和应用程序之间的网络控制。Istio 用于配置 Envoy 的领域特定配置对象主要围绕以下对象：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/reference/config/networking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway&lt;/a&gt;：定义一个共享代理组件（能够集群进入），该组件指定可用于负载均衡和路由流量的协议、TLS、端口和主机/权限&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/reference/config/networking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualService&lt;/a&gt;：如何与特定服务交互的规则；可以指定诸如路由匹配、超时、重试等内容&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/reference/config/networking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DestinationRule&lt;/a&gt;：如何与特定服务进行交互的规则，包括熔断、负载均衡、mTLS 策略、服务的子集定义等&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/reference/config/networking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ServiceEntry&lt;/a&gt;：显式地将服务添加到 Istio 的服务注册中心&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocpfgj5dj30ma09dq3j_hudaab214a10b5ea8220dc49e672fe0b46_62667_91e8d0cb20aa4a7720f8e925ed5a689f.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocpfgj5dj30ma09dq3j_hudaab214a10b5ea8220dc49e672fe0b46_62667_a4d93c0189fd038ac1e500769e166193.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocpfgj5dj30ma09dq3j_hudaab214a10b5ea8220dc49e672fe0b46_62667_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocpfgj5dj30ma09dq3j_hudaab214a10b5ea8220dc49e672fe0b46_62667_91e8d0cb20aa4a7720f8e925ed5a689f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;319&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;运行在 Kubernetes 中的所有这些配置对象都实现为 &lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CustomResourceDefinitions&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio/VMWare Contour&lt;/a&gt; 旨在作为 Kubernetes ingress 网关，并具有一个简化的特定于域的配置模型，具有 CustomResourceDefinition （CRD）风格和 &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes ingress 资源&lt;/a&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/heptio/contour/blob/master/docs/ingressroute.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IngressRoute&lt;/a&gt; 是一个 Kubernetes CRD，它提供一个位置来指定 Contour 代理的配置&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/heptio/contour/blob/master/docs/annotations.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress 资源支持&lt;/a&gt;，允许你在你的 Kubernetes Ingress 资源上指定注解。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLly1g1oao8vmp8j30hc05gaa8_hu3ba9dec43ea0a7f5fcff8f4fd2a9600e_31278_a23fae49f0a45d8aaab84750256a0009.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLly1g1oao8vmp8j30hc05gaa8_hu3ba9dec43ea0a7f5fcff8f4fd2a9600e_31278_12ae9e5a219d2616492b3e2578e06fe7.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLly1g1oao8vmp8j30hc05gaa8_hu3ba9dec43ea0a7f5fcff8f4fd2a9600e_31278_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLly1g1oao8vmp8j30hc05gaa8_hu3ba9dec43ea0a7f5fcff8f4fd2a9600e_31278_a23fae49f0a45d8aaab84750256a0009.webp&#34;
+               width=&#34;624&#34;
+               height=&#34;196&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 &lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo 项目&lt;/a&gt;中，将可用的配置对象分成两个级别：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;为用户提供最佳符合人机工程学的面向用户的配置，并为可扩展性留下选项（下一节将详细介绍）&lt;/li&gt;
+&lt;li&gt;抽象 Envoy 但不明确用于直接用户操作的低层配置。较高级别的对象被转换为这种较低级别的表示形式，最终用于转换为 Envoy xDS api。这样设计的原因将在下一节中说明&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;对于用户，Gloo 关注拥有路由配置的团队，因为路由的语义（以及可用的转换/聚合功能）受到 API 和微服务开发人员的严重影响。对于面向用户的 API 对象，我们使用：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gateway/api/v1/gateway.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway&lt;/a&gt;：指定特定监听器端口上可用的路由和 API 端点，以及每个 API 的安全性&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gateway/api/v1/virtual_service.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;VirtualService &lt;/a&gt;：将 API 路由分组到一组“虚拟 API”中，这些“虚拟 API”可以路由到支持的函数（gRPC、http/1、http/2、lambda 等）；使开发人员能够控制路由如何处理&lt;a href=&#34;&#34;&gt;不同的转换&lt;/a&gt;，从而尝试将前端 API 与后端 API（以及后端可能引入的任何破坏性更改）分离开来&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;注意，这些对象与这些对象的 Istio 变体不同。&lt;/p&gt;
+&lt;p&gt;Gloo 中的面向用户的 API 对象驱动较低层的对象，这些对象最终用于派生 Envoy xDS 配置。例如，Gloo 的底层核心 API 对象是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/upstream.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Upstream&lt;/a&gt;：获取关于后端集群和在此上公开的函数的详细信息。您可以将 Gloo 上游与 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/cds.proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 集群&lt;/a&gt;松散地关联起来，但有一个很大的区别:上游可以理解特定端点上可用的实际服务功能（换句话说，了解 &lt;code&gt;/foo/bar&lt;/code&gt; 和 &lt;code&gt;/bar/wine&lt;/code&gt;，包括它们的预期参数和参数结构，而不仅仅是 &lt;code&gt;hostname:port&lt;/code&gt;），后文会详细解释。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://gloo.solo.io/v1/github.com/solo-io/gloo/projects/gloo/api/v1/proxy.proto.sk/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Proxy&lt;/a&gt;：代理是抽象我们可以应用于 Envoy 的所有配置的主要对象。这包括监听器、虚拟主机、路由和上行流。高级对象（VirtualService，Gateway等）用于驱动这个低级代理对象。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocrrdccrj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_acde3b42ae9fabf47c546978209d85aa.webp 400w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocrrdccrj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_612291cfac4c3e0af71580f9425ce74a.webp 760w,
+               /blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocrrdccrj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-for-envoy-part-3-domain-specific-configuration/006gLaqLgy1g1ocrrdccrj30o20dxabd_hu28d5638a97c2c893b74c2247b2177cd1_91343_acde3b42ae9fabf47c546978209d85aa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;440&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Gloo 控件的两层配置之间的分离允许我们在保持配置 Envoy 的简单抽象的同时扩展 Gloo 控制平面功能。本系列的第 4 部分将对此进行更详细的解释。&lt;/p&gt;
+&lt;p&gt;在前面的三个示例中（Istio、Contour、Gloo），每个控制平面公开一组特定于域的配置对象，这些对象以用户为中心，但最终转换为 Envoy 配置，并通过 xDS 数据面 API 公开。这提供了 Envoy 与用户的工作方式及其工作流之间的解耦。尽管我们已经看到了一些为抽象 Envoy 创建更关注用户和工作流的领域特定配置的例子，但这并不是构建 Envoy 控制平面的唯一方法。&lt;a href=&#34;https://www.slideshare.net/IvanKruglov/ivan-kruglov-introducing-envoybased-service-mesh-at-bookingcom-version-7&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Booking.com 有一个很棒的演示&lt;/a&gt;，介绍了他们是如何与 Envoy 配置保持更紧密的联系，并使用一个引擎将所有不同团队的配置片段合并到实际的 Envoy 配置中。&lt;/p&gt;
+&lt;p&gt;除了考虑特定于域的配置之外，还应该考虑 API/对象模型的特定接触点。例如，Kubernetes 非常关注 YAML 和资源文件。您可以构建一个更特定于领域的 CLI 工具（就像 &lt;a href=&#34;https://docs.openshift.com/enterprise/3.2/dev_guide/new_app.html#dev-guide-new-app&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OpenShift 对 oc CLI&lt;/a&gt; ，&lt;a href=&#34;https://istio.io/docs/reference/commands/istioctl/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 对 istioctl&lt;/a&gt; ， &lt;a href=&#34;https://gloo.solo.io/cli/glooctl/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo 对 glooctl&lt;/a&gt; 所做的那样）。&lt;/p&gt;
+&lt;h2 id=&#34;小结&#34;&gt;小结&lt;/h2&gt;
+&lt;p&gt;当您构建一个 Envoy 控制平面时，您是带着一个特定的意图或一组架构/用户来做这件事的。您应该考虑到这一点，并构建适合您的用户并改进您的 Envoy 操作工作流使其符合人体工程学的、有主见的特定于领域的 API。&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo 团队&lt;/a&gt;建议研究现有的 Envoy 控制平面实现，只有在其他实现都不合适的情况下才构建自己的 Envoy 控制平面。Gloo 的控制为扩展和定制奠定了基础。我们将在下一篇文章中看到，可以构建一个完全可扩展的控制平面，以适应许多不同的用户、工作流和操作约束。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Envoy Proxy构建控制平面指南</title>
+      <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</link>
+      <pubDate>Wed, 06 Mar 2019 12:17:02 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh-badb6c36a2af&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者案&#34;&gt;编者案&lt;/h2&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Envoy 作为最受欢迎的早期网络组件，现在已经可以说是云原生架构中的通用数据平面。本文作者指引我们更方便的使用Envoy，及其定制控制平面，作者通过收集到的数据给出定制控制平面不同的意见，非常中肯，后续系列会更深入，欢迎关注该系列文章。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 最近成为一个受欢迎的网络组件。 几年前 Matt Klein &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;写了一篇博客&lt;/a&gt; ，讨论了Envoy的动态配置API，以及Envoy发展的历史和动机。 他称该博客为“通用数据平面API”。 由于许多其他项目采用&lt;a href=&#34;https://www.envoyproxy.io/community&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 作为其产品的核心组件，因此对于应用程序/L7网络解决方案而言，毫不夸张地说，“Envoy已成为云原生架构中的通用数据平面”，而不仅仅是简单建立了API标准。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_d73177a85f459e7e9ae645c9c638a24a.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_2e55f3eb8e7f29cf53d207262cf81594.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfoc0c9yj20dm07faap_hu8ae9bc977729b1261c5488411d43efc6_45035_d73177a85f459e7e9ae645c9c638a24a.webp&#34;
+               width=&#34;490&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此外，由于 &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy的通用数据平面API&lt;/a&gt; ，我们已经看到了许多 &lt;em&gt;管理层&lt;/em&gt; 的实现， 用于配置和驱动基于Envoy的基础架构。 我们将深入探讨为Envoy构建控制平面所需的内容，以便您可以使用此信息来评估哪种类型的基础架构最适合您的组织和使用情况。 因为这是一个广泛的主题，我们将在未来几天发布的多部系列博客中解决它。&lt;/p&gt;
+&lt;p&gt;在EnvoyCon/KubeCon上 有一些 &lt;a href=&#34;https://blog.envoyproxy.io/envoycon-recap-579d53576511&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;精彩的演讲&lt;/a&gt; ，一些组织分享了他们采用Envoy的经验，包括他们如何构建自己的控制平面。 人们选择自己建立控制平面的一些原因：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;现有的解决方案，建立在已有不同数据平面的控制平面，需要改造Envoy（与已有方案且冲突）&lt;/li&gt;
+&lt;li&gt;为没有任何现有开源或其他Envoy控制平面（即VM，AWS ECS等）的基础架构构建（商业公司必须重新建方案）&lt;/li&gt;
+&lt;li&gt;不需要使用Envoy的所有功能; 只是一个子集（功能太多，需要精简）&lt;/li&gt;
+&lt;li&gt;首选适用于Envoy配置的特定于域的API/对象模型，以更好地适应其工作流程/世界观（与已有方案冲突）&lt;/li&gt;
+&lt;li&gt;当其组织准备部署时，暂时没有成熟的控制平面（走的太快）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_299b4200e7b50938d5e8b268bfc26bd9.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_feae416aa92cd7eaa0dea21fc7cb0e50.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mforyrc1j20go0digsn_hue04fb6da5ae3907e79baa0948d49cfe2_109615_299b4200e7b50938d5e8b268bfc26bd9.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;486&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;若是因为一些早期采用者建立了他们自己的定制控制平面，并不意味着你现在也要自己重新开发控制平面。 因为Envoy构建控制平面的项目在去年已经成熟了很多，若你决定重新开发另一个控制平面前你应该探索使用它们。 其次，正如Datawire的人们发现的那样，&lt;a href=&#34;https://twitter.com/danielbryantuk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;丹尼尔·布莱恩特&lt;/a&gt; 最近明确表示， &lt;a href=&#34;https://www.infoq.com/articles/ambassador-api-gateway-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为Envoy建造一个控制平面并不适合胆小的人&lt;/a&gt; 。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我参与&lt;/a&gt; 了 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几个&lt;/a&gt;为Envoy构建控制平面的&lt;a href=&#34;https://github.com/solo-io/gloo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源项目&lt;/a&gt; 。 例如， &lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo&lt;/a&gt; 是 &lt;a href=&#34;https://medium.com/solo-io/announcing-gloo-the-function-gateway-3f0860ef6600&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个功能网关&lt;/a&gt; ，可以充当非常强大的Kubernetes入口，API网关或功能网关，以简化单体应用到微服务的过渡。 Gloo &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;有一个Envoy的控制平面&lt;/a&gt; ，我们可以在这一系列的帖子中作为一个例子来说明如何构建一个简单的抽象，允许在你需要的控制点上实现可插拔性和可扩展性。 您可以用作参考的其他可靠的控制平面实现是 &lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio Contour&lt;/a&gt; 我们将在整个系列博客中使用这些作为很好的例子。 如果不出意外，您可以了解Envoy控制平面存在哪些选项，并使用它来指导您的实施，如果您必须走这条路。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_6aaf308f76bb1b435deb0087ecfe2110.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_b2e5f9814c349379607a6f32d75ebee2.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpbj0hgj21200a840t_huee3c2bac1b3d2713ae16ec61b6c9df2a_124078_6aaf308f76bb1b435deb0087ecfe2110.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;205&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个博客系列中，我们将看看以下几个方面：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;采用动态更新机制的Envoy路由、服务发现和其他配置&lt;/li&gt;
+&lt;li&gt;确定构成控制平面的组件，包括后端存储、服务发现API、安全组件等。&lt;/li&gt;
+&lt;li&gt;为您和组织最适合的用例，建立任何特定于域的配置对象和API&lt;/li&gt;
+&lt;li&gt;考虑如何最好地将控制平面插入您需要的地方&lt;/li&gt;
+&lt;li&gt;部署各种控制平面组件的选项&lt;/li&gt;
+&lt;li&gt;通过控制平面的测试工具进行思考&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;为了开始这个系列，我们来看看使用Envoy的动态配置API在运行时更新Envoy以处理拓扑和部署的变化。&lt;/p&gt;
+&lt;h2 id=&#34;使用xds-api动态配置envoy&#34;&gt;使用xDS API动态配置Envoy&lt;/h2&gt;
+&lt;p&gt;构建在Envoy之上的主要优势之一是它的数据平面API。 使用数据平面API，我们可以 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态配置Envoy的大部分重要运行时设置&lt;/a&gt; 。 Envoy通过其xDS API的配置 &lt;a href=&#34;https://blog.envoyproxy.io/embracing-eventual-consistency-in-soa-networking-32a5ee5d443d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最终一致的&lt;/a&gt;  - 即无法影响集群中所有代理的“原子更新”。 当控制平面具有配置更新时，它通过xDS API使它们可用于数据平面代理，并且每个代理将彼此独立地应用这些更新。&lt;/p&gt;
+&lt;p&gt;以下是我们可以通过xDS动态配置的Envoy运行时模型的部分：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务API -&lt;/a&gt; 用于发布监听流量的端口的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LDS&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务API-&lt;/a&gt; 用于服务发现的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EDS&lt;/a&gt; ，&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/http_conn_man/rds#config-http-conn-man-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务API-RDS&lt;/a&gt; 用于流量路由决策&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务 -&lt;/a&gt; 用于后端服务的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CDS&lt;/a&gt; ，我们可以将流量路由到该服务&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;secret发现服务 -&lt;/a&gt; 用于分发Secret的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SDS&lt;/a&gt; （证书和密钥）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_0c1afe2df3b97beb6f7307a91377b67e.webp 400w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_38f347eb1be2ded7ed2a98ff57214ba7.webp 760w,
+               /blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/61411417ly1g0mfpqxtkyj20p00gm0yz_hued01192646f9d6f8fd00edb2232ffb64_159416_0c1afe2df3b97beb6f7307a91377b67e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;505&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;API使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/overview/v2_overview#config-overview-v2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proto3 Protocol Buffers&lt;/a&gt; 定义， 甚至还有一些参考实现可用于引导您自己的控制平面：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/java-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;java的控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;虽然这些领域（LDS/EDS/RDS/CDS/SDS，一起“xDS”）中的每一个都是动态可配置的，但这并不意味着您必须动态配置所有内容。 您可以拥有静态定义的部分组合以及动态更新的部分组合。 例如，要实现一种 &lt;code&gt;endpoints&lt;/code&gt; 预期为动态但 &lt;code&gt;clusters&lt;/code&gt; 在部署时众所周知 的服务发现类型 ，您可以静态定义 &lt;code&gt;clusters&lt;/code&gt; 并使用 Envoy中 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务&lt;/a&gt; 。 如果您不确定在部署时将使用哪些 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/terminology&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;上游集群，&lt;/a&gt; 则可以使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务&lt;/a&gt; 动态地找到那些。 关键是，您可以构建一个工作流程和流程，静态配置您需要的部分，同时使用动态xDS服务来发现运行时所需的部分。 您看到不同的控制平面实现的原因之一并不是每个人都有一个完全动态和可互换的环境，其中所有部分都应该是动态的。 在给定现有约束和可用工作流程的情况下，采用最适合您系统的动态级别。&lt;/p&gt;
+&lt;p&gt;在Gloo的情况下，我们使用&lt;a href=&#34;https://github.com/solo-io/gloo/blob/ac3bddf202423b297fb909eb6eff498745a8c015/projects/gloo/pkg/xds/envoy.go#L76&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于go-control-plane的控制平面&lt;/a&gt; 来实现xDS API以服务Envoy的动态配置。 与Heptio Contour一样，Istio也使用此实现。 此控制平面API利用 &lt;a href=&#34;https://grpc.io/docs/guides/concepts.html#server-streaming-rpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC流&lt;/a&gt; 调用和存根API，因此您可以使用实现填充它。 &lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Turbine Labs’ Rotor项目&lt;/a&gt; 是另一个不幸被弃用但可以用来学习的&lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;项目&lt;/a&gt; 。 这是将Envoy的数据平面API与控制平面集成的高效方法。&lt;/p&gt;
+&lt;p&gt;gRPC流不是更新Envoy配置的唯一方式。 在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.5.0/api-v1/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以前版本的Envoy xDS API中&lt;/a&gt; ，轮询是确定新配置是否可用的唯一选项。 虽然这是可以接受的，并且符合“最终一致”配置更新的标准，但它在网络和计算使用方面效率都较低。 也可能难以适当地调整轮询配置以减少浪费的资源。&lt;/p&gt;
+&lt;p&gt;最后，一些Envoy管理实施选择生成 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态Envoy配置文件，&lt;/a&gt; 并定期替换Envoy磁盘上的配置文件，然后执行 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy进程&lt;/a&gt; 的 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热重新加载&lt;/a&gt; 。 在高度动态的环境中（如Kubernetes，但实际上是任何基于ephemeral-compute的平台），此文件生成，交付，热重启等的管理可能变得难以处理。 Envoy最初是在一个执行此类更新的环境中运行的（Lyft，它是在哪里创建的），但它们逐渐转向使用xDS API。&lt;/p&gt;
+&lt;h2 id=&#34;takeaway&#34;&gt;Takeaway&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt; 认为使用gRPC流和xDS API是实现Envoy动态配置和控制的理想方式。 同样，如果您不需要，并非所有Envoy配置都应动态提供，但是如果您在高度动态的环境中运行（例如，Kubernetes），则动态配置Envoy的选项至关重要。 其他环境可能没有这种需求。 无论哪种方式，动态的g​​RPC流API都是理想的选择。 这种方法的一些好处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;事件驱动的配置更新; 当配置在控制平面中可用时，配置被推送到Envoy&lt;/li&gt;
+&lt;li&gt;无需轮询更改&lt;/li&gt;
+&lt;li&gt;没有必要热加载Envoy&lt;/li&gt;
+&lt;li&gt;没有中断流量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;下一步是什么&#34;&gt;下一步是什么&lt;/h2&gt;
+&lt;p&gt;在第一部分中，我们通过介绍xDS API以及为Envoy提供动态配置的不同选项，为如何为Envoy构建控制平面建立了一些基本背景。 在接下来的部分中，将在几天内发布，将涵盖将您的控制平面分解为可部署组件，确定您需要哪些部分，特定于域的配置对象模型，以及如何考虑控件的可插拔性平面。 关注twitter（ &lt;a href=&#34;https://twitter.com/christianposta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@christianposta&lt;/a&gt; ， &lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@ solio_in&lt;/a&gt; ）或博客（ &lt;a href=&#34;https://medium.com/solo-io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://medium.com/solo-io&lt;/a&gt; ）&lt;/p&gt;
 </description>
     </item>
     
