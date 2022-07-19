@@ -10329,6 +10329,301 @@ Flagger附带Grafana dashboard，用于金丝雀分析。在istio-system namespa
     </item>
     
     <item>
+      <title>Istio Sidecar 注入过程解密</title>
+      <link>https://cloudnative.to/blog/data-plane-setup/</link>
+      <pubDate>Mon, 08 Apr 2019 21:33:03 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/data-plane-setup/</guid>
+      <description>&lt;p&gt;Istio 服务网格架构的概述，通常都是从对数据面和控制面的叙述开始的。&lt;/p&gt;
+&lt;p&gt;来自 Istio 的官方文档。&lt;/p&gt;
+&lt;p&gt;Istio 服务网格逻辑上分为数据平面和控制平面。&lt;/p&gt;
+&lt;p&gt;数据平面由一组以 sidecar 方式部署的智能代理（Envoy）组成。这些代理和 Mixer（一个通用的策略和遥测中心）合作，对所有微服务之间的之间所有的网络通信进行控制。&lt;/p&gt;
+&lt;p&gt;控制平面负责管理和配置代理来路由流量。此外控制平面配置 Mixer 以实施策略和收集遥测数据。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/data-plane-setup/006tNc79ly1g1vjqh6zh7j30se0lmq5i_hu303d0acd0b4ed49bb570d3cd0d5e9160_72554_9c603a1505101afa85d7aba788da920f.webp 400w,
+               /blog/data-plane-setup/006tNc79ly1g1vjqh6zh7j30se0lmq5i_hu303d0acd0b4ed49bb570d3cd0d5e9160_72554_8212bb3abeb87f9ed9f67a2f000091fc.webp 760w,
+               /blog/data-plane-setup/006tNc79ly1g1vjqh6zh7j30se0lmq5i_hu303d0acd0b4ed49bb570d3cd0d5e9160_72554_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/data-plane-setup/006tNc79ly1g1vjqh6zh7j30se0lmq5i_hu303d0acd0b4ed49bb570d3cd0d5e9160_72554_9c603a1505101afa85d7aba788da920f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;579&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Sidecar 注入到应用的过程，可以是自动的，也可以是手动的，了解这一过程是很重要的。应用的流量会被重定向进入或流出 Sidecar，开发人员无需关心。应用接入 Istio 服务网格之后，开发者可以开始使用网格功能并从中受益。然而数据平面是如何工作的，以及需要怎样的条件才能完成这种无缝工作？本文中我们会深入到 Sidecar 注入模型中，来更清晰的了解 Sidecar 的注入过程。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-注入&#34;&gt;Sidecar 注入&lt;/h2&gt;
+&lt;p&gt;简单来说，注入 Sidecar 就是把附加的容器配置插入 Pod 模板的过程。Istio 服务网格所需的附加容器是：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-init
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个&lt;a href=&#34;https://kubernetes.io/docs/concepts/workloads/pods/init-containers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;初始化容器&lt;/a&gt;用于设置 &lt;code&gt;iptables&lt;/code&gt; 规则，让出入流量都转由 Sidecar 进行处理。和应用容器相比，初始化容器有几点不同：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;它在应用容器之前启动，并且会运行到结束。&lt;/li&gt;
+&lt;li&gt;如果有多个初始化容器，只有在前一个初始化容器成功结束之后才会启动下一个。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;不难看出，这种容器是非常适合执行启动或者初始化任务的，并且也无需和实际的应用容器集成到一起。&lt;code&gt;istio-init&lt;/code&gt; 只是用来设置 &lt;code&gt;iptables&lt;/code&gt; 的规则。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个容器是真正的 Sidecar（基于 Envoy）。&lt;/p&gt;
+&lt;h3 id=&#34;手工注入&#34;&gt;手工注入&lt;/h3&gt;
+&lt;p&gt;要进行手工注入，只要用 &lt;code&gt;istioctl&lt;/code&gt; 把前面提到的两个容器定义加入到 Pod 的模板之中即可。不论是手工注入还是自动注入，都是从 &lt;code&gt;istio-sidecar-injector&lt;/code&gt; 以及 &lt;code&gt;istio&lt;/code&gt; 两个 Configmap 对象中获取配置的。&lt;/p&gt;
+&lt;p&gt;我们先来看看 &lt;code&gt;istio-sidecar-injector&lt;/code&gt; Configmap，了解一下其中的内容。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n istio-system get configmap istio-sidecar-injector -o&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.data.config}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;部分输出内容：
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;policy: enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;template: &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;-
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  initContainers:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - name: istio-init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    image: docker.io/istio/proxy_init:1.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    args:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-p&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; .MeshConfig.ProxyListenPort &lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-u&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    imagePullPolicy: IfNotPresent
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    securityContext:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      capabilities:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        add:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        - NET_ADMIN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    restartPolicy: Always
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  containers:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - name: istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    image: &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;isset .ObjectMeta.Annotations &lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecar.istio.io/proxyImage&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; -&lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s2&#34;&gt;&amp;#34;[[ index .ObjectMeta.Annotations &amp;#34;&lt;/span&gt;sidecar.istio.io/proxyImage&lt;span class=&#34;s2&#34;&gt;&amp;#34; ]]&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; -&lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    docker.io/istio/proxyv2:1.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; end -&lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    args:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - proxy
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - sidecar
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    env:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - name: ISTIO_META_INTERCEPTION_MODE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      value: &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; or &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;index .ObjectMeta.Annotations &lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecar.istio.io/interceptionMode&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; .ProxyConfig.InterceptionMode.String &lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    imagePullPolicy: IfNotPresent
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    securityContext:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      readOnlyRootFilesystem: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; eq &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;or &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;index .ObjectMeta.Annotations &lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecar.istio.io/interceptionMode&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; .ProxyConfig.InterceptionMode.String&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;TPROXY&amp;#34;&lt;/span&gt; -&lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      capabilities:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        add:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        - NET_ADMIN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    restartPolicy: Always
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如你所见，这个 Configmap 中包含了前面提到的两个容器的配置内容：&lt;code&gt;istio-init&lt;/code&gt; 初始化容器以及 &lt;code&gt;istio-proxy&lt;/code&gt; 代理容器。配置中包含了容器镜像名称以及一些参数，例如拦截模式，权限要求等。&lt;/p&gt;
+&lt;p&gt;从安全角度看来，要注意 &lt;code&gt;istio-init&lt;/code&gt; 需要 &lt;code&gt;NET_ADMIN&lt;/code&gt; 权限，以便在 Pod 的命名空间中修改 &lt;code&gt;iptables&lt;/code&gt;；如果 &lt;code&gt;istio-proxy&lt;/code&gt; 设置为 &lt;code&gt;TPROXY&lt;/code&gt; 模式，也会需要这一权限。这一权限是限制在 Pod 的命名空间之内的，这应该没问题。然而我注意到最近的 open-shift 版本好像在这方面有点问题，需要进一步确认。这方面的选项会在文末继续讨论。&lt;/p&gt;
+&lt;p&gt;要修改当前的 Pod 模板来进行注入，可以：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; $ istioctl kube-inject -f demo-red.yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;或者&lt;/p&gt;
+&lt;p&gt;想要使用修改过的 Configmap 或者本地 Configmap：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;从 Configmap 中创建 &lt;code&gt;inject-config.yaml&lt;/code&gt; and &lt;code&gt;mesh-config.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n istio-system get configmap istio-sidecar-injector -o&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.data.config}&amp;#39;&lt;/span&gt; &amp;gt; inject-config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n istio-system get configmap istio -o&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.data.mesh}&amp;#39;&lt;/span&gt; &amp;gt; mesh-config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;修改现存的 Pod 模板，这里假设文件名为 &lt;code&gt;demo-red.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ istioctl kube-inject --injectConfigFile inject-config.yaml --meshConfigFile mesh-config.yaml --filename demo-red.yaml --output demo-red-injected.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;提交 &lt;code&gt;demo-red-injected.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f demo-red-injected.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;上面的几个步骤中，我们使用 &lt;code&gt;sidecar-injector&lt;/code&gt; 以及 &lt;code&gt;istio&lt;/code&gt; 两个 Configmap 的内容修改了 Pod 模板并使用 &lt;code&gt;kubectl&lt;/code&gt; 命令进行了提交。如果查看一下注入后的 YAML 文件，会看到前面讨论过的 Istio 的专属容器，提交到集群上之后，会看到两个容器在运行：一个是实际的应用容器，另一个则是 &lt;code&gt;istio-proxy&lt;/code&gt; Sidecar。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pods &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep demo-red
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;demo-red-pod-8b5df99cc-pgnl7   2/2       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          3d
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里没有 3 个 Pod，这是因为 &lt;code&gt;istio-init&lt;/code&gt; 容器是一个初始化容器，它完成任务之后就会退出——他的任务就是设置 Pod 内的 &lt;code&gt;iptables&lt;/code&gt; 规则。要确认退出的初始化容器，可以看看 &lt;code&gt;kubectl describe&lt;/code&gt; 的输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl describe pod demo-red-pod-8b5df99cc-pgnl7
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SNIPPET from the output:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name:               demo-red-pod-8b5df99cc-pgnl7
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Namespace:          default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;.....
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Labels:             &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;demo-red
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    pod-template-hash&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;8b5df99cc
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    &lt;span class=&#34;nv&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;version-red
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Annotations:        sidecar.istio.io/status&lt;span class=&#34;o&#34;&gt;={&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;version&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;3c0b8d11844e85232bc77ad85365487638ee3134c91edda28def191c086dc23e&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;initContainers&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-init&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;containers&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-proxy&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;volumes&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-envoy&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-certs...
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;Status:             Running
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;IP:                 10.32.0.6
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;Controlled By:      ReplicaSet/demo-red-pod-8b5df99cc
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;Init Containers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;  istio-init:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Container ID:  docker://bef731eae1eb3b6c9d926cacb497bb39a7d9796db49cd14a63014fc1a177d95b
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image:         docker.io/istio/proxy_init:1.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image ID:      docker-pullable://docker.io/istio/proxy_init@sha256:e16a0746f46cd45a9f63c27b9e09daff5432e33a2d80c8cc0956d7d63e2f9185
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    State:          Terminated
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      Reason:       Completed
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Ready:          True
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;Containers:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;  demo-red:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Container ID:   docker://8cd9957955ff7e534376eb6f28b56462099af6dfb8b9bc37aaf06e516175495e
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image:          chugtum/blue-green-image:v3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image ID:       docker-pullable://docker.io/chugtum/blue-green-image@sha256:274756dbc215a6b2bd089c10de24fcece296f4c940067ac1a9b4aea67cf815db
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    State:          Running
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      Started:      Sun, 09 Dec 2018 18:12:31 -0800
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Ready:          True
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;  istio-proxy:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Container ID:  docker://ca5d690be8cd6557419cc19ec4e76163c14aed2336eaad7ebf17dd46ca188b4a
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image:         docker.io/istio/proxyv2:1.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Image ID:      docker-pullable://docker.io/istio/proxyv2@sha256:54e206530ba6ca9b3820254454e01b7592e9f986d27a5640b6c03704b3b68332
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Args:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      sidecar
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      .....
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    State:          Running
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;      Started:      Sun, 09 Dec 2018 18:12:31 -0800
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    Ready:          True
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;    .....
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从上文的输出可以看出，&lt;code&gt;istio-init&lt;/code&gt; 容器的 &lt;code&gt;State&lt;/code&gt; 字段值为 &lt;code&gt;Terminated&lt;/code&gt;，&lt;code&gt;Reason&lt;/code&gt; 是 &lt;code&gt;Completed&lt;/code&gt;。正在运行的两个 Pod 是应用容器 &lt;code&gt;demo-red&lt;/code&gt; 以及 &lt;code&gt;istio-proxy&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;自动注入&#34;&gt;自动注入&lt;/h3&gt;
+&lt;p&gt;多数时候，用户不想在每次部署应用的时候都用 &lt;code&gt;istioctl&lt;/code&gt; 命令进行手工注入，这时候就可以使用 Istio 的自动注入功能来应对了。只要给用于部署应用的命名空间打个 &lt;code&gt;istio-injection=enabled&lt;/code&gt; 标签就可以了。&lt;/p&gt;
+&lt;p&gt;打上标签之后，这个命名空间中新建的任何 Pod 都会被 Istio 注入 Sidecar。下面的例子里，&lt;code&gt;istio-dev&lt;/code&gt; 命名空间中部署的 Pod 被自动注入了 Sidecar：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get namespaces --show-labels
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME           STATUS    AGE       LABELS
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;default        Active    40d       &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-dev      Active    19d       istio-injection&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-system   Active    24d       
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-public    Active    40d       
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-system    Active    40d       
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这是怎么完成的呢？要回答这一问题，首先要了解一下 Kubernetes 的准入控制器。&lt;/p&gt;
+&lt;p&gt;来自 Kubernetes 文档&lt;/p&gt;
+&lt;p&gt;准入控制器是一段代码，会拦截 Kubernetes API Server 收到的请求，拦截发生在认证和鉴权完成之后，对象进行持久化之前。可以定义两种类型的 Admission webhook：Validating 和 Mutating。Validating 类型的 Webhook 可以根据自定义的准入策略决定是否拒绝请求；Mutating 类型的 Webhook 可以根据自定义配置来对请求进行编辑。&lt;/p&gt;
+&lt;p&gt;Istio 的自动注入过程中会依赖 Mutating webhook。我们看看 &lt;code&gt;istio-sidecar-injector&lt;/code&gt; 中的配置详情：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get mutatingwebhookconfiguration istio-sidecar-injector -o yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;输出内容节选:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;apiVersion: admissionregistration.k8s.io/v1beta1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kind: MutatingWebhookConfiguration
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  annotations:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    kubectl.kubernetes.io/last-applied-configuration: &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;apiVersion&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;admissionregistration.k8s.io/v1beta1&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;kind&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;MutatingWebhookConfiguration&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;metadata&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;annotations&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{}&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;labels&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;app&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-sidecar-injector&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;chart&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecarInjectorWebhook-1.0.1&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;heritage&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;Tiller&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;release&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-remote&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-sidecar-injector&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;namespace&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;webhooks&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;clientConfig&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;caBundle&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;service&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-sidecar-injector&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;namespace&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-system&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;path&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;/inject&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}}&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;failurePolicy&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;Fail&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;sidecar-injector.istio.io&amp;#34;&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;namespaceSelector&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;matchLabels&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;istio-injection&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;enabled&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}}&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;rules&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;apiGroups&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;apiVersions&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;v1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;operations&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;CREATE&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;,&lt;span class=&#34;s2&#34;&gt;&amp;#34;resources&amp;#34;&lt;/span&gt;:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;pods&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;]}]}]}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  creationTimestamp: 2018-12-10T08:40:15Z
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  generation: &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  labels:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    app: istio-sidecar-injector
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    chart: sidecarInjectorWebhook-1.0.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    heritage: Tiller
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    release: istio-remote
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  name: istio-sidecar-injector
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  .....
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;webhooks:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- clientConfig:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    service:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      name: istio-sidecar-injector
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      namespace: istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      path: /inject
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  name: sidecar-injector.istio.io
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  namespaceSelector:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    matchLabels:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      istio-injection: enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  rules:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - apiGroups:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    apiVersions:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    operations:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - CREATE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    resources:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - pods
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里可以看到一个 &lt;code&gt;namespaceSelector&lt;/code&gt;，其中的定义表明它的工作是针对带有 &lt;code&gt;istio-injection: enabled&lt;/code&gt; 标签的命名空间的。这种情况下，你还会看到 Pod 创建期间进行注入时的一些其它工作和相关资源的内容。当 &lt;code&gt;apiserver&lt;/code&gt; 收到一个符合规则的请求时，&lt;code&gt;apiserver&lt;/code&gt; 会给 Webhook 服务发送一个准入审核的请求，Webhook 服务的定义包含在 &lt;code&gt;clientConfig&lt;/code&gt; 配置中的 &lt;code&gt;name: istio-sidecar-injector&lt;/code&gt; 字段里。我们会看到，这个服务正在 &lt;code&gt;istio-system&lt;/code&gt; 命名空间里运行。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get svc --namespace&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;istio-system &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep sidecar-injector
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-sidecar-injector   ClusterIP   10.102.70.184   &amp;lt;none&amp;gt;        443/TCP             24d
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个配置总体上来说，完成了我们手工注入所需完成的工作。只不过是它是在 Pod 创建的过程中自动完成的，所以你也不会看到 Deployment 对象发生了任何变化。可以用 &lt;code&gt;kubectl describe&lt;/code&gt; 命令来查看 Sidecar 和初始化容器。如果想要修改注入逻辑，例如 Istio 自动注入的生效范围，可以编辑 &lt;code&gt;MutatingWebhookConfiguration&lt;/code&gt;，然后重启 Sidecar injector Pod。&lt;/p&gt;
+&lt;p&gt;Sidecar 的自动注入过程除了根据 &lt;code&gt;namespaceSelector&lt;/code&gt; 选择命名空间之外，还受到缺省注入策略以及 Pod 自身注解的影响。&lt;/p&gt;
+&lt;p&gt;再看看 &lt;code&gt;istio-sidecar-injector&lt;/code&gt; ConfigMap 中的缺省策略定义。可以看到，缺省是启用的。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n istio-system get configmap istio-sidecar-injector -o&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{.data.config}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;SNIPPET from the output:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;policy: enabled
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;template: &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;-
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  initContainers:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - name: istio-init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    image: &lt;span class=&#34;s2&#34;&gt;&amp;#34;gcr.io/istio-release/proxy_init:1.0.2&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    args:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-p&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    - &lt;span class=&#34;o&#34;&gt;[[&lt;/span&gt; .MeshConfig.ProxyListenPort &lt;span class=&#34;o&#34;&gt;]]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;还可以在 Pod 模板中使用注解 &lt;code&gt;sidecar.istio.io/inject&lt;/code&gt; 覆盖缺省策略。下面的例子中的 &lt;code&gt;Deployment&lt;/code&gt; 用这种方式禁用了自动注入：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ignored&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecar.istio.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;false&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ignored&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tutum/curl&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/bin/sleep&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;infinity&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个例子展示了很多可能性，可以从命名空间标签、ConfigMap 或者 Pod 中分别进行控制：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Webhooks 定义中的 &lt;code&gt;namespaceSelector&lt;/code&gt;（&lt;code&gt;istio-injection: enabled&lt;/code&gt;）&lt;/li&gt;
+&lt;li&gt;缺省策略（在 ConfigMap &lt;code&gt;istio-sidecar-injector&lt;/code&gt; 中定义）&lt;/li&gt;
+&lt;li&gt;Pod 注解（&lt;code&gt;sidecar.istio.io/inject&lt;/code&gt;）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;注入状态表中，根据上面三个因素的不同，可以看到有不同的注入结果。&lt;/p&gt;
+&lt;h2 id=&#34;从应用容器到-sidecar-代理的通信&#34;&gt;从应用容器到 Sidecar 代理的通信&lt;/h2&gt;
+&lt;p&gt;现在我们知道了 Sidecar 容器和初始化容器被注入到应用中的过程了，Sidecar 代理是如何截获进出容器的流量呢？我们前面提到过，这是通过对 Pod 命名空间中 &lt;code&gt;iptable&lt;/code&gt; 规则的设置来完成的，这个设置过程由 &lt;code&gt;istio-init&lt;/code&gt; 容器来控制。现在可以看看命名空间中到底更新了些什么。&lt;/p&gt;
+&lt;p&gt;进入前面我们部署的应用 Pod 的命名空间，看看配置完成的 iptables。我会使用 &lt;code&gt;nsenter&lt;/code&gt;。也可以用特权模式进入容器获得同样的信息。如果无法访问节点，可以用 &lt;code&gt;exec&lt;/code&gt; 进入 Sidecar 来执行 &lt;code&gt;iptables&lt;/code&gt; 指令。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker inspect b8de099d3510 --format &lt;span class=&#34;s1&#34;&gt;&amp;#39;{{ .State.Pid }}&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;m&#34;&gt;4125&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ nsenter -t &lt;span class=&#34;m&#34;&gt;4215&lt;/span&gt; -n iptables -t nat -S
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P PREROUTING ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P INPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P OUTPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P POSTROUTING ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-N ISTIO_INBOUND
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-N ISTIO_IN_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-N ISTIO_OUTPUT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-N ISTIO_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A PREROUTING -p tcp -j ISTIO_INBOUND
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A OUTPUT -p tcp -j ISTIO_OUTPUT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_INBOUND -p tcp -m tcp --dport &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; -j ISTIO_IN_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_IN_REDIRECT -p tcp -j REDIRECT --to-ports &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_OUTPUT ! -d 127.0.0.1/32 -o lo -j ISTIO_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_OUTPUT -m owner --uid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_OUTPUT -m owner --gid-owner &lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt; -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_OUTPUT -d 127.0.0.1/32 -j RETURN
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_OUTPUT -j ISTIO_REDIRECT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A ISTIO_REDIRECT -p tcp -j REDIRECT --to-ports &lt;span class=&#34;m&#34;&gt;15001&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面展示的内容中，可以清楚的看到，所有从 80 端口（&lt;code&gt;red-demo&lt;/code&gt; 应用监听的端口）进入的流量，被 &lt;code&gt;REDIRECTED&lt;/code&gt; 到了端口 &lt;code&gt;15001&lt;/code&gt;，这是 &lt;code&gt;istio-proxy&lt;/code&gt;（Envoy 代理）监听的端口。外发流量也是如此。&lt;/p&gt;
+&lt;p&gt;本文进入尾声。希望能够让读者了解到 Istio 将 Sidecar 注入到 Pod 中的过程，以及 Istio 将流量路由到代理服务器的过程。&lt;/p&gt;
+&lt;p&gt;更新：在 &lt;code&gt;istio-init&lt;/code&gt; 阶段，现在有了一个新的使用 CNI 的方式，这种方式无需初始化容器的帮助，也不需要对应的权限。&lt;a href=&#34;https://github.com/istio/cni&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;istio-cni&lt;/code&gt;&lt;/a&gt; 插件会设置 Pod 的网络来满足这一要求，可以代替 &lt;code&gt;istio-init&lt;/code&gt; 来完成任务。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>熔断与异常检测在 Istio 中的应用</title>
       <link>https://cloudnative.to/blog/circuit-breaking-and-outlier-detection-in-istio/</link>
       <pubDate>Sun, 31 Mar 2019 11:12:07 +0800</pubDate>
@@ -11427,6 +11722,257 @@ Istio 官网每个页面右侧都有切换语言按钮，大家可以随时切�
 &lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;ServiceMesher 社区网站&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;ServiceMesher 社区网站 &lt;a href=&#34;http://www.servicemesher.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://www.servicemesher.com&lt;/a&gt; 上涵盖了所有 Service Mesh 领域的技术文章，并适时发布最新活动，是您一站式了解 Service Mesh 和参与社区的入口。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>自定义Istio Mixer Adapter示例教程（附源码）</title>
+      <link>https://cloudnative.to/blog/custom-istio-mixer-adapter/</link>
+      <pubDate>Wed, 06 Mar 2019 15:21:50 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/custom-istio-mixer-adapter/</guid>
+      <description>&lt;p&gt;快速开始：&lt;a href=&#34;https://github.com/hb-go/micro-mesh/tree/master/examples/adapter/auth&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://micro-mesh/examples/adapter/auth&lt;/a&gt;源码传送门。&lt;/p&gt;
+&lt;p&gt;研究Istio下构建简洁的微服务架构，对Istio的研究也更深入，自定义Mixer Adapter必不可少，以下结合使用场景做一个自定义适配器的实践分享。&lt;/p&gt;
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2s7z4cxj312c0k3add_hu78abb79f04e3f7d4ba8001c8bd3500b3_87745_35d7c879b3d4960164b377bf538a25b0.webp 400w,
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2s7z4cxj312c0k3add_hu78abb79f04e3f7d4ba8001c8bd3500b3_87745_f586bce6525ac0ffafa7eab6d07b8438.webp 760w,
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2s7z4cxj312c0k3add_hu78abb79f04e3f7d4ba8001c8bd3500b3_87745_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/custom-istio-mixer-adapter/006tKfTcly1g0t2s7z4cxj312c0k3add_hu78abb79f04e3f7d4ba8001c8bd3500b3_87745_35d7c879b3d4960164b377bf538a25b0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;398&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;结合&lt;a href=&#34;https://github.com/hb-go/micro-mesh#micro-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/hb-go/micro-mesh&lt;/a&gt;的实践场景，需要在&lt;code&gt;ingressgateway&lt;/code&gt;与&lt;code&gt;API service&lt;/code&gt;间加入认证&amp;amp;鉴权(JWT&amp;amp;RBAC)，自然考虑Istio提供的&lt;a href=&#34;https://istio.io/zh/docs/concepts/security/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全&lt;/a&gt;方案，但使用JWT做认证鉴权在后端是无状态的，这样在使用场景上有一定限制，如:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;密码修改、终端连接限制等场景下无法踢除&lt;/li&gt;
+&lt;li&gt;访问控制策略无法实时生效&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;默认方案只是在一些场景下不合适，根据具体需求考虑。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;基于这样的场景可以自定义Adapter来实现，目标:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Token-JWT
+&lt;ul&gt;
+&lt;li&gt;服务端验证token有效性&lt;/li&gt;
+&lt;li&gt;应对密码修改、终端数量限制等场景&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;ACL-&lt;a href=&#34;http://github.com/casbin/casbin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Casbin&lt;/a&gt;
+&lt;ul&gt;
+&lt;li&gt;服务端获取用户角色，做API访问控制&lt;/li&gt;
+&lt;li&gt;用户角色及接口授权策略实时生效&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以下示例对token验证、访问控制不做具体设计，重点介绍如何自定义一个&lt;code&gt;auth-adapter&lt;/code&gt;&lt;/p&gt;
+&lt;h2 id=&#34;自定义adapter介绍&#34;&gt;自定义Adapter介绍&lt;/h2&gt;
+&lt;p&gt;配置关系及执行流程如图：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2of1ziej31bg0nsdma_hu752e5ea0b443f82bd25964a80c646120_172186_028dbd8501503d1d3ceec5b88ec611a2.webp 400w,
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2of1ziej31bg0nsdma_hu752e5ea0b443f82bd25964a80c646120_172186_99581d39ca9eb7d1e6dd56243cebaead.webp 760w,
+               /blog/custom-istio-mixer-adapter/006tKfTcly1g0t2of1ziej31bg0nsdma_hu752e5ea0b443f82bd25964a80c646120_172186_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/custom-istio-mixer-adapter/006tKfTcly1g0t2of1ziej31bg0nsdma_hu752e5ea0b443f82bd25964a80c646120_172186_028dbd8501503d1d3ceec5b88ec611a2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;381&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;属性：使用&lt;code&gt;istio&lt;/code&gt;的&lt;code&gt;attributes&lt;/code&gt;，&lt;code&gt;istio/mixer/testdata/config/attributes.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;属性与适配器输入映射模板：使用&lt;code&gt;istio&lt;/code&gt;的&lt;code&gt;authorization&lt;/code&gt;模板，&lt;code&gt;istio/mixer/template/authorization/template.yaml&lt;/code&gt;，通过&lt;code&gt;template.proto&lt;/code&gt;查看协议内容&lt;/li&gt;
+&lt;li&gt;适配器，&lt;code&gt;micro-mesh/examples/adapter/auth/config/auth-adapter.yaml&lt;/code&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;go generate ./...&lt;/code&gt;自动生成&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;适配器服务启动配置，&lt;code&gt;micro-mesh/examples/adapter/auth/config/config.proto&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;适配器服务实例，&lt;code&gt;micro-mesh/examples/adapter/auth/operatorconfig/cluster-service.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;适配器配置，&lt;code&gt;micro-mesh/examples/adapter/auth/operatorconfig/operator-cfg.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h5 id=&#34;目录结构&#34;&gt;目录结构&lt;/h5&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bin                         执行文件
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cmd                         
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  └ main.go                 适配器入口
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;config                      配置协议
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ adapter.auth.config.pb.html                 &lt;span class=&#34;c1&#34;&gt;#go generate ./... 自动生成&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ auth-adapter.yaml       适配器描述文件       &lt;span class=&#34;c1&#34;&gt;#go generate ./... 自动生成&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ config.pb.go                                &lt;span class=&#34;c1&#34;&gt;#go generate ./... 自动生成&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ config.proto            适配器服务启动配置
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  └ config.proto_descriptor                     &lt;span class=&#34;c1&#34;&gt;#go generate ./... 自动生成&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;operatorconfig              k8s配置
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ attributes.yaml         属性                  &lt;span class=&#34;c1&#34;&gt;#copy istio/mixer/testdata/config/attributes.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ cluster-service.yaml    适配器服务实例
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ operator-cfg.yaml       适配器配置
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  └ template.yaml           属性与适配器输入模板    &lt;span class=&#34;c1&#34;&gt;#copy istio/mixer/template/authorization/template.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;testdata                    测试配置
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ attributes.yaml         属性                  &lt;span class=&#34;c1&#34;&gt;#copy istio/mixer/testdata/config/attributes.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ auth-adapter.yaml       适配器描述文件         &lt;span class=&#34;c1&#34;&gt;#copy config/auth-adapter.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ├ operator-cfg.yaml       适配器配置
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  └ template.yaml           属性与适配器输入模板    &lt;span class=&#34;c1&#34;&gt;#copy istio/mixer/template/authorization/template.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;auth.go                     适配器服务实现
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Dockerfile                  Docker镜像
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;有3处与适配器实现相关：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;适配器服务启动配置&lt;code&gt;config/config.proto&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;适配器服务实现&lt;code&gt;auth.go&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;适配器入口&lt;code&gt;cmd/main.go&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;blockquote&gt;
+&lt;p&gt;接下来使用&lt;a href=&#34;https://github.com/hb-go/micro-mesh/tree/master/examples/adapter/auth&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;micro-mesh/examples/adapter/auth&lt;/a&gt;源码按步骤操作，实现本地及&lt;code&gt;K8S&lt;/code&gt;环境的测试部署。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;步骤&#34;&gt;步骤&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;开发环境&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;OSX&lt;/li&gt;
+&lt;li&gt;Go &lt;strong&gt;1.11.1&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;protoc &lt;strong&gt;libprotoc 3.6.1&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;Istio &lt;strong&gt;1.0.6&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;1istio源码&#34;&gt;1.Istio源码&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir -p &lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/src/istio.io/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/src/istio.io/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/istio/istio.git
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;2micro-mesh源码&#34;&gt;2.micro-mesh源码&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/hb-go/micro-mesh.git
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;3mixer开发工具&#34;&gt;3.Mixer开发工具&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# build mixer server &amp;amp; client &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; istio
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;make mixs
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;make mixc
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在&lt;code&gt;$GOPATH/out/darwin_amd64/release/&lt;/code&gt;生成&lt;code&gt;mixs&lt;/code&gt;、&lt;code&gt;mixc&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;4构建auth-adapter项目&#34;&gt;4.构建Auth adapter项目&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# copy auth adapter example&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cp &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;micro-mesh path&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;/examples/adapter/auth mixer/adapter/auth
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; mixer/adapter/auth
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;Optional&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;可以删除&lt;code&gt;config&lt;/code&gt;目录除&lt;code&gt;config.proto&lt;/code&gt;外的其他文件，看执行go generate后的结果&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;go generate ./...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;go build ./...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;go generate&lt;/code&gt;根据&lt;code&gt;config/config.proto&lt;/code&gt;以及&lt;code&gt;auth.go&lt;/code&gt;的注释自动生成&lt;code&gt;config&lt;/code&gt;目录下的其他文件:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;adapter.auth.config.pb.html&lt;/li&gt;
+&lt;li&gt;auth-adapter.yaml&lt;/li&gt;
+&lt;li&gt;config.pb.go&lt;/li&gt;
+&lt;li&gt;config.proto_descriptor&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;根据&lt;code&gt;auth.go&lt;/code&gt;的以下注释，&lt;code&gt;mixer_codegen.sh&lt;/code&gt;使用&lt;code&gt;authorization&lt;/code&gt;模板生成&lt;code&gt;name&lt;/code&gt;为&lt;code&gt;auth-adapter&lt;/code&gt;的适配器。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// nolint:lll
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Generates the auth adapter&amp;#39;s resource yaml. It contains the adapter&amp;#39;s configuration, name, supported template
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// names (metric in this case), and whether it is session or no-session based.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;//go:generate $GOPATH/src/istio.io/istio/bin/mixer_codegen.sh -a mixer/adapter/auth/config/config.proto -x &amp;#34;-s=false -n auth-adapter -t authorization&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;5本地测试&#34;&gt;5.本地测试&lt;/h3&gt;
+&lt;p&gt;本地测试使用testdata下的配置，其中&lt;code&gt;operator-cfg.yaml&lt;/code&gt;有几处与正式部署不同：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;handler&lt;/code&gt;的&lt;code&gt;address&lt;/code&gt;使用本地服务&lt;code&gt;&amp;quot;[::]:44225&amp;quot;&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;为了方便测试&lt;code&gt;instance&lt;/code&gt;的&lt;code&gt;params&lt;/code&gt;参数以及&lt;code&gt;rule&lt;/code&gt;的&lt;code&gt;math&lt;/code&gt;条件做了简化&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 启动适配器服务&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;go run cmd/main.go &lt;span class=&#34;m&#34;&gt;44225&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 使用testdata下配置启动mixer server&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/out/darwin_amd64/release/mixs server &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;--configStoreURL&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;fs://&lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/src/istio.io/istio/mixer/adapter/auth/testdata &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;--log_output_level&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;attributes:debug
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 测试Adapter是否生效&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/out/darwin_amd64/release/mixc check -s request.host&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;localhost&amp;#34;&lt;/span&gt; --stringmap_attributes &lt;span class=&#34;s2&#34;&gt;&amp;#34;request.headers=x-custom-token:efg&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Check RPC completed successfully. Check status was PERMISSION_DENIED (mm-example-auth.handler.istio-system:Unauthorized...)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/out/darwin_amd64/release/mixc check -s request.host&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;localhost&amp;#34;&lt;/span&gt; --stringmap_attributes &lt;span class=&#34;s2&#34;&gt;&amp;#34;request.headers=x-custom-token:abc&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Check RPC completed successfully. Check status was OK&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;NOTE:出现预期结果不一致可能是由于mixer cache导致&lt;code&gt;Valid use count: 10000, valid duration: 9.726875254s&lt;/code&gt;，请参考&lt;a href=&#34;http://www.servicemesher.com/categories/istio-mixer-cache&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Mixer Cache&lt;/a&gt;系列文章了解。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;6打包镜像&#34;&gt;6.打包镜像&lt;/h3&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# build执行文件&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;CGO_ENABLED&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GOOS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;linux &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    go build -a -installsuffix cgo -v -o bin/auth ./cmd/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# docker镜像&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker build -t hbchen/micro-mesh-example-adapter-auth:v0.0.1 .
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker push hbchen/micro-mesh-example-adapter-auth:v0.0.1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;7istio环境部署&#34;&gt;7.Istio环境部署&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;部署环境&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;GKE &lt;strong&gt;1.11.7-gke.4&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;Istio &lt;strong&gt;1.0.0&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 属性、模板&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# attributes.yaml -&amp;gt; istio/mixer/testdata/config/attributes.yaml &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# template.yaml -&amp;gt; istio/mixer/template/authorization/template.yaml&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f examples/adapter/auth/testdata/attributes.yaml -f examples/adapter/auth/testdata/template.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 适配器&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f examples/adapter/auth/config/auth-adapter.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;这里是以&lt;a href=&#34;https://github.com/hb-go/micro-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;micro-mesh&lt;/a&gt;示例为基础的配置，如果使用&lt;code&gt;bookinfo&lt;/code&gt;或者自己的服务需要做相应的修改&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;code&gt;operator-cfg.yaml&lt;/code&gt;与本地测试配置不同：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;handler&lt;/code&gt;的&lt;code&gt;address&lt;/code&gt;使用集群服务&lt;code&gt;&amp;quot;mm-example-auth-adapter-service:44225&amp;quot;&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;instance&lt;/code&gt;的&lt;code&gt;params&lt;/code&gt;根据&lt;code&gt;authorization&lt;/code&gt;模板及&lt;code&gt;auth-adapter&lt;/code&gt;服务的需求配置&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;rule&lt;/code&gt;的&lt;code&gt;match&lt;/code&gt;条件使用&lt;code&gt;destination.service == &amp;quot;mm-example-api.default.svc.cluster.local&amp;quot;&lt;/code&gt;，仅对&lt;code&gt;mm-example-api&lt;/code&gt;服务生效&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 适配器服务实例部署&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f examples/adapter/auth/operatorconfig/cluser-service.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 适配器配置&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f examples/adapter/auth/operatorconfig/operator-cfg.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;8istio环境部署测试&#34;&gt;8.Istio环境部署测试&lt;/h3&gt;
+&lt;blockquote&gt;
+&lt;p&gt;如果没有开Gateway的JWT验证可以忽略&lt;code&gt;Authorization&lt;/code&gt;，其实做了自定义Auth后是多余的😂&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;TOKEN&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;curl https://raw.githubusercontent.com/istio/istio/release-1.1/security/tools/jwt/samples/demo.jwt -s&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Authorization: Bearer &lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$TOKEN&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-custom-token: efg&amp;#34;&lt;/span&gt; -X GET http://35.193.180.18/v1/example/call/Hobo
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;Authorization: Bearer &lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$TOKEN&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -H &lt;span class=&#34;s2&#34;&gt;&amp;#34;x-custom-token: abc&amp;#34;&lt;/span&gt; -X GET http://35.193.180.18/v1/example/call/Hobo
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/istio/istio/wiki/Mixer-Out-of-Process-Adapter-Walkthrough&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Mixer Out of Process Adapter Walkthrough&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/google-cloud/simple-istio-mixer-out-of-process-authorization-adapter-5f9363cd9bbc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Simple Istio Mixer Out of Process Authorization Adapter&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
 </description>
     </item>
     
@@ -16020,6 +16566,125 @@ Istio 官网每个页面右侧都有切换语言按钮，大家可以随时切�
     </item>
     
     <item>
+      <title>使用Istio分布式跟踪应用程序</title>
+      <link>https://cloudnative.to/blog/distributed-tracing-istio-and-your-applications/</link>
+      <pubDate>Tue, 17 Jul 2018 12:53:14 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/distributed-tracing-istio-and-your-applications/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://thenewstack.io/distributed-tracing-istio-and-your-applications/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;在微服务领域，分布式跟踪正逐渐成为调试和跟踪应用程序最重要的依赖工具。&lt;/p&gt;
+&lt;p&gt;最近的聚会和会议上，我发现很多人对分布式跟踪的工作原理很感兴趣，但同时对于分布式跟踪如何与Istio和&lt;a href=&#34;https://aspenmesh.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aspen Mesh&lt;/a&gt;等服务网格进行配合使用存在较大的困惑。特别地，我经常被问及以下问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Tracing如何与Istio一起使用？在Span中收集和报告哪些信息？&lt;/li&gt;
+&lt;li&gt;是否必须更改应用程序才能从Istio的分布式跟踪中受益？&lt;/li&gt;
+&lt;li&gt;如果目前在应用程序中报告Span，它将如何与Istio中的Span进行交互？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在这篇博客中，我将尝试回答这些问题。&lt;/p&gt;
+&lt;p&gt;在我们深入研究这些问题之前，建议先快速了解为什么我要写与分布式跟踪相关博客。如果您关注&lt;a href=&#34;https://aspenmesh.io/blog/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aspen Mesh&lt;/a&gt;的博客，您会注意到我写了两篇与tracing相关的博客，一篇关于 &lt;a href=&#34;https://aspenmesh.io/2018/01/distributed-tracing-with-istio-in-aws/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;”使用Istio跟踪AWS中的服务请求“&lt;/a&gt;，另一篇关于&lt;a href=&#34;https://aspenmesh.io/2018/04/tracing-grpc-with-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;”使用Istio跟踪gRPC应用程序&amp;quot;&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;我们在Aspen Mesh有一个非常小的工程团队，如果经常在子系统或组件上工作，您很快就会成为（或标记或分配）常驻专家。我在微服务中添加了分布式跟踪，并在AWS环境中将其与Istio集成，在此过程中发现了值得分享的各种有趣的经验。在过去的几个月里，我们一直在大量使用跟踪来了解我们的微服务，现在这种方法已经成为我们排查问题首先采用的手段。后续，我们继续回答上面提到的问题。&lt;/p&gt;
+&lt;h2 id=&#34;tracing如何与istio一起使用&#34;&gt;Tracing如何与Istio一起使用？&lt;/h2&gt;
+&lt;p&gt;Istio在应用程序运行的Pod容器中注入sidecar代理（Envoy）。sidecar代理透明地拦截（防火墙魔法）进出应用程序的所有网络流量。拦截模式下，sidecar代理处于一个独特的位置，可以自动跟踪所有网络请求（包括HTTP/1.1、HTTP/2.0和gRPC）。&lt;/p&gt;
+&lt;p&gt;让我们看看sidecar代理对来自客户端（外部或其他微服务）的传入Pod请求所做的更改。从现在开始，为了简单起见，我将假设跟踪标头采用&lt;a href=&#34;https://github.com/openzipkin/b3-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin&lt;/a&gt;格式。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果传入请求没有任何跟踪头，则在请求传递到与sidecar同一Pod中的应用程序容器前，sidecar代理将创建根Span（其中trace、parent和Span ID具有完全相同的Span）。&lt;/li&gt;
+&lt;li&gt;如果传入的请求有跟踪信息（如正在使用Istio Ingress或者微服务是从另一个注入了sidecar代理的微服务中调用），那么sidecar代理将从跟踪头中提取Span上下文，在将请求传递到同一Pod中的应用程序容器之前，创建一个新的兄弟（sibling）Span（与传入头相同的trace、parent和Span ID）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在应用程序容器发出相反方向上的出站请求（外部服务或集群中的服务）时，Pod中的sidecar代理在向上游服务发出请求之前执行以下操作：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果不存在跟踪头，则sidecar代理会创建根Span并将Span上下文作为头部注入新请求。&lt;/li&gt;
+&lt;li&gt;如果存在跟踪头，则sidecar代理从头部中提取Span上下文，并基于此上下文创建&lt;strong&gt;子Span&lt;/strong&gt;。新上下文作为请求中的跟踪头传播到上游服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;根据上面的解释，您应该注意到对于微服务调用链中的每一跳，将获得Istio报告的两个Span，一个来自客户端sidecar（&lt;code&gt;span.kind&lt;/code&gt;设置为client）和一个来自服务器sidecar（&lt;code&gt;span.kind&lt;/code&gt;设置为server）。sidecar创建的所有Span都由sidecar自动报告给配置的后端跟踪系统，比如Jaeger或Zipkin等。&lt;/p&gt;
+&lt;p&gt;接下来，让我们看一下Span中报告的信息。Span包含以下信息：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;x-request-id&lt;/strong&gt;：报告为 &lt;code&gt;guid:x-request-id&lt;/code&gt;，这对于将访问日志与Span相关联非常有用。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;upstream cluster&lt;/strong&gt;：发出请求的上游服务。如果Span跟踪对Pod的传入请求，则通常将其设置为 &lt;code&gt;in.&amp;lt;name&amp;gt;&lt;/code&gt;。如果Span跟踪出站请求，则将其设置为 &lt;code&gt;out.&amp;lt;name&amp;gt;&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;HTTP headers&lt;/strong&gt;：在可用时报告以下 HTTP 头部信息：
+&lt;ul&gt;
+&lt;li&gt;+URL&lt;/li&gt;
+&lt;li&gt;+Method&lt;/li&gt;
+&lt;li&gt;+User 代理&lt;/li&gt;
+&lt;li&gt;+Protocol&lt;/li&gt;
+&lt;li&gt;+Request 大小&lt;/li&gt;
+&lt;li&gt;+Response 大小&lt;/li&gt;
+&lt;li&gt;+Response 标记&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;每个Span的开始和结束时间。&lt;/li&gt;
+&lt;li&gt;跟踪的元数据：这包括trace ID、Span ID和Span类型（client或server）。除此之外，还会报告每个Span的操作名称。操作名称设置为影响路由配置的虚拟服务（或 v1alpha1 中的路由规则），如果选择了默认路由，则设置为 “default-route”。这对于了解哪个Istio路由配置对Span生效非常有用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;接下来让我们继续讨论第二个问题。&lt;/p&gt;
+&lt;h2 id=&#34;是否必须修改应用程序才能利用istio追踪&#34;&gt;是否必须修改应用程序才能利用Istio追踪？&lt;/h2&gt;
+&lt;p&gt;是的，您需要在应用程序中添加逻辑，以便将传入跟踪头部信息从传入请求传播到传出请求，这样才能从Istio的分布式跟踪中获得更多有价值的信息。&lt;/p&gt;
+&lt;p&gt;如果应用程序容器在传入请求的上下文中发出新的出站请求，且传入请求中未包括跟踪头，则sidecar代理会为出站请求创建根Span。这意味着您将始终只看到两个微服务的路径。另一方面，如果应用程序容器确实将跟踪头部信息从传入请求传播到传出请求，则sidecar代理将创建如上所述的子Span。通过创建子Span，您可以了解跨多个微服务的依赖关系。&lt;/p&gt;
+&lt;p&gt;在应用程序中传播跟踪头有两种选择。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;查找&lt;a href=&#34;https://istio.io/docs/tasks/telemetry/distributed-tracing/#understanding-what-happened&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio文档&lt;/a&gt;中提到的跟踪头，并将其从传入请求传输到传出请求。这种方法很简单，几乎适用于所有情况。但是，它有一个主要缺点，无法向Span添加自定义标记信息例如用户信息等。您无法创建应用程序中的事件相关的子Span。由于是在不了解Span格式或上下文的情况下传播跟踪信息，因此添加特定于应用程序的信息的能力有限。&lt;/li&gt;
+&lt;li&gt;第二种方法是在应用程序中设置跟踪客户端，并使用&lt;a href=&#34;http://opentracing.io/documentation/pages/api/index&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing API&lt;/a&gt;将跟踪头部信息从传入请求传播到传出请求。我创建了一个&lt;a href=&#34;https://github.com/aspenmesh/tracing-go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;跟踪示例包&lt;/a&gt;，它提供了一种在您的应用程序中设置&lt;a href=&#34;https://github.com/jaegertracing/jaeger-client-go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jaeger-client-go&lt;/a&gt;的简单方法，该方法与Istio兼容。以下代码段可用于应用程序的主功能中：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;log&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/spf13/cobra&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/spf13/viper&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/aspenmesh/tracing-go&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;setupTracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Configure Tracing
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;tOpts&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Options&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;ZipkinURL&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;viper&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;GetString&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;trace_zipkin_url&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;JaegerURL&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;viper&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;GetString&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;trace_jaeger_url&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;LogTraceSpans&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;viper&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;GetBool&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;trace_log_spans&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tOpts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Validate&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Fatal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Invalid options for tracing: &amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tracer&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;io&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Closer&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tOpts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;TracingEnabled&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Configure&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;myapp&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tOpts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Close&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Fatal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Failed to configure tracing: &amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;k&#34;&gt;defer&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Close&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;需要注意的关键点是在&lt;a href=&#34;https://github.com/aspenmesh/tracing-go/blob/master/config.go#L124&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tracing-go&lt;/a&gt;包中我将Opentracing全局跟踪器设置Jaeger。 这使我能够使用Opentracing API将跟踪头从传入请求传播到传出请求，如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;net/http&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;golang.org/x/net/context/ctxhttp&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	 &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;github.com/opentracing/opentracing-go&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;injectTracingHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;incomingReq&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;addr&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;ifSpan&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;SpanFromContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;incomingReq&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;());&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Span&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;outgoingReq&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;_&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;GET&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;GlobalTracer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;HTTPHeaders&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;HTTPHeadersCarrier&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;outgoingReq&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ctxhttp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Do&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ctx&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;outgoingReq&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;c1&#34;&gt;// Do something with resp
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您还可以使用Opentracing API 来设置Span标记或从Istio添加的跟踪上下文创建子Span，如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;SetSpanTag&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;incomingReq&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;value&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{})&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;ifSpan&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ot&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;SpanFromContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;incomingReq&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;());&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Span&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;SetTag&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;除了上述好处之外，您不必直接处理跟踪信息，但跟踪器（在本例中为Jaeger）会为您处理它。 我强烈建议使用此方法，因为它在应用程序中提供了跟踪的基础，增强了跟踪功能而不会产生太多开销。&lt;/p&gt;
+&lt;p&gt;现在让我们继续讨论第三个问题。&lt;/p&gt;
+&lt;h2 id=&#34;istio报告的span如何与应用程序创建的span交互&#34;&gt;Istio报告的Span如何与应用程序创建的Span交互？&lt;/h2&gt;
+&lt;p&gt;如果您希望应用程序报告的Span是Istio添加的跟踪上下文的子Span，则应使用OpenTracing API &lt;a href=&#34;https://godoc.org/github.com/opentracing/opentracing-go#StartSpanFromContext&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;StartSpanFromContext&lt;/a&gt;而不是使用&lt;a href=&#34;https://godoc.org/github.com/opentracing/opentracing%20go#StartSpan&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;StartSpan&lt;/a&gt;。如果存在跟踪头部信息，则&lt;code&gt;StartSpanFromContext&lt;/code&gt;从父级上下文创建子Span，否则创建根Span。&lt;/p&gt;
+&lt;p&gt;请注意，在上面的所有示例中，我都使用了OpenTracing Go API，但您应该能够使用与应用程序相同语言编写的任何跟踪客户端库，只要它与OpenTracing API兼容即可。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>使用Istio 0.8对Kubernetes进行A/B测试</title>
       <link>https://cloudnative.to/blog/ab-testing-on-kubernetes-with-istio-0-8/</link>
       <pubDate>Fri, 13 Jul 2018 12:38:44 +0800</pubDate>
@@ -18074,6 +18739,771 @@ Istio 官网每个页面右侧都有切换语言按钮，大家可以随时切�
 &lt;h3 id=&#34;总结&#34;&gt;总结&lt;/h3&gt;
 &lt;p&gt;Alexis Richardson 给了我们关于 GitOps 的概述，以及为什么您需要在管理运行在 Kubernetes 和 Istio 上的应用程序时考虑这种方法。然后 Varun Talwar 谈到了 Istio 是什么以及如何使用 GitOps 工作流程来管理应用程序。最后，Stefan Prodan 向我们展示了一个特殊用例，其中非原子工作流程（如金丝雀发布）也可以通过像 Istio 这样的服务网格上的 GitOps 进行管理。&lt;/p&gt;
 &lt;p&gt;本次演讲的视频请见：&lt;a href=&#34;https://www.youtube.com/watch?v=VkKMf23ZokY&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GitOps for Istio - Manage Istio Config like Code - Varun Talwar &amp;amp; Alexis Richardson&lt;/a&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>深入解读Service Mesh背后的技术细节</title>
+      <link>https://cloudnative.to/blog/deepin-service-mesh-tech-details/</link>
+      <pubDate>Wed, 23 May 2018 16:09:57 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/deepin-service-mesh-tech-details/</guid>
+      <description>&lt;p&gt;在Kubernetes称为容器编排的标准之后，Service Mesh开始火了起来，但是很多文章讲概念的多，讲技术细节的少，所以专门写一篇文章，来解析Service Mesh背后的技术细节。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一、Service Mesh是Kubernetes支撑微服务能力拼图的最后一块&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;在上一篇文章&lt;a href=&#34;http://mp.weixin.qq.com/s?__biz=MzI1NzYzODk4OQ==&amp;amp;mid=2247484871&amp;amp;idx=1&amp;amp;sn=4c40df039911e7ef7d355c1435271eb0&amp;amp;chksm=ea1512e5dd629bf368bae145c6c42ad89f260c529d0eb006779768c6f124e0318b653d2d1821&amp;amp;scene=21#wechat_redirect&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为什么 kubernetes 天然适合微服务&lt;/a&gt;中我们提到，Kubernetes是一个奇葩所在，他的组件复杂，概念复杂，在没有实施微服务之前，你可能会觉得为什么Kubernetes要设计的这么复杂，但是一旦你要实施微服务，你会发现Kubernetes中的所有概念，都是有用的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-微服务设计&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;微服务设计&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_08982cce642f5ea1ee6241f4ba0573a1.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_65c8dae5f94d43b7c38ac17d07672a14.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_08982cce642f5ea1ee6241f4ba0573a1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;294&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      微服务设计
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在我们微服务设计的十个要点中，我们会发现Kubernetes都能够有相应的组件和概念，提供相应的支持。&lt;/p&gt;
+&lt;p&gt;其中最后的一块拼图就是服务发现，与熔断限流降级。&lt;/p&gt;
+&lt;p&gt;众所周知，Kubernetes的服务发现是通过Service来实现的，服务之间的转发是通过kube-proxy下发iptables规则来实现的，这个只能实现最基本的服务发现和转发能力，不能满足高并发应用下的高级的服务特性，比较SpringCloud和Dubbo有一定的差距，于是Service Mesh诞生了，他期望讲熔断，限流，降级等特性，从应用层，下沉到基础设施层去实现，从而使得Kubernetes和容器全面接管微服务。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;二、以Istio为例讲述Service Mesh中的技术关键点&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_269cf4dd8e440c18c35d4be57faab7fa.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_d52f3cbdf146a9d30b41ff6a6d29781a.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_269cf4dd8e440c18c35d4be57faab7fa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;421&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;就如SDN一样，Service Mesh将服务请求的转发分为控制面和数据面，因而分析他，也是从数据面先分析转发的能力，然后再分析控制面如何下发命令。今天这篇文章重点讲述两个组件Envoy和Pilot&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一切从Envoy开始&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;我们首先来看，如果没有融入Service Mesh，Envoy本身能够做什么事情呢？&lt;/p&gt;
+&lt;p&gt;Envoy是一个高性能的C++写的proxy转发器，那Envoy如何转发请求呢？需要定一些规则，然后按照这些规则进行转发。&lt;/p&gt;
+&lt;p&gt;规则可以是静态的，放在配置文件中的，启动的时候加载，要想重新加载，一般需要重新启动，但是Envoy支持热加载和热重启，一定程度上缓解了这个问题。&lt;/p&gt;
+&lt;p&gt;当然最好的方式是规则设置为动态的，放在统一的地方维护，这个统一的地方在Envoy眼中看来称为Discovery Service，过一段时间去这里拿一下配置，就修改了转发策略。&lt;/p&gt;
+&lt;p&gt;无论是静态的，还是动态的，在配置里面往往会配置四个东西。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_3a92eedcb013bc454ca98068fc24fb4d.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_d7c2a34959810eb9e82586a580acb158.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_3a92eedcb013bc454ca98068fc24fb4d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;483&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一是listener，也即envoy既然是proxy，专门做转发，就得监听一个端口，接入请求，然后才能够根据策略转发，这个监听的端口称为listener&lt;/p&gt;
+&lt;p&gt;二是endpoint，是目标的ip地址和端口，这个是proxy最终将请求转发到的地方。&lt;/p&gt;
+&lt;p&gt;三是cluster，一个cluster是具有完全相同行为的多个endpoint，也即如果有三个容器在运行，就会有三个IP和端口，但是部署的是完全相同的三个服务，他们组成一个Cluster，从cluster到endpoint的过程称为负载均衡，可以轮询等。&lt;/p&gt;
+&lt;p&gt;四是route，有时候多个cluster具有类似的功能，但是是不同的版本号，可以通过route规则，选择将请求路由到某一个版本号，也即某一个cluster。&lt;/p&gt;
+&lt;p&gt;这四个的静态配置的例子如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_f69971b55abaded1b40faeed6f9c86f1.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_efe4c94e2728b08dd5401d57de002a41.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_f69971b55abaded1b40faeed6f9c86f1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;517&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图所示，listener被配置为监听本地127.0.0.1的10000接口，route配置为某个url的前缀转发到哪个cluster，cluster里面配置负载均衡策略，hosts里面是所有的endpoint。&lt;/p&gt;
+&lt;p&gt;如果你想简单的将envoy使用起来，不用什么service mesh，一个进程，加上这个配置文件，就可以了，就能够转发请求了。&lt;/p&gt;
+&lt;p&gt;对于动态配置，也应该配置发现中心，也即Discovery Service，对于上述四种配置，各对应相应的DS，所以有LDS, RDS, CDS, EDS。&lt;/p&gt;
+&lt;p&gt;动态配置的例子如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_637c8f9f7b2f3905086ab8036acc0894.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_3f99975b2310e06fee7409755398224c.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_637c8f9f7b2f3905086ab8036acc0894.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;624&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;控制面Pilot的工作模式&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;数据面envoy可以通过加装静态配置文件的方式运行，而动态信息，需要从Discovery Service去拿。&lt;/p&gt;
+&lt;p&gt;Discovery Service就是部署在控制面的，在istio中，是Pilot。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_0c479c367d8f83bd09cce7c9f94ea146.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_59a9d908c507b01f1a44a62d1aca53fb.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_0c479c367d8f83bd09cce7c9f94ea146.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;538&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图为Pilot的架构，最下面一层是envoy的API，就是提供Discovery Service的API，这个API的规则由envoy定，但不是Pilot调用Envoy，而是Envoy去主动调用Pilot的这个API。&lt;/p&gt;
+&lt;p&gt;Pilot最上面一层称为Platform Adapter，这一层是干什么的呢？这一层不是Kubernetes, Mesos调用Pilot，而是Pilot通过调用Kubernetes来发现服务之间的关系。&lt;/p&gt;
+&lt;p&gt;这是理解Istio比较绕的一个点。也即pilot使用Kubernetes的Service，仅仅使用它的服务发现功能，而不使用它的转发功能，pilot通过在kubernetes里面注册一个controller来监听事件，从而获取Service和Kubernetes的Endpoint以及Pod的关系，但是在转发层面，就不会再使用kube-proxy根据service下发的iptables规则进行转发了，而是将这些映射关系转换成为pilot自己的转发模型，下发到envoy进行转发，envoy不会使用kube-proxy的那些iptables规则。这样就把控制面和数据面彻底分离开来，服务之间的相互关系是管理面的事情，不要和真正的转发绑定在一起，而是绕到pilot后方。&lt;/p&gt;
+&lt;p&gt;Pilot另外一个对外的接口是Rules API，这是给管理员的接口，管理员通过这个接口设定一些规则，这些规则往往是应用于Routes, Clusters, Endpoints的，而都有哪些Clusters和Endpoints，是由Platform Adapter这面通过服务发现得到的。&lt;/p&gt;
+&lt;p&gt;自动发现的这些Clusters和Endpoints，外加管理员设置的规则，形成了Pilot的数据模型，其实就是他自己定义的一系列数据结构，然后通过envoy API暴露出去，等待envoy去拉取这些规则。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_b000c3472f6440383dd909c523162d6f.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_acdf893723130135741f48bc56741a15.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_b000c3472f6440383dd909c523162d6f.webp&#34;
+               width=&#34;746&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;常见的一种人工规则是Routes，通过服务发现，Pilot可以从Kubernetes那里知道Service B有两个版本，一般是两个Deployment，属于同一个Service，管理员通过调用Pilot的Rules API，来设置两个版本之间的Route规则，一个占99%的流量，一个占1%的流量，这两方面信息形成Pilot的数据结构模型，然后通过Envoy API下发，Envoy就会根据这个规则设置转发策略了。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_0cd542bc3f39e3abd4e2a8031eaf8c48.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_9228101ae31d16e070f2f11487e63476.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_0cd542bc3f39e3abd4e2a8031eaf8c48.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;539&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;另一个常用的场景就是负载均衡，Pilot通过Kubernetes的Service发现Service B包含一个Deployment，但是有三个副本，于是通过Envoy API下发规则，使得Envoy在这三个副本之间进行负载均衡，而非通过Kubernetes本身Service的负载均衡机制。&lt;/p&gt;
+&lt;p&gt;三、以Istio为例解析Service Mesh的技术细节&lt;/p&gt;
+&lt;p&gt;了解了Service Mesh的大概原理，接下来我们通过一个例子来解析其中的技术细节。&lt;/p&gt;
+&lt;p&gt;凡是试验过Istio的同学都应该尝试过下面这个BookInfo的例子，不很复杂，但是麻雀虽小五脏俱全。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1baa88de745f6a1bbd1abe7d1ac7029a.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_ee5f3a5aeba648bfbe12d23f10b8fe0d.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1baa88de745f6a1bbd1abe7d1ac7029a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;518&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个例子中，我们重点关注ProductPage这个服务，对Reviews服务的调用，这里涉及到路由策略和负载均衡。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Productpage就是个Python程序&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;productpage是一个简单的用python写的提供restful API的程序。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_165c2486300abef2a30e7df6edd0483b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_eed9bdf6757df4c71df6e2cad974ef19.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_165c2486300abef2a30e7df6edd0483b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;635&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在里面定义了很多的route，来接收API请求，并做相应的操作。&lt;/p&gt;
+&lt;p&gt;在需要请求其他服务，例如reviews, ratings的时候，则需要向后方发起restful调用。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_8ab1cea06a9a01ab67ca7b3e95613b15.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_7f875f884e0c1d675966999f107a3325.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_8ab1cea06a9a01ab67ca7b3e95613b15.webp&#34;
+               width=&#34;668&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从代码可以看出，productpage对于后端的调用，都是通过域名来的。&lt;/p&gt;
+&lt;p&gt;对于productpage这个程序来讲，他觉得很简单，通过这个域名就可以调用了，既不需要通过服务发现系统获取这个域名，也不需要关心转发，更意识不到自己是部署在kubernetes上的，是否用了service mesh，所以服务之间的通信完全交给了基础设施层。&lt;/p&gt;
+&lt;p&gt;通过Kubernetes编排productpage&lt;/p&gt;
+&lt;p&gt;有了productpage程序，接下来就是将他部署到kubernetes上，这里没有什么特殊的，用的就是kubernetes默认的编排文件。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_3a22d8e60bd82775146c3b911019239b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_4a23b60bf46a600e336b608d69b7bbd2.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_3a22d8e60bd82775146c3b911019239b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;445&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先定义了一个Deployment，使用bookinfo的容器镜像，然后定义一个Service，用于这个Deployment的服务发现。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;通过Kubernetes编排reviews&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_7cd96955800d6c63c484c43c15d99151.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_dab429e7cba15a6e334c22a3aa25cf81.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_7cd96955800d6c63c484c43c15d99151.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;400&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个稍微有些复杂，定义了三个Deployment，但是版本号分别为V1, V2, V3，但是label都是app: reviews。&lt;/p&gt;
+&lt;p&gt;最后定义了一个Service，对应的label是app: reviews，作为这三个Deployment的服务发现。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;istioctl对productpage进行定制化之一：嵌入proxy_init作为InitContainer&lt;/strong&gt;到目前为止，一切正常，接下来就是见证奇迹的时刻，也即istio有个工具istioctl可以对于yaml文件进行定制化&lt;/p&gt;
+&lt;p&gt;定制化的第一项就是添加了一个initContainer，这种类型的container可以做一些初始化的工作后，成功退出，kubernetes不会保持他长期运行。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_2b067084a65b4772a2ea0f2fe6080eca.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_6bf2186aa388199534cc2ce7d26bcf0c.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_2b067084a65b4772a2ea0f2fe6080eca.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;519&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个InitContainer里面做什么事情呢？&lt;/p&gt;
+&lt;p&gt;我们登录进去发现，在这个InitContainer里面运行了一个shell脚本。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_a3712d4ac0e111f11a858a5ab9310e68.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_48ccba6c0c1731882c327c3c37ded1b7.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_a3712d4ac0e111f11a858a5ab9310e68.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;288&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;就是这个shell脚本在容器里面写入了大量的iptables规则。&lt;/p&gt;
+&lt;p&gt;首先定义的一条规则是ISTIO_REDIRECT转发链，这条链不分三七二十一，都将网络包转发给envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;但是一开始这条链没有被挂到iptables默认的几条链中，所以不起作用。&lt;/p&gt;
+&lt;p&gt;接下来就是在PREROUTING规则中，使用这个转发链，从而进入容器的所有流量，都被先转发到envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;envoy作为一个代理，已经被配置好了，将请求转发给productpage程序。&lt;/p&gt;
+&lt;p&gt;productpage程序接受到请求，会转向调用外部的reviews或者ratings，从上面的分析我们知道，productpage只是做普通的域名调用。&lt;/p&gt;
+&lt;p&gt;当productpage往后端进行调用的时候，就碰到了output链，这个链会使用转发链，将所有出容器的请求都转发到envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;这样无论是入口的流量，还是出口的流量，全部用envoy做成了汉堡包。&lt;/p&gt;
+&lt;p&gt;envoy根据服务发现的配置，知道reviews或者ratings如何访问，于是做最终的对外调用。&lt;/p&gt;
+&lt;p&gt;这个时候iptables规则会对从envoy出去的流量做一个特殊处理，允许他发出去，不再使用上面的output规则。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;istioctl对productpage进行定制化之二：嵌入proxy容器作为sidecar&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;istioctl做的第二项定制化是，嵌入proxy容器作为sidecar。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_2f412d6ef91fefa35725d0f7be05597f.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_03f03fcb426b67314d89fd554ea6eae9.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_2f412d6ef91fefa35725d0f7be05597f.webp&#34;
+               width=&#34;354&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个似乎看起来更加复杂，但是进入容器我们可以看到，启动了两个进程。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_edc68d1683dada39c9e741db492911da.webp 400w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_5bf3989f05ca20568dbb9a69df802b35.webp 760w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_edc68d1683dada39c9e741db492911da.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;295&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一个是我们熟悉的envoy，他有一个配置文件是/etc/istio/proxy/envoy-rev0.json&lt;/p&gt;
+&lt;p&gt;我们再前面讲述envoy的时候说过，有了配置文件，envoy就能够转发了，我们先来看看配置文件里面都有啥。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_affd68ef2c0c10dc9e37531e1b4f9896.webp 400w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_9eb94afaf4c6f02dc343dd513a097c9b.webp 760w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_affd68ef2c0c10dc9e37531e1b4f9896.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;414&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这里面配置了envoy的管理端口，等一下我们会通过这个端口查看envoy被pilot下发了哪些转发策略。&lt;/p&gt;
+&lt;p&gt;然后就是动态资源，也即从各种discovery service去拿转发策略。&lt;/p&gt;
+&lt;p&gt;还有就是静态资源，也即静态配置的，需要重启才能加载的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_40a7c06dc370ff9237fa0a9a2ed1e7ed.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_adf9bf05d900d1259acd340d49db0913.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_40a7c06dc370ff9237fa0a9a2ed1e7ed.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;414&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这就是pilot-agent的作用，他是envoy的一个简单的管理器，因为有些静态资源，如果TLS的证书，envoy还不支持动态下发，因而需要重新静态配置，然后pilot-agent负责将envoy进行热重启加载。&lt;/p&gt;
+&lt;p&gt;好在envoy有良好的热重启机制，重启的时候，会先启动一个备用进程，将转发的统计数据通过shared memory在两个进程间共享。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;深入解析pilot的工作机制&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_202043c358a170791f13d2a9f5edb477.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_d9e5320d7b620ff042d111770707a235.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_202043c358a170791f13d2a9f5edb477.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;455&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Pilot的工作机制展开后如图所示。&lt;/p&gt;
+&lt;p&gt;istio config是管理员通过管理接口下发的转发规则。&lt;/p&gt;
+&lt;p&gt;Service Discovery模块对于Kubernetes来讲，就是创建了一个controller来监听Service创建和删除的事件，当service有变化时，会通知pilot，pilot会根据变化更新下发给envoy的规则。&lt;/p&gt;
+&lt;p&gt;pilot将管理员输入的转发策略配置和服务发现的当前状态，变成pilot自己的数据结构模型，然后暴露成envoy的api，由于是envoy来调用，因而要实现一个服务端，这里有lds, rds, cds, eds。&lt;/p&gt;
+&lt;p&gt;接下来我们看，在pilot上配置route之后会发生什么？&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_c38dc898263a8d3874c773f488dee939.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_5558b7167ed819620b4fd7cd07ad0944.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_c38dc898263a8d3874c773f488dee939.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;569&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图，我们将所有的流量都发给版本1。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d4365ea36edeab18e7f5893303432c5b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d37d57a7d4856ca25d2da979e109f9be.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d4365ea36edeab18e7f5893303432c5b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;427&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们查看envoy的管理端口，可以看到只配置了reviews的v1。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_5afe36eecf06715506e4f1e408c2ac3b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_ad595c60f1db046e74cee2cc9011b6b4.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_5afe36eecf06715506e4f1e408c2ac3b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;395&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当我们修改路由为v1和v3比例是五十比五十。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_8b54d94b5d43eb40f92a240fda528145.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_0f175b779d7157860609a7290e953874.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_8b54d94b5d43eb40f92a240fda528145.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;566&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;可以看到envoy的管理端口，路由有了两个版本的配置，也对应后端的两个ip地址。&lt;/p&gt;
 </description>
     </item>
     

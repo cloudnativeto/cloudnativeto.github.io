@@ -28,5 +28,770 @@
 </description>
     </item>
     
+    <item>
+      <title>深入解读Service Mesh背后的技术细节</title>
+      <link>https://cloudnative.to/blog/deepin-service-mesh-tech-details/</link>
+      <pubDate>Wed, 23 May 2018 16:09:57 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/deepin-service-mesh-tech-details/</guid>
+      <description>&lt;p&gt;在Kubernetes称为容器编排的标准之后，Service Mesh开始火了起来，但是很多文章讲概念的多，讲技术细节的少，所以专门写一篇文章，来解析Service Mesh背后的技术细节。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一、Service Mesh是Kubernetes支撑微服务能力拼图的最后一块&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;在上一篇文章&lt;a href=&#34;http://mp.weixin.qq.com/s?__biz=MzI1NzYzODk4OQ==&amp;amp;mid=2247484871&amp;amp;idx=1&amp;amp;sn=4c40df039911e7ef7d355c1435271eb0&amp;amp;chksm=ea1512e5dd629bf368bae145c6c42ad89f260c529d0eb006779768c6f124e0318b653d2d1821&amp;amp;scene=21#wechat_redirect&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为什么 kubernetes 天然适合微服务&lt;/a&gt;中我们提到，Kubernetes是一个奇葩所在，他的组件复杂，概念复杂，在没有实施微服务之前，你可能会觉得为什么Kubernetes要设计的这么复杂，但是一旦你要实施微服务，你会发现Kubernetes中的所有概念，都是有用的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-微服务设计&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;微服务设计&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_08982cce642f5ea1ee6241f4ba0573a1.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_65c8dae5f94d43b7c38ac17d07672a14.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlc9gw4y0j30u00bm122_hu82087d4186d318616dce5ad14ea4f2d2_292918_08982cce642f5ea1ee6241f4ba0573a1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;294&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      微服务设计
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在我们微服务设计的十个要点中，我们会发现Kubernetes都能够有相应的组件和概念，提供相应的支持。&lt;/p&gt;
+&lt;p&gt;其中最后的一块拼图就是服务发现，与熔断限流降级。&lt;/p&gt;
+&lt;p&gt;众所周知，Kubernetes的服务发现是通过Service来实现的，服务之间的转发是通过kube-proxy下发iptables规则来实现的，这个只能实现最基本的服务发现和转发能力，不能满足高并发应用下的高级的服务特性，比较SpringCloud和Dubbo有一定的差距，于是Service Mesh诞生了，他期望讲熔断，限流，降级等特性，从应用层，下沉到基础设施层去实现，从而使得Kubernetes和容器全面接管微服务。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;二、以Istio为例讲述Service Mesh中的技术关键点&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_269cf4dd8e440c18c35d4be57faab7fa.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_d52f3cbdf146a9d30b41ff6a6d29781a.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle3moclsj30u00gmn2n_huc87ec88cdac7cdcae9d5792952577d1f_149157_269cf4dd8e440c18c35d4be57faab7fa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;421&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;就如SDN一样，Service Mesh将服务请求的转发分为控制面和数据面，因而分析他，也是从数据面先分析转发的能力，然后再分析控制面如何下发命令。今天这篇文章重点讲述两个组件Envoy和Pilot&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一切从Envoy开始&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;我们首先来看，如果没有融入Service Mesh，Envoy本身能够做什么事情呢？&lt;/p&gt;
+&lt;p&gt;Envoy是一个高性能的C++写的proxy转发器，那Envoy如何转发请求呢？需要定一些规则，然后按照这些规则进行转发。&lt;/p&gt;
+&lt;p&gt;规则可以是静态的，放在配置文件中的，启动的时候加载，要想重新加载，一般需要重新启动，但是Envoy支持热加载和热重启，一定程度上缓解了这个问题。&lt;/p&gt;
+&lt;p&gt;当然最好的方式是规则设置为动态的，放在统一的地方维护，这个统一的地方在Envoy眼中看来称为Discovery Service，过一段时间去这里拿一下配置，就修改了转发策略。&lt;/p&gt;
+&lt;p&gt;无论是静态的，还是动态的，在配置里面往往会配置四个东西。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_3a92eedcb013bc454ca98068fc24fb4d.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_d7c2a34959810eb9e82586a580acb158.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle43cmthj30py0gignh_huc4259382e04afe819deb47f8803889aa_83642_3a92eedcb013bc454ca98068fc24fb4d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;483&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一是listener，也即envoy既然是proxy，专门做转发，就得监听一个端口，接入请求，然后才能够根据策略转发，这个监听的端口称为listener&lt;/p&gt;
+&lt;p&gt;二是endpoint，是目标的ip地址和端口，这个是proxy最终将请求转发到的地方。&lt;/p&gt;
+&lt;p&gt;三是cluster，一个cluster是具有完全相同行为的多个endpoint，也即如果有三个容器在运行，就会有三个IP和端口，但是部署的是完全相同的三个服务，他们组成一个Cluster，从cluster到endpoint的过程称为负载均衡，可以轮询等。&lt;/p&gt;
+&lt;p&gt;四是route，有时候多个cluster具有类似的功能，但是是不同的版本号，可以通过route规则，选择将请求路由到某一个版本号，也即某一个cluster。&lt;/p&gt;
+&lt;p&gt;这四个的静态配置的例子如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_f69971b55abaded1b40faeed6f9c86f1.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_efe4c94e2728b08dd5401d57de002a41.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle4hlg1wj30u00kewn6_hue82a4afc7199b58c784e12b7090ecc80_199562_f69971b55abaded1b40faeed6f9c86f1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;517&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图所示，listener被配置为监听本地127.0.0.1的10000接口，route配置为某个url的前缀转发到哪个cluster，cluster里面配置负载均衡策略，hosts里面是所有的endpoint。&lt;/p&gt;
+&lt;p&gt;如果你想简单的将envoy使用起来，不用什么service mesh，一个进程，加上这个配置文件，就可以了，就能够转发请求了。&lt;/p&gt;
+&lt;p&gt;对于动态配置，也应该配置发现中心，也即Discovery Service，对于上述四种配置，各对应相应的DS，所以有LDS, RDS, CDS, EDS。&lt;/p&gt;
+&lt;p&gt;动态配置的例子如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_637c8f9f7b2f3905086ab8036acc0894.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_3f99975b2310e06fee7409755398224c.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle4uy7ghj30u00onaie_hu9177881bfc384ab544612c10ee026252_181245_637c8f9f7b2f3905086ab8036acc0894.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;624&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;控制面Pilot的工作模式&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;数据面envoy可以通过加装静态配置文件的方式运行，而动态信息，需要从Discovery Service去拿。&lt;/p&gt;
+&lt;p&gt;Discovery Service就是部署在控制面的，在istio中，是Pilot。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_0c479c367d8f83bd09cce7c9f94ea146.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_59a9d908c507b01f1a44a62d1aca53fb.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5drdsxj30u00l944h_hub3ad73a6409efe05a26b11f77f3bbf63_196377_0c479c367d8f83bd09cce7c9f94ea146.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;538&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图为Pilot的架构，最下面一层是envoy的API，就是提供Discovery Service的API，这个API的规则由envoy定，但不是Pilot调用Envoy，而是Envoy去主动调用Pilot的这个API。&lt;/p&gt;
+&lt;p&gt;Pilot最上面一层称为Platform Adapter，这一层是干什么的呢？这一层不是Kubernetes, Mesos调用Pilot，而是Pilot通过调用Kubernetes来发现服务之间的关系。&lt;/p&gt;
+&lt;p&gt;这是理解Istio比较绕的一个点。也即pilot使用Kubernetes的Service，仅仅使用它的服务发现功能，而不使用它的转发功能，pilot通过在kubernetes里面注册一个controller来监听事件，从而获取Service和Kubernetes的Endpoint以及Pod的关系，但是在转发层面，就不会再使用kube-proxy根据service下发的iptables规则进行转发了，而是将这些映射关系转换成为pilot自己的转发模型，下发到envoy进行转发，envoy不会使用kube-proxy的那些iptables规则。这样就把控制面和数据面彻底分离开来，服务之间的相互关系是管理面的事情，不要和真正的转发绑定在一起，而是绕到pilot后方。&lt;/p&gt;
+&lt;p&gt;Pilot另外一个对外的接口是Rules API，这是给管理员的接口，管理员通过这个接口设定一些规则，这些规则往往是应用于Routes, Clusters, Endpoints的，而都有哪些Clusters和Endpoints，是由Platform Adapter这面通过服务发现得到的。&lt;/p&gt;
+&lt;p&gt;自动发现的这些Clusters和Endpoints，外加管理员设置的规则，形成了Pilot的数据模型，其实就是他自己定义的一系列数据结构，然后通过envoy API暴露出去，等待envoy去拉取这些规则。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_b000c3472f6440383dd909c523162d6f.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_acdf893723130135741f48bc56741a15.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5pyxirj30t60tqgsg_hu4325c27290689e86afde846394a3b7b4_198370_b000c3472f6440383dd909c523162d6f.webp&#34;
+               width=&#34;746&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;常见的一种人工规则是Routes，通过服务发现，Pilot可以从Kubernetes那里知道Service B有两个版本，一般是两个Deployment，属于同一个Service，管理员通过调用Pilot的Rules API，来设置两个版本之间的Route规则，一个占99%的流量，一个占1%的流量，这两方面信息形成Pilot的数据结构模型，然后通过Envoy API下发，Envoy就会根据这个规则设置转发策略了。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_0cd542bc3f39e3abd4e2a8031eaf8c48.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_9228101ae31d16e070f2f11487e63476.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle5xv31mj30u00ladlv_hudf3d7026bb70816bee87eb3897274d87_165640_0cd542bc3f39e3abd4e2a8031eaf8c48.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;539&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;另一个常用的场景就是负载均衡，Pilot通过Kubernetes的Service发现Service B包含一个Deployment，但是有三个副本，于是通过Envoy API下发规则，使得Envoy在这三个副本之间进行负载均衡，而非通过Kubernetes本身Service的负载均衡机制。&lt;/p&gt;
+&lt;p&gt;三、以Istio为例解析Service Mesh的技术细节&lt;/p&gt;
+&lt;p&gt;了解了Service Mesh的大概原理，接下来我们通过一个例子来解析其中的技术细节。&lt;/p&gt;
+&lt;p&gt;凡是试验过Istio的同学都应该尝试过下面这个BookInfo的例子，不很复杂，但是麻雀虽小五脏俱全。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1baa88de745f6a1bbd1abe7d1ac7029a.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_ee5f3a5aeba648bfbe12d23f10b8fe0d.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle6640jlj30u00kgn3e_hubbf6dc24944d6444a29c3352a95b3f8a_189104_1baa88de745f6a1bbd1abe7d1ac7029a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;518&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个例子中，我们重点关注ProductPage这个服务，对Reviews服务的调用，这里涉及到路由策略和负载均衡。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Productpage就是个Python程序&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;productpage是一个简单的用python写的提供restful API的程序。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_165c2486300abef2a30e7df6edd0483b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_eed9bdf6757df4c71df6e2cad974ef19.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle6n0fjej30u00p2tn6_hu5654d79a4c8c36a7ca0cec90c7ea38f2_307967_165c2486300abef2a30e7df6edd0483b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;635&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在里面定义了很多的route，来接收API请求，并做相应的操作。&lt;/p&gt;
+&lt;p&gt;在需要请求其他服务，例如reviews, ratings的时候，则需要向后方发起restful调用。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_8ab1cea06a9a01ab67ca7b3e95613b15.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_7f875f884e0c1d675966999f107a3325.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle78bzolj30j10lnwhz_hu3b9abf81d24f4cbcc8dae2c22ffc742f_109016_8ab1cea06a9a01ab67ca7b3e95613b15.webp&#34;
+               width=&#34;668&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从代码可以看出，productpage对于后端的调用，都是通过域名来的。&lt;/p&gt;
+&lt;p&gt;对于productpage这个程序来讲，他觉得很简单，通过这个域名就可以调用了，既不需要通过服务发现系统获取这个域名，也不需要关心转发，更意识不到自己是部署在kubernetes上的，是否用了service mesh，所以服务之间的通信完全交给了基础设施层。&lt;/p&gt;
+&lt;p&gt;通过Kubernetes编排productpage&lt;/p&gt;
+&lt;p&gt;有了productpage程序，接下来就是将他部署到kubernetes上，这里没有什么特殊的，用的就是kubernetes默认的编排文件。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_3a22d8e60bd82775146c3b911019239b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_4a23b60bf46a600e336b608d69b7bbd2.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7huccpj30u00hk452_huc896af9b7791f32322955c71c8686383_142667_3a22d8e60bd82775146c3b911019239b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;445&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先定义了一个Deployment，使用bookinfo的容器镜像，然后定义一个Service，用于这个Deployment的服务发现。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;通过Kubernetes编排reviews&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_7cd96955800d6c63c484c43c15d99151.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_dab429e7cba15a6e334c22a3aa25cf81.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7ojet2j30u00ftdkz_hu6ec75636d8b9435f82e92875ccaec6eb_101025_7cd96955800d6c63c484c43c15d99151.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;400&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个稍微有些复杂，定义了三个Deployment，但是版本号分别为V1, V2, V3，但是label都是app: reviews。&lt;/p&gt;
+&lt;p&gt;最后定义了一个Service，对应的label是app: reviews，作为这三个Deployment的服务发现。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;istioctl对productpage进行定制化之一：嵌入proxy_init作为InitContainer&lt;/strong&gt;到目前为止，一切正常，接下来就是见证奇迹的时刻，也即istio有个工具istioctl可以对于yaml文件进行定制化&lt;/p&gt;
+&lt;p&gt;定制化的第一项就是添加了一个initContainer，这种类型的container可以做一些初始化的工作后，成功退出，kubernetes不会保持他长期运行。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_2b067084a65b4772a2ea0f2fe6080eca.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_6bf2186aa388199534cc2ce7d26bcf0c.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7tzrk3j30u00kijw8_hu3dd25cf68bd5e64aa703b16dda855e66_111492_2b067084a65b4772a2ea0f2fe6080eca.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;519&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个InitContainer里面做什么事情呢？&lt;/p&gt;
+&lt;p&gt;我们登录进去发现，在这个InitContainer里面运行了一个shell脚本。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_a3712d4ac0e111f11a858a5ab9310e68.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_48ccba6c0c1731882c327c3c37ded1b7.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle7xxsqtj30u00bdgsi_hu23ac1d2e0b6e1947bcdf640af2bc4fa1_188723_a3712d4ac0e111f11a858a5ab9310e68.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;288&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;就是这个shell脚本在容器里面写入了大量的iptables规则。&lt;/p&gt;
+&lt;p&gt;首先定义的一条规则是ISTIO_REDIRECT转发链，这条链不分三七二十一，都将网络包转发给envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;但是一开始这条链没有被挂到iptables默认的几条链中，所以不起作用。&lt;/p&gt;
+&lt;p&gt;接下来就是在PREROUTING规则中，使用这个转发链，从而进入容器的所有流量，都被先转发到envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;envoy作为一个代理，已经被配置好了，将请求转发给productpage程序。&lt;/p&gt;
+&lt;p&gt;productpage程序接受到请求，会转向调用外部的reviews或者ratings，从上面的分析我们知道，productpage只是做普通的域名调用。&lt;/p&gt;
+&lt;p&gt;当productpage往后端进行调用的时候，就碰到了output链，这个链会使用转发链，将所有出容器的请求都转发到envoy的15000端口。&lt;/p&gt;
+&lt;p&gt;这样无论是入口的流量，还是出口的流量，全部用envoy做成了汉堡包。&lt;/p&gt;
+&lt;p&gt;envoy根据服务发现的配置，知道reviews或者ratings如何访问，于是做最终的对外调用。&lt;/p&gt;
+&lt;p&gt;这个时候iptables规则会对从envoy出去的流量做一个特殊处理，允许他发出去，不再使用上面的output规则。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;istioctl对productpage进行定制化之二：嵌入proxy容器作为sidecar&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;istioctl做的第二项定制化是，嵌入proxy容器作为sidecar。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_2f412d6ef91fefa35725d0f7be05597f.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_03f03fcb426b67314d89fd554ea6eae9.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle8uebg9j30hr12448p_hua8e128fb4f8c776485d549962897e26e_234420_2f412d6ef91fefa35725d0f7be05597f.webp&#34;
+               width=&#34;354&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个似乎看起来更加复杂，但是进入容器我们可以看到，启动了两个进程。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_edc68d1683dada39c9e741db492911da.webp 400w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_5bf3989f05ca20568dbb9a69df802b35.webp 760w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hlljbllj30u00bn41y_hu8db918909537edc2ab0c05ce66cf897e_125702_edc68d1683dada39c9e741db492911da.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;295&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一个是我们熟悉的envoy，他有一个配置文件是/etc/istio/proxy/envoy-rev0.json&lt;/p&gt;
+&lt;p&gt;我们再前面讲述envoy的时候说过，有了配置文件，envoy就能够转发了，我们先来看看配置文件里面都有啥。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_affd68ef2c0c10dc9e37531e1b4f9896.webp 400w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_9eb94afaf4c6f02dc343dd513a097c9b.webp 760w,
+               /blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/006tNc79gy1ft3hluiu2xj30u00gcmzx_hu616d02d9e42e5cc1d5ba5cfc25dc6e73_101236_affd68ef2c0c10dc9e37531e1b4f9896.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;414&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这里面配置了envoy的管理端口，等一下我们会通过这个端口查看envoy被pilot下发了哪些转发策略。&lt;/p&gt;
+&lt;p&gt;然后就是动态资源，也即从各种discovery service去拿转发策略。&lt;/p&gt;
+&lt;p&gt;还有就是静态资源，也即静态配置的，需要重启才能加载的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_40a7c06dc370ff9237fa0a9a2ed1e7ed.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_adf9bf05d900d1259acd340d49db0913.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ch3yzj30u00gcte2_hu8a5dc2ff2aa5e7494acbc1efb28d6bbf_129815_40a7c06dc370ff9237fa0a9a2ed1e7ed.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;414&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这就是pilot-agent的作用，他是envoy的一个简单的管理器，因为有些静态资源，如果TLS的证书，envoy还不支持动态下发，因而需要重新静态配置，然后pilot-agent负责将envoy进行热重启加载。&lt;/p&gt;
+&lt;p&gt;好在envoy有良好的热重启机制，重启的时候，会先启动一个备用进程，将转发的统计数据通过shared memory在两个进程间共享。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;深入解析pilot的工作机制&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_202043c358a170791f13d2a9f5edb477.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_d9e5320d7b620ff042d111770707a235.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9ka5fnj30u00hytid_hu1437ec7815f7bfa6648e0a3d8089b545_218180_202043c358a170791f13d2a9f5edb477.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;455&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Pilot的工作机制展开后如图所示。&lt;/p&gt;
+&lt;p&gt;istio config是管理员通过管理接口下发的转发规则。&lt;/p&gt;
+&lt;p&gt;Service Discovery模块对于Kubernetes来讲，就是创建了一个controller来监听Service创建和删除的事件，当service有变化时，会通知pilot，pilot会根据变化更新下发给envoy的规则。&lt;/p&gt;
+&lt;p&gt;pilot将管理员输入的转发策略配置和服务发现的当前状态，变成pilot自己的数据结构模型，然后暴露成envoy的api，由于是envoy来调用，因而要实现一个服务端，这里有lds, rds, cds, eds。&lt;/p&gt;
+&lt;p&gt;接下来我们看，在pilot上配置route之后会发生什么？&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_c38dc898263a8d3874c773f488dee939.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_5558b7167ed819620b4fd7cd07ad0944.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frle9rqoj3j30qr0k1n0f_hu88ccfdc69d186c033af6ae8d3503f6fa_116853_c38dc898263a8d3874c773f488dee939.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;569&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图，我们将所有的流量都发给版本1。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d4365ea36edeab18e7f5893303432c5b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d37d57a7d4856ca25d2da979e109f9be.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlea2rgpqj30u00gv7it_hucf273b33c687a2b6155f85281c75d0f7_279418_d4365ea36edeab18e7f5893303432c5b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;427&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们查看envoy的管理端口，可以看到只配置了reviews的v1。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_5afe36eecf06715506e4f1e408c2ac3b.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_ad595c60f1db046e74cee2cc9011b6b4.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frleac3yuwj30u00fmadw_hubeb4580883eb6a68a5b985f679c7943b_85311_5afe36eecf06715506e4f1e408c2ac3b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;395&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当我们修改路由为v1和v3比例是五十比五十。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_8b54d94b5d43eb40f92a240fda528145.webp 400w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_0f175b779d7157860609a7290e953874.webp 760w,
+               /blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deepin-service-mesh-tech-details/00704eQkgy1frlealzahyj30u00mdqpx_hua11527eb990b2510ca12d8e908b2e290_430553_8b54d94b5d43eb40f92a240fda528145.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;566&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;可以看到envoy的管理端口，路由有了两个版本的配置，也对应后端的两个ip地址。&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>

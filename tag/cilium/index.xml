@@ -5,12 +5,432 @@
     <link>https://cloudnative.to/tag/cilium/</link>
       <atom:link href="https://cloudnative.to/tag/cilium/index.xml" rel="self" type="application/rss+xml" />
     <description>Cilium</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 18 Feb 2019 17:59:29 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Wed, 03 Jul 2019 10:59:29 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/media/sharing.png</url>
       <title>Cilium</title>
       <link>https://cloudnative.to/tag/cilium/</link>
     </image>
+    
+    <item>
+      <title>深入了解Cilium多集群</title>
+      <link>https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/</link>
+      <pubDate>Wed, 03 Jul 2019 10:59:29 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/</guid>
+      <description>&lt;p&gt;本文是对ClusterMesh（Cilium的多集群实现）的深入研究。简而言之，ClusterMesh 提供：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;通过隧道或直接路由，以本地性能对多个Kubernetes集群进行Pod IP路由，而无需任何网关或代理。&lt;/li&gt;
+&lt;li&gt;使用标准Kubernetes服务和coredns/kube-dns的透明服务发现。&lt;/li&gt;
+&lt;li&gt;跨多个集群的网络策略实施。 策略可以指定为Kubernetes NetworkPolicy资源或扩展的CiliumNetworkPolicy CRD。&lt;/li&gt;
+&lt;li&gt;透明加密，用于本地集群中的节点之间以及跨集群边界的所有通信。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-f7dca3e31d252eb9_hu19a687039bc11104c4d8622084ad542c_27012_76968e3b07aad700a5c4cdb861fb1de9.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-f7dca3e31d252eb9_hu19a687039bc11104c4d8622084ad542c_27012_1003db6db3023a3eb26cfd4a4e1de323.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-f7dca3e31d252eb9_hu19a687039bc11104c4d8622084ad542c_27012_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-f7dca3e31d252eb9_hu19a687039bc11104c4d8622084ad542c_27012_76968e3b07aad700a5c4cdb861fb1de9.webp&#34;
+               width=&#34;736&#34;
+               height=&#34;213&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;多集群功能以层为单位构建，您可以选择使用所有层，也可以仅选择和使用所需的层。&lt;/p&gt;
+&lt;h2 id=&#34;用例&#34;&gt;用例&lt;/h2&gt;
+&lt;p&gt;在深入研究实现细节之前，让我们回顾一下连接多个Kubernetes集群的一些用例。&lt;/p&gt;
+&lt;h3 id=&#34;用例高可用性&#34;&gt;用例：高可用性&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-5d69ac8aba6c7b47_hu9434f43194aaddd84538def531c61606_104833_b9cff2cb56eb418050246e89e38dfdc5.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-5d69ac8aba6c7b47_hu9434f43194aaddd84538def531c61606_104833_22c9370e7577df4fd5b82548022bc7f3.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-5d69ac8aba6c7b47_hu9434f43194aaddd84538def531c61606_104833_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-5d69ac8aba6c7b47_hu9434f43194aaddd84538def531c61606_104833_b9cff2cb56eb418050246e89e38dfdc5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;254&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;对于大多数人来说，高可用性是最明显的用例。 此用例包括在多个区域（regions）或可用区（availability zones）中运行Kubernetes集群，并在每个集群中运行相同服务的副本。 一旦失败，请求可以故障转移到其他集群。 此用例中涵盖的故障情形主要不是整个区域或故障域的完全不可用。 更可能的情况是一个集群中资源暂时不可用或配置错误导致无法在一个集群中运行或扩展特定服务。&lt;/p&gt;
+&lt;h3 id=&#34;用例共享服务&#34;&gt;用例：共享服务&lt;/h3&gt;
+&lt;p&gt;基于Kubernetes的平台的最初趋势是构建大型多租户Kubernetes集群。 为每个租户构建单个集群或为不同类别的服务构建集群越来越普遍，例如， 不同级别的安全敏感度。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-c950c8dfbc5a9b0d_hu19d7ab75fb18a8a63816fdebbb339227_92828_d678fef2d0cc5bde1f5a1cff05e616d9.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-c950c8dfbc5a9b0d_hu19d7ab75fb18a8a63816fdebbb339227_92828_7fdedc99d9968f44f137c454e996fa58.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-c950c8dfbc5a9b0d_hu19d7ab75fb18a8a63816fdebbb339227_92828_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-c950c8dfbc5a9b0d_hu19d7ab75fb18a8a63816fdebbb339227_92828_d678fef2d0cc5bde1f5a1cff05e616d9.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;329&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+但是，某些服务（如密钥管理，日志记录，监控或DNS）通常仍在所有集群之间共享。 这避免了在每个租户集群中维护这些服务的操作开销。&lt;/p&gt;
+&lt;p&gt;此模型的主要动机是租户集群之间的隔离，为了维持该目标，租户集群连接到共享服务集群但未连接到其他租户集群。&lt;/p&gt;
+&lt;h3 id=&#34;用例拆分有状态和无状态服务&#34;&gt;用例：拆分有状态和无状态服务&lt;/h3&gt;
+&lt;p&gt;运行有状态或无状态服务的操作复杂性是非常不同的。 无状态服务易于扩展，迁移和升级。 完全使用无状态服务运行集群可使集群保持灵活和敏捷。 从一个云提供商迁移到另一个云提供商非常简单。&lt;/p&gt;
+&lt;p&gt;有状态服务可能会引入潜在的复杂依赖链。 迁移服务通常涉及存储迁移。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-98e2a381af81e811_hu2274edd5c3388b5579de12550228c1cc_114642_8135f4ff0a53a5a850bcf7700100b7b2.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-98e2a381af81e811_hu2274edd5c3388b5579de12550228c1cc_114642_efffe799063cefc70489894e48b31a84.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-98e2a381af81e811_hu2274edd5c3388b5579de12550228c1cc_114642_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-98e2a381af81e811_hu2274edd5c3388b5579de12550228c1cc_114642_8135f4ff0a53a5a850bcf7700100b7b2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;358&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+为无状态和有状态分别运行独立的集群允许将依赖复杂性隔离到较少数量的集群，并使无状态集群依赖性保持自由。&lt;/p&gt;
+&lt;h2 id=&#34;控制平面&#34;&gt;控制平面&lt;/h2&gt;
+&lt;h3 id=&#34;要求&#34;&gt;要求&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;必须为所有Kubernetes工作节点分配唯一的IP地址，并且所有工作节点必须在彼此之间具有IP连接。&lt;/li&gt;
+&lt;li&gt;必须为所有集群分配唯一的PodCIDR区间。&lt;/li&gt;
+&lt;li&gt;必须将Cilium配置为使用etcd的kvstore。&lt;/li&gt;
+&lt;li&gt;集群之间的网络必须允许集群间通信。 防火墙的具体配置要求将取决于Cilium是否配置为以直接路由或隧道模式运行。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;架构&#34;&gt;架构&lt;/h3&gt;
+&lt;p&gt;控制平面基于etcd并尽可能保持简约：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个Kubernetes集群都维护自己的etcd集群，包含该集群的状态。 来自多个集群的状态永远不会在etcd本身中混淆。&lt;/li&gt;
+&lt;li&gt;每个集群通过一组etcd代理公开它自己的etcd。 在其他集群中运行的Cilium代理连接到etcd代理以监视更改并将多集群相关状态复制到自己的集群中。 使用etcd代理确保了etcd观察者的可扩展性。 访问受TLS证书保护。&lt;/li&gt;
+&lt;li&gt;从一个集群到另一个集群的访问始终是只读的。 这确保了故障域保持不变，即一个集群中的故障永远不会传播到其他集群中。&lt;/li&gt;
+&lt;li&gt;配置通过简单的Kubernetes secrets资源进行，该资源包含远程etcd代理的寻址信息以及访问etcd代理所需的集群名称和证书。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-47bf320d6635c354_hu565702c926a3b0186f11af0b30da969b_146333_ce423efb0869c45bc7165262e1fe4660.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-47bf320d6635c354_hu565702c926a3b0186f11af0b30da969b_146333_037a6e83c5c0f3d6a33c5624314c491b.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-47bf320d6635c354_hu565702c926a3b0186f11af0b30da969b_146333_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-47bf320d6635c354_hu565702c926a3b0186f11af0b30da969b_146333_ce423efb0869c45bc7165262e1fe4660.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;261&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;pod-ip-路由&#34;&gt;Pod IP 路由&lt;/h2&gt;
+&lt;p&gt;pod IP路由是多集群能力的基础。 它允许跨集群的pod通过其pod IP相互联系。 Cilium可以在多种模式下运行以执行pod IP路由。 所有这些模式都能够执行多集群pod IP路由。&lt;/p&gt;
+&lt;h3 id=&#34;隧道模式&#34;&gt;隧道模式&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-1488d363a7db42ae_hud1df25e1b089045140c73fef34d0d7b2_27935_622f6df36663a896f0c18bef1d9cca9b.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-1488d363a7db42ae_hud1df25e1b089045140c73fef34d0d7b2_27935_c2dca4c1c9a2aaf6c9d26702ff20b64a.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-1488d363a7db42ae_hud1df25e1b089045140c73fef34d0d7b2_27935_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-1488d363a7db42ae_hud1df25e1b089045140c73fef34d0d7b2_27935_622f6df36663a896f0c18bef1d9cca9b.webp&#34;
+               width=&#34;706&#34;
+               height=&#34;239&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;隧道模式将pod中发出的所有网络数据包封装在所谓的封包头中。 封包头可以包含VXLAN或Geneve帧。 然后通过标准UDP包头传输该封装帧。 该概念类似于VPN隧道。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：pod IP在底层网络上永远不可见。 网络只能看到工作节点的IP地址。 这可以简化安装和防火墙规则。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：所需的额外网络标头将降低网络的理论最大吞吐量。 确切的成本取决于配置的MTU，与使用MTU 9000的巨型帧相比，使用1500的传统MTU时会更加明显。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：为了不消耗过多CPU，包括底层硬件在内的整个网络堆栈必须支持校验和和分段卸载，以计算校验和并在硬件中执行分段，就像对“常规”网络数据包所做的那样。如今，这种卸载功能的可用性非常常见。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;直接路由模式&#34;&gt;直接路由模式&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-51340f50bb80261e_hue6a4f4be0054806e855214c49ddf9272_25152_2dcf9016bae6f2bdb72ea9c0cd9e051c.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-51340f50bb80261e_hue6a4f4be0054806e855214c49ddf9272_25152_305bc2ee0c3a25f935183b296cb9b909.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-51340f50bb80261e_hue6a4f4be0054806e855214c49ddf9272_25152_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-51340f50bb80261e_hue6a4f4be0054806e855214c49ddf9272_25152_2dcf9016bae6f2bdb72ea9c0cd9e051c.webp&#34;
+               width=&#34;706&#34;
+               height=&#34;240&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在直接路由模式中，所有网络数据包都直接路由到网络。 这要求网络能够路由pod IP。 可以使用多个选项实现跨节点传播pod IP路由信息：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;使用&lt;code&gt;--auto-direct-node-routes&lt;/code&gt;选项，这是通过kvstore的超轻量级路由传播方法，如果所有工作节点共享一个单一的2层网络，该选项将起作用。 对于所有形式的基于云提供商的虚拟网络，通常都满足此要求。&lt;/li&gt;
+&lt;li&gt;使用&lt;a href=&#34;http://docs.cilium.io/en/stable/gettingstarted/kube-router/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kube-router集成&lt;/a&gt;运行BGP路由守护进程。&lt;/li&gt;
+&lt;li&gt;使用任何其他路由守护进程将路由注入标准Linux路由表（bird，quagga，&amp;hellip;）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;当网络不再理解pod IP时，网络数据包地址需要伪装。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：减少的网络数据包标头可以优化网络吞吐量和延迟。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：整个网络必须能够路由pod IP，这会增加操作的复杂性。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;混合路由模式&#34;&gt;混合路由模式&lt;/h3&gt;
+&lt;p&gt;混合路由模式允许在可用时使用直接路由，这通常在本地集群或同一VPC中的其他集群中，而当跨越VPC或云提供商时可以回退到隧道模式。 这可以限制操作复杂性并且允许仅在需要时支付优化成本。&lt;/p&gt;
+&lt;h2 id=&#34;服务发现&#34;&gt;服务发现&lt;/h2&gt;
+&lt;p&gt;Cilium的多集群模型的服务发现是使用标准的Kubernetes &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;services&lt;/a&gt; 构建的，旨在对现有的Kubernetes应用程序部署完全透明：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rebel-base&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;       &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.cilium/global-service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;       &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rebel-base&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;Cilium通过一个注释&lt;code&gt;io.cilium/global-service: &amp;quot;true&amp;quot;&lt;/code&gt; 来监控Kubernetes服务和端点以及监听服务。 对于此类服务，具有相同名称和命名空间信息的所有服务将自动合并在一起，并形成跨集群可用的全局服务。&lt;/li&gt;
+&lt;li&gt;根据标准Kubernetes运行状况检查逻辑，任何到全局服务的ClusterIP的流量都将自动负载平衡到所有集群中的端点。&lt;/li&gt;
+&lt;li&gt;每个集群继续为每个服务维护自己的ClusterIP，这意味着Kubernetes和kube-dns / coredns不知道其他集群。 DNS服务器继续返回仅在本地集群中有效的ClusterIP，Cilium将透明地执行负载平衡。&lt;/li&gt;
+&lt;li&gt;对于细粒度控制存在若干附加注释，例如单向暴露或亲和策略。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-b027eb4bd91ead46_hu5f6d66a04d8b1fe1842aa086023fa975_32591_5d6af0cb6bc6e6b8224f4d1267eec457.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-b027eb4bd91ead46_hu5f6d66a04d8b1fe1842aa086023fa975_32591_c145df99a3023191f1941eefddff2f44.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-b027eb4bd91ead46_hu5f6d66a04d8b1fe1842aa086023fa975_32591_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-b027eb4bd91ead46_hu5f6d66a04d8b1fe1842aa086023fa975_32591_5d6af0cb6bc6e6b8224f4d1267eec457.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;255&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从&lt;code&gt;frontend-1&lt;/code&gt;到ClusterIP &lt;code&gt;30.1.1.1&lt;/code&gt;的所有流量将自动负载均衡到集群1 的后端pod IP&lt;code&gt;[10.0.0.1,10.0.0.2]&lt;/code&gt;以及集群2的后端pod IP&lt;code&gt;[20.0.0.1,20.0.0.2]&lt;/code&gt;。 每个集群将执行本地后端实例的运行状况检查，并在容器创建，销毁或变得不健康时通知其他集群。&lt;/p&gt;
+&lt;h2 id=&#34;透明加密&#34;&gt;透明加密&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://cilium.io/blog/2019/02/12/cilium-14/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium 1.4&lt;/a&gt;中引入的透明加密与多集群兼容。确保使用公共密钥配置所有集群中的所有节点，如此节点之间的所有通信都会自动加密。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-be3e56c01fa1ef78_hu976c49355c91a75e797f51728e9b51ab_22811_61eac2d9f16ff04ef8da08551ecffc94.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-be3e56c01fa1ef78_hu976c49355c91a75e797f51728e9b51ab_22811_fd3ea74a98d7e8e15a998a9ac5990b70.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-be3e56c01fa1ef78_hu976c49355c91a75e797f51728e9b51ab_22811_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-be3e56c01fa1ef78_hu976c49355c91a75e797f51728e9b51ab_22811_61eac2d9f16ff04ef8da08551ecffc94.webp&#34;
+               width=&#34;709&#34;
+               height=&#34;209&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;多集群的网络策略&#34;&gt;多集群的网络策略&lt;/h2&gt;
+&lt;p&gt;简单版本是您从单个集群中熟悉的策略实施将简单地扩展并跨集群工作。 由于策略是使用pod标签指定的，因此允许&lt;code&gt;frontend&lt;/code&gt;与&lt;code&gt;backend&lt;/code&gt;通信的策略将应用于集群流量，就像流量跨越集群一样。&lt;/p&gt;
+&lt;p&gt;Cilium&lt;strong&gt;不会&lt;/strong&gt;跨集群自动传播NetworkPolicy或CiliumNetworkPolicy。 用户有责任将策略导入所有集群。 这是有意为之，因为这意味着每个集群都可以决定是否允许集群接收来自远程集群的通信或者发出到远程集群的通信。&lt;/p&gt;
+&lt;h3 id=&#34;允许特定集群的交叉路径&#34;&gt;允许特定集群的交叉路径&lt;/h3&gt;
+&lt;p&gt;可以仅建立适用于特定集群中的pod的策略。 集群名称由Cilium表示为每个pod上的标签，允许匹配的集群名称可以是&lt;code&gt;endpointSelector&lt;/code&gt;或者是由&lt;code&gt;toEndpoints&lt;/code&gt;和&lt;code&gt;fromEndpoints&lt;/code&gt;构造的&lt;code&gt;matchLabels&lt;/code&gt;标签：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;cilium.io/v2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CiliumNetworkPolicy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;allow-cross-cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;summary&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Allow x-wing in cluster1 to contact rebel-base in cluster2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;endpointSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;x-wing&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.cilium.k8s.policy.cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cluster1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;egress&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;toEndpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rebel-base&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;io.cilium.k8s.policy.cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cluster2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的示例策略将允许cluster1中的&lt;code&gt;x-wing&lt;/code&gt;与cluster2中的&lt;code&gt;rebel-base&lt;/code&gt;对话。 除非存在将通信列入白名单的附加策略，否则x-wing将无法与本地集群中的rebel-base通信。&lt;/p&gt;
+&lt;h2 id=&#34;与istio多集群的关系&#34;&gt;与Istio多集群的关系&lt;/h2&gt;
+&lt;p&gt;这两个项目都是独立的，但可以很好地相互补充。 组合Cilium和Istio多集群的常用方法是使用Cilium的多集群Pod IP路由层来满足&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/multicluster-install/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio多集群指南&lt;/a&gt;的以下要求：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;em&gt;每个集群中的所有pod CIDR必须可以相互路由。&lt;/em&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;此外，Cilium策略执行功能可用于保护与Istio控制平面之间的通信，以及通过不支持的协议（如UDP或IPV6）保护sidecar的旁路尝试，以及防止受损的sidecar代理。&lt;/p&gt;
+&lt;p&gt;还可以同时运行全局Istio服务和Cilium全局服务。 所有Istio托管服务都可以获得Cilium的全局服务，因为它们可以像常规服务一样通过DNS发现。&lt;/p&gt;
+&lt;h2 id=&#34;准备开始&#34;&gt;准备开始&lt;/h2&gt;
+&lt;p&gt;要开始使用，请按照手把手的&lt;a href=&#34;http://docs.cilium.io/en/stable/gettingstarted/clustermesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ClusterMesh教程&lt;/a&gt;进行操作，该教程将指导您完成将集群连接在一起的过程。 请务必加入我们的&lt;a href=&#34;https://cilium.herokuapp.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Slack频道&lt;/a&gt;，提出问题并展示您的设置。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-imagepng&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;image.png&#34; srcset=&#34;
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-112faa9f90a9352b_hu915ec97dd8711809fe9659ec4450d883_37939_d62b6ede71c649c0344d903044cabc3d.webp 400w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-112faa9f90a9352b_hu915ec97dd8711809fe9659ec4450d883_37939_7b26a0534ba5105c9a64c9a6f644648d.webp 760w,
+               /blog/deep-dive-into-cilium-multi-cluster/14871146-112faa9f90a9352b_hu915ec97dd8711809fe9659ec4450d883_37939_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/deep-dive-into-cilium-multi-cluster/14871146-112faa9f90a9352b_hu915ec97dd8711809fe9659ec4450d883_37939_d62b6ede71c649c0344d903044cabc3d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;265&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      image.png
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Cilium 1.4 发布了，新功能一览</title>
