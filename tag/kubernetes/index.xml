@@ -1574,6 +1574,610 @@ csi.NodeServiceCapability_RPC_UNKNOWN
     </item>
     
     <item>
+      <title>在非容器环境上实现散装的 IPVS SVC</title>
+      <link>https://cloudnative.to/blog/create-a-ipvs-svc-without-container/</link>
+      <pubDate>Wed, 29 Sep 2021 00:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/create-a-ipvs-svc-without-container/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP ，然后 NGINX 根据 &lt;code&gt;server_name&lt;/code&gt; 去 proxy 不同的 upstream 。 开始还是能用的，但是后面结果后面很多服务依赖 &lt;code&gt;host&lt;/code&gt; 这个 header ，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 &lt;code&gt;ClusterIP&lt;/code&gt; 的 SVC 扣到非 K8S 环境上使用。&lt;/p&gt;
+&lt;p&gt;kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 &lt;code&gt;SVC IP:SVC PORT&lt;/code&gt; 会被 dnat 成 &lt;code&gt;endpoint&lt;/code&gt; ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP 。在 K8S 里，endpoint 的 ip 无非就是 &lt;code&gt;POD IP&lt;/code&gt;，&lt;code&gt;host IP&lt;/code&gt;。前者就是 SVC 选中 POD ，后者例如 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC ，会 DNAT 成每个 &lt;code&gt;kube-apiserver&lt;/code&gt; 的 &lt;code&gt;host IP:6443&lt;/code&gt; 端口，也可能是 &lt;code&gt;ExternalName&lt;/code&gt; 或者手动创建的 endpoint 。既然 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。&lt;/p&gt;
+&lt;h2 id=&#34;环境信息&#34;&gt;环境信息&lt;/h2&gt;
+&lt;p&gt;前面说的 SVC 现象是和 &lt;code&gt;kube-proxy&lt;/code&gt; 的模式无关的。&lt;code&gt;iptables&lt;/code&gt; 模式排查不直观，我更倾向于 &lt;code&gt;IPVS&lt;/code&gt; 去搞，它更直观，而且支持更多的调度算法。管理 IPVS 规则的话我们需要安装 &lt;code&gt;ipvsadm&lt;/code&gt; ，这里我是两台干净的 CentOS 7.8 来做环境。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;IP&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;192.168.2.111&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;192.168.2.222&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;先安装下基础需要的：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum install -y ipvsadm curl wget tcpdump ipset conntrack-tools
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 开启转发&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sysctl -w net.ipv4.ip_forward&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 确认 iptables 规则清空&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -S
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P INPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P FORWARD ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P OUTPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -S
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P PREROUTING ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P INPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P OUTPUT ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P POSTROUTING ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;过程&#34;&gt;过程&lt;/h2&gt;
+&lt;p&gt;先思考下 kube-proxy 的 IPVS ，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 &lt;code&gt;nat&lt;/code&gt; 模式。暂且打算添加一个下面类似的 SVC ：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;IP:                169.254.11.2
+Port:              https  80/TCP
+TargetPort:        6443/TCP
+Endpoints:         192.168.2.111:8080,192.168.2.222:8080
+Session Affinity:  None
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;准备工作&#34;&gt;准备工作&lt;/h3&gt;
+&lt;p&gt;web 的话我是使用的 golang 的一个简单 web 二进制起的 &lt;a href=&#34;https://github.com/m3ng9i/ran&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ran&lt;/a&gt; :&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;wget https://github.com/m3ng9i/ran/releases/download/v0.1.6/ran_linux_amd64.zip
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;unzip -x ran_linux_amd64.zip
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir www
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 两个机器创建不同的 index 文件&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; 192.168.2.111 &amp;gt; www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; 192.168.2.222 &amp;gt; www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./ran_linux_amd64 -port &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt; -listdir www
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;两个机器的这个 web 都起来后我们开个窗口去 &lt;code&gt;192.168.2.111&lt;/code&gt; 上继续后面的操作。&lt;/p&gt;
+&lt;h3 id=&#34;lvs-nat&#34;&gt;lvs nat&lt;/h3&gt;
+&lt;p&gt;kube-proxy 并没有像 lvs nat 那样有单独的机器做 &lt;code&gt;NAT GW&lt;/code&gt;，或者认为每个 node 都是自己的 &lt;code&gt;NAT GW&lt;/code&gt;。现在来添加 &lt;code&gt;169.254.11.2:80&lt;/code&gt; 这个 SVC ，使用 ipvsadm 添加：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-service --tcp-service 169.254.11.2:80 --scheduler rr
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先添加本地的 web 作为 real server ，下面含义是添加为一个 nat 类型的 real server ：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-server --tcp-service 169.254.11.2:80 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --real-server 192.168.2.111:8080 --masquerading --weight &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看下当前列表：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -ln
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP Virtual Server version 1.2.1 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;size&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;4096&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Prot LocalAddress:Port Scheduler Flags
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; RemoteAddress:Port           Forward Weight ActiveConn InActConn
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TCP  169.254.11.2:80 rr
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; 192.168.2.111:8080           Masq    &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因为是自己的 &lt;code&gt;NAT GW&lt;/code&gt;，所以 VIP 配置在自己身上：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 169.254.11.2/32 dev eth0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下访问看看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;添加上另一个节点的 8080：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm --add-server --tcp-service 169.254.11.2:80 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --real-server 192.168.2.222:8080 --masquerading --weight &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -ln
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP Virtual Server version 1.2.1 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;size&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;4096&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Prot LocalAddress:Port Scheduler Flags
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; RemoteAddress:Port           Forward Weight ActiveConn InActConn
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TCP  169.254.11.2:80 rr
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; 192.168.2.111:8080           Masq    &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;         
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; 192.168.2.222:8080           Masq    &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下访问看看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现 curl 在卡住和能访问返回 &lt;code&gt;192.168.2.111&lt;/code&gt; 之间切换，没有返回 &lt;code&gt;192.168.2.222&lt;/code&gt; 的。查看下 IPVS 的 connection ，发现调度到非本机才会卡住：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -lnc
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IPVS connection entries
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pro expire state       &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;             virtual            destination
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TCP 00:48  SYN_RECV    169.254.11.2:50698 169.254.11.2:80    192.168.2.222:8080
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 &lt;code&gt;192.168.2.222&lt;/code&gt; 上抓包看看：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i eth0 port &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Ethernet&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;, capture size &lt;span class=&#34;m&#34;&gt;262144&lt;/span&gt; bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:26.360716 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12276183&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:26.360762 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676518144&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:27.362848 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12277186&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:27.362884 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676519146&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:28.562629 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676520346&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:29.368811 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12279192&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:29.368853 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676521152&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:31.562633 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676523346&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376829 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12283200&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376869 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676525160&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:37.562632 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676529346&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从 &lt;code&gt;Flags&lt;/code&gt; 看，就是 tcp 重传，并且 &lt;code&gt;SRC IP&lt;/code&gt; 是 VIP 。节点 &lt;code&gt;192.168.2.222.8080&lt;/code&gt; 给 &lt;code&gt;169.254.11.2.50710&lt;/code&gt; 回包会走到网关上去。网关上抓包也看到确实如此：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i eth0 host 169.254.11.2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Ethernet&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;, capture size &lt;span class=&#34;m&#34;&gt;262144&lt;/span&gt; bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:47.487362 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676599263&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:47.487405 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676599263&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:48.487838 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676600264&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:48.487868 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676600264&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569667 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569699 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;lvs-和-netfilter&#34;&gt;lvs 和 netfilter&lt;/h4&gt;
+&lt;p&gt;在介绍 lvs 的实现之前，我们需要了解 netfilter ，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。&lt;/p&gt;
+&lt;p&gt;下面是 IPVS 在 netfilter 里的模型图，IPVS 也是基于 netfilter 框架的，但只工作在 &lt;code&gt;INPUT&lt;/code&gt; 链上，通过注册 &lt;code&gt;ip_vs_in&lt;/code&gt; 钩子函数来处理请求。因为 VIP 我们配置在机器上（常规的 lvs nat 的 VIP 是在 NAT GW 上，我们这里是自己），我们 curl 的时候就会进到 &lt;code&gt;INPUT&lt;/code&gt; 链，&lt;code&gt;ip_vs_in&lt;/code&gt; 会匹配然后直接跳转触发 &lt;code&gt;POSTROUTING&lt;/code&gt; 链，跳过 iptables 规则。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-lvs-netfilter&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;lvs-netfilter&#34; srcset=&#34;
+               /blog/create-a-ipvs-svc-without-container/lvs-netfilter_huc37d1e2a34f2e012cde68aebaa9fc2cc_42200_98137eb0e5a6a7993056e149b9fc7181.webp 400w,
+               /blog/create-a-ipvs-svc-without-container/lvs-netfilter_huc37d1e2a34f2e012cde68aebaa9fc2cc_42200_f35c0f6ef1ec0fc690b22d487da06b04.webp 760w,
+               /blog/create-a-ipvs-svc-without-container/lvs-netfilter_huc37d1e2a34f2e012cde68aebaa9fc2cc_42200_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/create-a-ipvs-svc-without-container/lvs-netfilter_huc37d1e2a34f2e012cde68aebaa9fc2cc_42200_98137eb0e5a6a7993056e149b9fc7181.webp&#34;
+               width=&#34;718&#34;
+               height=&#34;311&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      lvs-netfilter
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;所以请求流程是：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;# CIP: client IP    # RIP: real server IP
+
+	CLIENT
+	   | CIP:CPORT -&amp;gt; VIP:VPORT
+	   |		||
+	   |		\/
+    	   | CIP:CPORT -&amp;gt; VIP:VPORT
+   	LVS DNAT
+   	   | CIP:CPORT -&amp;gt; RIP:RPORT
+   	   |		||
+	   |		\/
+	   | CIP:CPORT -&amp;gt; RIP:RPORT
+	   +
+	REAL SERVER
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;lvs 做了 DNAT 并没有做 SNAT ，所以我们利用 iptables 做 SNAT ：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ iptables -t nat -A POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;访问看看还是不通，抓包看还是没生效，nat 是依赖 &lt;code&gt;conntrack&lt;/code&gt; 的，而 IPVS 默认不会记录 conntrack，我们需要开启 IPVS 的 conntrack 才可以让 MASQUERADE 生效。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 让 Netfilter 的 conntrack 状态管理功能也能应用于 IPVS 模块&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &amp;gt;  /proc/sys/net/ipv4/vs/conntrack
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$  curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.222
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.222
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.222
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在实现了单个 SVC 的，但是仔细思考下还是有问题，如果后续增加另一个 SVC 又得增加一个 iptables 规则了，那就又回到 iptables 的匹配复杂度耗时长上去了。所以我们可以利用 iptables 的 mark 和 ipset 配合减少 iptables 规则。&lt;/p&gt;
+&lt;h3 id=&#34;利用-ipset-和-iptable-的-mark&#34;&gt;利用 ipset 和 iptable 的 mark&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-iptables_netfilter&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;iptables_netfilter&#34; srcset=&#34;
+               /blog/create-a-ipvs-svc-without-container/iptables_netfilter_hue112e2d87dd24e0de47f37861bbc2fdf_51779_18c06ae2c89f402cfe10f83c70d2b644.webp 400w,
+               /blog/create-a-ipvs-svc-without-container/iptables_netfilter_hue112e2d87dd24e0de47f37861bbc2fdf_51779_0c435cf44836552c8a02990d9fe42594.webp 760w,
+               /blog/create-a-ipvs-svc-without-container/iptables_netfilter_hue112e2d87dd24e0de47f37861bbc2fdf_51779_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/create-a-ipvs-svc-without-container/iptables_netfilter_hue112e2d87dd24e0de47f37861bbc2fdf_51779_18c06ae2c89f402cfe10f83c70d2b644.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;400&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      iptables_netfilter
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;iptables 的五链四表如上图所示，我们先删掉原有的规则：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -D POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; -j MASQUERADE
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;平时自己家里使用了 openwrt ，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 &lt;code&gt;INPUT&lt;/code&gt; 规则：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A INPUT -i eth0 -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3&amp;#34;&lt;/span&gt; -j zone_lan_input
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A zone_lan_input -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3: Custom lan input rule chain&amp;#34;&lt;/span&gt; -j input_lan_rule
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A zone_lan_input -m conntrack --ctstate DNAT -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3: Accept port redirections&amp;#34;&lt;/span&gt; -j ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A zone_lan_input -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3&amp;#34;&lt;/span&gt; -j zone_lan_src_ACCEPT
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;zone_lan_src_ACCEPT&lt;/code&gt; 是最后面，&lt;code&gt;zone_lan_input&lt;/code&gt; 是最开始，那用户向 &lt;code&gt;input_lan_rule&lt;/code&gt; 链里插入规则即可，利用多个链来设计也方便别人。
+规则设计我们先逆着来思考下，最后肯定是 &lt;code&gt;MASQUERADE&lt;/code&gt; 的，得在 nat 表的 &lt;code&gt;POSTROUTING&lt;/code&gt; 链创建 &lt;code&gt;MASQUERADE&lt;/code&gt; 的规则。&lt;/p&gt;
+&lt;p&gt;但是添加之前先思考下，lvs 做了 DNAT 后，最后包走向了 &lt;code&gt;POSTROUTING&lt;/code&gt; 链，而且后面我们是有多个 SVC 的。此刻包的 &lt;code&gt;SRC IP&lt;/code&gt; 会是 &lt;code&gt;VIP&lt;/code&gt;，而 &lt;code&gt;DEST IP&lt;/code&gt; 是做了 DNAT 后的 &lt;code&gt;real server&lt;/code&gt; ，而且后续可能是在在 docker 环境上部署，可能默认桥接网络的容器也会去访问 &lt;code&gt;SVC&lt;/code&gt;，此刻的 &lt;code&gt;SRC IP&lt;/code&gt; 就不会是网卡上的 &lt;code&gt;VIP&lt;/code&gt; 了，但是在 &lt;code&gt;PREROUTING&lt;/code&gt; 链的时候，&lt;code&gt;DEST IP&lt;/code&gt; 还没变，我们可以在此刻利用一个 ipset 存储所有的 &lt;code&gt;SVC_IP:SVC_PORT&lt;/code&gt; 匹配，然后打上 mark，然后在 &lt;code&gt;POSTROUTING&lt;/code&gt; 链去根据 mark 去做 &lt;code&gt;MASQUERADE&lt;/code&gt; 。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# PREROUTING 阶段处理&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 提供一个入口链，而不是直接添加在 PREROUTING 链上&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -N ZGZ-SERVICES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A PREROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service portals&amp;#34;&lt;/span&gt; -j ZGZ-SERVICES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 在 PREROUTING 子链里去 ipset 匹配，跳转到我们 mark 的链&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -N ZGZ-MARK-MASQ
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 创建存储所有 `SVC_IP:SVC_PORT` 的 ipset &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipset create ZGZ-CLUSTER-IP hash:ip,port -exist
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A ZGZ-SERVICES -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service cluster ip + port for masquerade purpose&amp;#34;&lt;/span&gt; -m &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; --match-set ZGZ-CLUSTER-IP dst,dst -j ZGZ-MARK-MASQ
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 专门 mark 的链&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A ZGZ-MARK-MASQ -j MARK --set-xmark 0x2000/0x2000
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# POSTROUTING 阶段处理&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 提供一个入口链，而不是直接添加在 POSTROUTING 链上&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -N ZGZ-POSTROUTING
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A POSTROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz postrouting rules&amp;#34;&lt;/span&gt; -j ZGZ-POSTROUTING
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 在 POSTROUTING 阶段做 snat&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A ZGZ-POSTROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service traffic requiring SNAT&amp;#34;&lt;/span&gt; -m mark --mark 0x2000/0x2000 -j MASQUERADE
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后添加下 &lt;code&gt;SVC_IP:SVC_PORT&lt;/code&gt; 到我们的 ipset 里：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipset add ZGZ-CLUSTER-IP 169.254.11.2,tcp:80 -exist
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面我们创建的 ipset 里 &lt;code&gt;ip,port&lt;/code&gt; 和 iptables 里 &lt;code&gt;--match-set&lt;/code&gt; 后面的 &lt;code&gt;dst,dst&lt;/code&gt; 组合在一起就是 &lt;code&gt;DEST IP&lt;/code&gt; 和 &lt;code&gt;DEST PORT&lt;/code&gt; 同时匹配，下面是一些举例：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;ipset type&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;iptables match-set&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Packet fields&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:net,port,net&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src,dst,dst&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src IP CIDR address, dst port, dst IP CIDR address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:net,port,net&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst,src,src&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst IP CIDR address, src port, src IP CIDR address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:ip,port,ip&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src,dst,dst&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src IP address, dst port, dst IP address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:ip,port,ip&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst,src,src&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst IP address, src port, src ip address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:mac&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src mac address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:mac&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst mac address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:ip,mac&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src,src&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;src IP address, src mac address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:ip,mac&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst,dst&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst IP address, dst mac address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;hash:ip,mac&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst,src&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;dst IP address, src mac address&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 &lt;code&gt;OUTPUT&lt;/code&gt; 链，不会过 &lt;code&gt;PREROUTING&lt;/code&gt; ，不过我们上面的 &lt;code&gt;PREROUTING&lt;/code&gt; 链可以处理后续的 docker 容器。 调试了下发现确实会走 &lt;code&gt;OUTPUT&lt;/code&gt; 链：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;kern.warning /var/log/iptables.log&amp;#39;&lt;/span&gt; &amp;gt;&amp;gt; /etc/rsyslog.conf
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl restart rsyslog
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -I OUTPUT -m &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; --match-set ZGZ-CLUSTER-IP dst,dst  -j LOG --log-prefix &lt;span class=&#34;s1&#34;&gt;&amp;#39;**log-test**&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat /var/log/iptables.log
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Sep &lt;span class=&#34;m&#34;&gt;27&lt;/span&gt; 23:17:51 centos7 kernel: **log-test**IN&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;OUT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;lo &lt;span class=&#34;nv&#34;&gt;SRC&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;169.254.11.2 &lt;span class=&#34;nv&#34;&gt;DST&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;169.254.11.2 &lt;span class=&#34;nv&#34;&gt;LEN&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;60&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;TOS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 &lt;span class=&#34;nv&#34;&gt;PREC&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 &lt;span class=&#34;nv&#34;&gt;TTL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;64&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;ID&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;44864&lt;/span&gt; DF &lt;span class=&#34;nv&#34;&gt;PROTO&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;TCP &lt;span class=&#34;nv&#34;&gt;SPT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;50794&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;DPT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;WINDOW&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;43690&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;RES&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 SYN &lt;span class=&#34;nv&#34;&gt;URGP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Sep &lt;span class=&#34;m&#34;&gt;27&lt;/span&gt; 23:17:52 centos7 kernel: **log-test**IN&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;OUT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;lo &lt;span class=&#34;nv&#34;&gt;SRC&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;169.254.11.2 &lt;span class=&#34;nv&#34;&gt;DST&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;169.254.11.2 &lt;span class=&#34;nv&#34;&gt;LEN&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;60&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;TOS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 &lt;span class=&#34;nv&#34;&gt;PREC&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 &lt;span class=&#34;nv&#34;&gt;TTL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;64&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;ID&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;2010&lt;/span&gt; DF &lt;span class=&#34;nv&#34;&gt;PROTO&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;TCP &lt;span class=&#34;nv&#34;&gt;SPT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;50796&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;DPT&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;WINDOW&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;43690&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;RES&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0x00 SYN &lt;span class=&#34;nv&#34;&gt;URGP&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;需要添加下面规则：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables -t nat -A OUTPUT -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service portals&amp;#34;&lt;/span&gt; -j ZGZ-SERVICES
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;keepalived-的自动化实现&#34;&gt;keepalived 的自动化实现&lt;/h3&gt;
+&lt;p&gt;到目前为止都是手动挡，而且没健康检查，其实我们可以利用 keepalived 做个自动挡的。&lt;/p&gt;
+&lt;h4 id=&#34;安装-keepalived-2&#34;&gt;安装 keepalived 2&lt;/h4&gt;
+&lt;p&gt;CentOS7 自带的源里 &lt;code&gt;keepalived&lt;/code&gt; 版本很低，我们安装下比自带新的版本：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum install -y http://www.nosuchhost.net/~cheese/fedora/packages/epel-7/x86_64/cheese-release-7-1.noarch.rpm
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;yum install -y keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 备份下自带的配置文件&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cp /etc/keepalived/keepalived.conf&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;,.bak&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;配置-keepalived&#34;&gt;配置 keepalived&lt;/h4&gt;
+&lt;p&gt;我们需要配置下 keepalived ，修改之前先看下默认相关的：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl cat keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# /usr/lib/systemd/system/keepalived.service&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Unit&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;Description&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;LVS and VRRP High Availability Monitor
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;After&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;syslog.target network-online.target
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Service&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;Type&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;forking
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;KillMode&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;process
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;EnvironmentFile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;-/etc/sysconfig/keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ExecStart&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/usr/sbin/keepalived &lt;span class=&#34;nv&#34;&gt;$KEEPALIVED_OPTIONS&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ExecReload&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/bin/kill -HUP &lt;span class=&#34;nv&#34;&gt;$MAINPID&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Install&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;WantedBy&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;multi-user.target
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat /etc/sysconfig/keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Options for keepalived. See `keepalived --help&amp;#39; output and keepalived(8) and&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# keepalived.conf(5) man pages for a list of all options. Here are the most&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# common ones :&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --vrrp               -P    Only run with VRRP subsystem.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --check              -C    Only run with Health-checker subsystem.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --dont-release-vrrp  -V    Dont remove VRRP VIPs &amp;amp; VROUTEs on daemon stop.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --dont-release-ipvs  -I    Dont remove IPVS topology on daemon stop.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --dump-conf          -d    Dump the configuration data.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --log-detail         -D    Detailed log messages.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# --log-facility       -S    0-7 Set local syslog facility (default=LOG_DAEMON)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;KEEPALIVED_OPTIONS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;-D&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;/etc/sysconfig/keepalived&lt;/code&gt; 里修改为下面：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-conf&#34; data-lang=&#34;conf&#34;&gt;KEEPALIVED_OPTIONS=&amp;#34;-D --log-console --log-detail --use-file=/etc/keepalived/keepalived.conf&amp;#34;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 &lt;code&gt;kill -HUP&lt;/code&gt; 信号触发 reload ，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /etc/keepalived/keepalived.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;! Configuration File for keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;global_defs {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;# 记住 keepalived 的任何配置文件不能有 x 权限
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;include /etc/keepalived/conf.d/*.conf
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir -p /etc/keepalived/conf.d/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们写一个脚本，一个是用来添加一个子配置文件里的相关信息到 ipset 里，另一方面也让它在重启或者启动 keepalived 的时候每次能初始化，先添加 systemd 的部分：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir -p /usr/lib/systemd/system/keepalived.service.d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /usr/lib/systemd/system/keepalived.service.d/10.keepalived.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;[Service]
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;ExecStartPre=/etc/keepalived/ipvs.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后编写脚本 &lt;code&gt;/etc/keepalived/ipvs.sh&lt;/code&gt; :&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;#!/bin/bash
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; -e
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;svc
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;CONF_DIR&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/etc/keepalived/conf.d/
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; ipset_init&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ipset create ZGZ-CLUSTER-IP hash:ip,port -exist
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ipset flush ZGZ-CLUSTER-IP
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; f ip port protocol
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; f in &lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;find  &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CONF_DIR&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; -maxdepth &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; -type f -name &lt;span class=&#34;s1&#34;&gt;&amp;#39;*.conf&amp;#39;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        awk &lt;span class=&#34;s1&#34;&gt;&amp;#39;{if($1==&amp;#34;virtual_server&amp;#34;){printf $2&amp;#34; &amp;#34;$3&amp;#34; &amp;#34;;flag=1;};if(flag==1 &amp;amp;&amp;amp; $1==&amp;#34;protocol&amp;#34;){print $2;flag=0}}&amp;#39;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$f&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;while&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;read&lt;/span&gt; ip port protocol&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;c1&#34;&gt;# SVC IP port 插入 ipset 里&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            ipset add ZGZ-CLUSTER-IP &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;,&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,,&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;:&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; -exist
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;c1&#34;&gt;# 添加 SVC IP 到 dummy 接口上&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; ! ip r g &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -qw lo&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                ip addr add &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;/32 dev &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; create_Chain_in_nat&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;# delete use -X&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; Chain option
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nv&#34;&gt;option&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;-t nat --wait&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; Chain in &lt;span class=&#34;nv&#34;&gt;$@&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; ! iptables &lt;span class=&#34;nv&#34;&gt;$option&lt;/span&gt; -S &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -Eq -- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-N\s+&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;Chain&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        iptables &lt;span class=&#34;nv&#34;&gt;$option&lt;/span&gt; -N &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;Chain&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; create_Rule_in_nat&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;cmd&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;iptables -t nat --wait &amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; ! &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;cmd&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;  --check &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$@&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; 2&amp;gt;/dev/null&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;cmd&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; -A &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$@&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; iptables_init&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Chain_in_nat ZGZ-SERVICES  ZGZ-SERVICES-POSTROUTING ZGZ-SERVICES-MARK-MASQ
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat ZGZ-SERVICES-MARK-MASQ -j MARK --set-xmark 0x2000/0x2000
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat ZGZ-SERVICES -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service cluster ip + port for masquerade purpose&amp;#34;&lt;/span&gt; -m &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; --match-set ZGZ-CLUSTER-IP dst,dst -j ZGZ-SERVICES-MARK-MASQ
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat PREROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service portals&amp;#34;&lt;/span&gt; -j ZGZ-SERVICES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat OUTPUT -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service portals&amp;#34;&lt;/span&gt; -j ZGZ-SERVICES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat ZGZ-SERVICES-POSTROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz service traffic requiring SNAT&amp;#34;&lt;/span&gt; -m mark --mark 0x2000/0x2000 -j MASQUERADE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    create_Rule_in_nat POSTROUTING -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;zgz postrouting rules&amp;#34;&lt;/span&gt; -j ZGZ-SERVICES-POSTROUTING
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; ipvs_svc_run&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ip addr flush dev &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ipset_init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  iptables_init
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 无参数则是 keepalived 启动，也可以接收单个配置文件参数&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;function&lt;/span&gt; main&lt;span class=&#34;o&#34;&gt;(){&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt; ! -d /proc/sys/net/ipv4/conf/&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ip link add &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; dummy
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$#&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -eq &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ipvs_svc_run
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; file fullFile ip port protocol
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; file in &lt;span class=&#34;nv&#34;&gt;$@&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nv&#34;&gt;fullFile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;CONF_DIR&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;/&lt;span class=&#34;nv&#34;&gt;$file&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      awk &lt;span class=&#34;s1&#34;&gt;&amp;#39;{if($1==&amp;#34;virtual_server&amp;#34;){printf $2&amp;#34; &amp;#34;$3&amp;#34; &amp;#34;;flag=1;};if(flag==1 &amp;amp;&amp;amp; $1==&amp;#34;protocol&amp;#34;){print $2;flag=0}}&amp;#39;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$f&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;while&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;read&lt;/span&gt; ip port protocol&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;c1&#34;&gt;# SVC IP port 插入 ipset 里&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          ipset add ZGZ-CLUSTER-IP &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;,&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,,&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;:&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; -exist
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;c1&#34;&gt;# 添加 SVC IP 到 dummy 接口上&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; ! ip r g &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep -qw lo&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;then&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;              ip addr add &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;ip&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;/32 dev &lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;dummy_if&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &lt;span class=&#34;k&#34;&gt;fi&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# 重新 reload &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  pkill --signal HUP keepalived
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;main &lt;span class=&#34;nv&#34;&gt;$@&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;脚本就如上面所示，读取 keepalived 的 lvs 文件，把 &lt;code&gt;VIP:PORT&lt;/code&gt; 加到 ipset 里，VIP 加到 &lt;code&gt;dummy&lt;/code&gt; 接口上，之前是加到 eth0 上，但是业务网卡可能会重启影响，dummy 接口和 loopback 类似，它总是 up 的，除非你 down 掉它，SVC 地址配置在它上面不会随着物理接口状态变化而受到影响。删除掉之前 eth0 上的 VIP &lt;code&gt;ip addr del 169.254.11.2/32 dev eth0&lt;/code&gt;，然后把前面的转成 keepalived 的配置文件测试下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;chmod a+x /etc/keepalived/ipvs.sh
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /etc/keepalived/conf.d/test.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;virtual_server 169.254.11.2 80 {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    delay_loop 6
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    lb_algo rr
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    lb_kind NAT
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    protocol TCP
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    real_server  192.168.2.111 8080 {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        weight 1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        HTTP_GET  {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            url {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              path /404
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              status_code 404
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            connect_port    8080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            connect_timeout 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            retry 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            delay_before_retry 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    real_server  192.168.2.222 8080 {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        weight 1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        HTTP_GET  {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            url {
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              path /404
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;              status_code 404
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            connect_port    8080
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            connect_timeout 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            retry 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;            delay_before_retry 2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;# 先清理掉之前手动添加的
+ipvsadm --clear
+
+systemctl daemon-reload
+systemctl restart keepalived
+
+$ curl 169.254.11.2/www/test
+192.168.2.222
+$ curl 169.254.11.2/www/test
+192.168.2.111
+$ curl 169.254.11.2/www/test
+192.168.2.222
+$ curl 169.254.11.2/www/test
+192.168.2.111
+$ ip a s SVC
+4: SVC: &amp;lt;BROADCAST,NOARP&amp;gt; mtu 1500 qdisc noop state DOWN group default qlen 1000
+    link/ether e6:a3:29:07:fa:57 brd ff:ff:ff:ff:ff:ff
+    inet 169.254.11.2/32 scope global SVC
+       valid_lft forever preferred_lft forever
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs ：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;7&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; Failed connect to 169.254.11.2:80&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; Connection refused
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.2.111
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;系统的相关配置&#34;&gt;系统的相关配置&lt;/h4&gt;
+&lt;p&gt;后面重启后发现不通，发现内核模块没加载，使用 &lt;code&gt;systemd-modules-load&lt;/code&gt; 去开机加载：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat  &amp;gt; /etc/modules-load.d/ipvs.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;ip_vs
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;ip_vs_rr
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;ip_vs_wrr
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;ip_vs_sh
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /etc/sysctl.d/90.ipvs.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;# https://github.com/moby/moby/issues/31208 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;# ipvsadm -l --timout
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;# 修复ipvs模式下长连接timeout问题 小于900即可
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;net.ipv4.tcp_keepalive_time=600
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;net.ipv4.tcp_keepalive_intvl=30
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;net.ipv4.vs.conntrack=1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;docker-运行的方案&#34;&gt;docker 运行的方案&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;docker-compose&lt;/code&gt; 文件如下，自己把脚本挂载进去即可：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;3.5&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;keepalived&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;registry.aliyuncs.com/zhangguanzhang/keepalived:v2.2.0&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostname&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;keepalived-ipvs&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;restart&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;unless-stopped&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;container_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;keepalived-ipvs&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;app=keepalived&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;network_mode&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;privileged&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cap_drop&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;ALL&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cap_add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;NET_BIND_SERVICE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;/usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;/lib/modules:/lib/modules&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;/run/xtables.lock:/run/xtables.lock&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./conf.d/:/etc/keepalived/conf.d/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./keepalived.conf:/etc/keepalived/keepalived.conf&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;./always-initsh.d:/always-initsh.d&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;dont-fork&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;log-console&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;log-detail&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;use-file=/etc/keepalived/keepalived.conf&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;logging&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;driver&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;json-file&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;options&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;max-file&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;3&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;max-size&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;20m&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考文档&#34;&gt;参考文档&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.austintek.com/LVS/LVS-HOWTO/HOWTO/LVS-HOWTO.filter_rules.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Interaction between LVS and netfilter&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.austintek.com/LVS/LVS-HOWTO/HOWTO/LVS-HOWTO.LVS-NAT.html#lvs_nat_intro&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;lvs nat&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/liexusong/linux-source-code-analyze/blob/master/lvs-principle-and-source-analysis-part2.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;lvs-principle-and-source-analysis&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.zsythink.net/archives/1199&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;朱双印大佬的 iptables 技术系列&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>云上细粒度访问管理的参考架构</title>
       <link>https://cloudnative.to/blog/access-management-reference-architecture/</link>
       <pubDate>Sat, 08 May 2021 10:30:00 +0800</pubDate>
@@ -3205,6 +3809,364 @@ itmes   │ObjKey1: [{&amp;#34;Added&amp;#34;,Obj1} {&amp;#34;Updated&amp;#34;,O
     </item>
     
     <item>
+      <title>client-go 源码学习总结</title>
+      <link>https://cloudnative.to/blog/client-go-study/</link>
+      <pubDate>Fri, 07 Aug 2020 21:28:37 +0000</pubDate>
+      <guid>https://cloudnative.to/blog/client-go-study/</guid>
+      <description>&lt;p&gt;目前在云原生社区的 Kubernetes 源码研习社中和广大学友们共同学习郑东旭大佬的 &lt;a href=&#34;https://item.jd.com/12665791.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 源码剖析&lt;/a&gt;这本书。当前正在开展第一期学习活动，第五章节 client-go 的学习。之所以从这一章节开始学习，主要是考虑到 client-go 在源码中相对比较独立，可以单独阅读。更主要的是它是 Kubernetes 的核心处理框架，基本上运用在 Kubernetes 各个组件中，因此，如果你学好了这一章节，对于后面 Kubernetes 源码的阅读，将会有很大的帮助。此外随着 Operator 的盛行，一些开源的生成框架也受到广大 Operator 开发者们的青睐。例如 kubebuilder 和 operator-SDK 等。而精通了 client-go，将对你理解这些生成框架及编写 Operator 也是有很好的帮助。&lt;/p&gt;
+&lt;p&gt;下面内容是在学习过程中总结的相关笔记及个人见解。&lt;/p&gt;
+&lt;h2 id=&#34;概括&#34;&gt;概括&lt;/h2&gt;
+&lt;p&gt;client-go 是用 Golang 语言编写的官方编程式交互客户端库，提供对 Kubernetes API server 服务的交互访问。&lt;/p&gt;
+&lt;p&gt;其源码目录结构如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;discovery&lt;/strong&gt;: 提供 DiscoveryClient 发现客户端。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;dynamic&lt;/strong&gt;: 提供 DynamicClient 动态客户端。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;informers&lt;/strong&gt;: 每种 K8S 资源的 Informer 实现。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;kubernetes&lt;/strong&gt;: 提供 ClientSet 客户端。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;listers&lt;/strong&gt;: 为每一个 K8S 资源提供 Lister 功能，该功能对 Get 和 List 请求提供只读的缓存数据。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;plugin&lt;/strong&gt;: 提供 OpenStack，GCP 和 Azure 等云服务商授权插件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;rest&lt;/strong&gt;: 提供 RESTClient 客户端，对 K8S API Server 执行 RESTful 操作。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;scale&lt;/strong&gt;: 提供 ScaleClient 客户端，用于扩容或缩容 Deployment, Replicaset, Replication Controller 等资源对象。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;tools&lt;/strong&gt;: 提供常用工具，例如 SharedInformer, Reflector, DeltaFIFO 及 Indexers。 提供 Client 查询和缓存机制，以减少向 kube-apiserver 发起的请求数等。主要子目录为/tools/cache。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;transport&lt;/strong&gt;: 提供安全的 TCP 连接，支持 HTTP Stream，某些操作需要在客户端和容器之间传输二进制流，例如 exec，attach 等操作。该功能由内部的 SPDY 包提供支持。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;util&lt;/strong&gt;: 提供常用方法。例如 WorkQueue 工作队列，Certificate 证书管理等。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;restclient-客户端&#34;&gt;RESTClient 客户端&lt;/h2&gt;
+&lt;p&gt;RESTful Client 是最基础的客户端，它主要是对 HTTP 请求进行了封装，并且支持 JSON 和 Protobuf 格式数据。&lt;/p&gt;
+&lt;h2 id=&#34;dynamicclient-客户端&#34;&gt;DynamicClient 客户端&lt;/h2&gt;
+&lt;p&gt;DynamicClient 是一种动态客户端，它可以动态的指定资源的组，版本和资源。因此它可以对任意 K8S 资源进行 RESTful 操作，包括 CRD 自定义资源。它封装了 RESTClient。所以同样提供 RESTClient 的各种方法。&lt;/p&gt;
+&lt;p&gt;具体使用方法，可参考官方示例：&lt;a href=&#34;https://github.com/kubernetes/client-go/tree/master/examples/dynamic-create-update-delete-deployment&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;dynamic-create-update-delete-deployment&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;: 该官方示例是基于集群外的环境，如果你需要在集群内部使用（例如你需要在 container 中访问），你将需要调用 &lt;code&gt;rest.InClusterConfig()&lt;/code&gt; 生成一个 configuration。具体的示例请参考 &lt;a href=&#34;https://github.com/kubernetes/client-go/tree/master/examples/in-cluster-client-configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;in-cluster-client-configuration&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;clientset-客户端&#34;&gt;ClientSet 客户端&lt;/h2&gt;
+&lt;p&gt;ClientSet 客户端在 RESTClient 的基础上封装了对资源和版本的管理方法。每个资源可以理解为一个客户端，而 ClientSet 则是多个客户端的集合，每一个资源和版本都以函数的方式暴露给开发者。&lt;/p&gt;
+&lt;p&gt;具体使用方法，可参考官方示例：&lt;a href=&#34;https://github.com/kubernetes/client-go/tree/master/examples/create-update-delete-deployment&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;create-update-delete-deployment&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;discoveryclient-客户端&#34;&gt;DiscoveryClient 客户端&lt;/h2&gt;
+&lt;p&gt;DiscoveryClient 是一个发现客户端，它主要用于发现 K8S API Server 支持的资源组，资源版本和资源信息。所以开发者可以通过使用 DiscoveryClient 客户端查看所支持的资源组，资源版本和资源信息。&lt;/p&gt;
+&lt;h2 id=&#34;clientset-vs-dynamicclient&#34;&gt;ClientSet VS DynamicClient&lt;/h2&gt;
+&lt;p&gt;类型化 &lt;code&gt;ClientSets&lt;/code&gt; 使得使用预先生成的本地 API 对象与 API 服务器通信变得简单，从而获得类似 &lt;code&gt;RPC&lt;/code&gt; 的编程体验。类型化客户端使用程序编译来强制执行数据安全性和一些验证。然而，在使用类型化客户端时，程序被迫与所使用的版本和类型紧密耦合。&lt;/p&gt;
+&lt;p&gt;而 &lt;code&gt;DynamicClient&lt;/code&gt; 则使用 &lt;code&gt;unstructured.Unstructured&lt;/code&gt; 表示来自 API Server 的所有对象值。&lt;code&gt;Unstructured&lt;/code&gt; 类型是一个嵌套的 &lt;code&gt;map[string]inferface{}&lt;/code&gt; 值的集合来创建一个内部结构，该结构和服务端的 REST 负载非常相似。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;DynamicClient&lt;/code&gt; 将所有数据绑定推迟到运行时，这意味着程序运行之前，使用 &lt;code&gt;DynamicClient&lt;/code&gt; 的的程序将不会获取到类型验证的任何好处。对于某些需要强数据类型检查和验证的应用程序来说，这可能是一个问题。&lt;/p&gt;
+&lt;p&gt;然而，松耦合意味着当客户端 API 发生变化时，使用 &lt;code&gt;DynamicClient&lt;/code&gt; 的程序不需要重新编译。客户端程序在处理 API 表面更新时具有更大的灵活性，而无需提前知道这些更改是什么。&lt;/p&gt;
+&lt;h2 id=&#34;informer-分析&#34;&gt;Informer 分析&lt;/h2&gt;
+&lt;p&gt;这是一个官方图形表示，展示了client-go 库中的各种组件如何工作，以及它们与将要编写的自定义控制器代码的交互点。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ldquocustom-controllerrdquo&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&amp;amp;ldquo;custom controller&amp;amp;rdquo;&#34; srcset=&#34;
+               /blog/client-go-study/informer_huac15ddfc8c363f4433189e4aaf72ecdc_111826_a0097322593ee8a93184264cf70466ea.webp 400w,
+               /blog/client-go-study/informer_huac15ddfc8c363f4433189e4aaf72ecdc_111826_5d4cf19c99322666ffb491546c6d0efa.webp 760w,
+               /blog/client-go-study/informer_huac15ddfc8c363f4433189e4aaf72ecdc_111826_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/client-go-study/informer_huac15ddfc8c363f4433189e4aaf72ecdc_111826_a0097322593ee8a93184264cf70466ea.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;570&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      &amp;amp;ldquo;custom controller&amp;amp;rdquo;
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下面对图中每个组件进行简单介绍：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;em&gt;&lt;strong&gt;client-go 组件&lt;/strong&gt;&lt;/em&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Reflector&lt;/strong&gt;: 定义在 &lt;a href=&#34;https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;/tools/cache 包内的 Reflector 类型&lt;/a&gt; 中的 reflector 监视 Kubernetes API 以获取指定的资源类型 (Kind)。完成此操作的函数是 ListAndWatch。监视可以用于内建资源，也可以用于自定义资源。当 reflector 通过监视 API 的收到关于新资源实例存在的通知时，它使用相应的 listing API 获取新创建的对象，并将其放入 watchHandler 函数内的 Delta Fifo 队列中。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Informer&lt;/strong&gt;: 在 &lt;a href=&#34;https://github.com/kubernetes/client-go/blob/master/tools/cache/controller.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;/tools/cache 包内的基础 controller&lt;/a&gt; 中定义的一个 informer 从 Delta FIFO 队列中弹出对象。完成此操作的函数是 processLoop。这个基础 controller 的任务是保存对象以供以后检索，并调用 controller 将对象传递给它。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Indexer&lt;/strong&gt;: indexer 为对象提供索引功能。它定义在 &lt;a href=&#34;https://github.com/kubernetes/client-go/blob/master/tools/cache/index.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;/tools/cache 包内的 Indexer 类型&lt;/a&gt;。一个典型的索引用例是基于对象标签创建索引。Indexer 可以基于多个索引函数维护索引。Indexer 使用线程安全的数据存储来存储对象及其键值。在 &lt;a href=&#34;https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;/tools/cache 包内的 Store 类型&lt;/a&gt; 定义了一个名为&lt;code&gt;MetaNamespaceKeyFunc&lt;/code&gt;的默认函数，该函数为该对象生成一个名为 &lt;code&gt;&amp;lt;namespace&amp;gt;/&amp;lt;name&amp;gt;&lt;/code&gt; 组合的对象键值。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;em&gt;&lt;strong&gt;Custom Controller 组件&lt;/strong&gt;&lt;/em&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Informer reference&lt;/strong&gt;: 这是一个知道如何使用自定义资源对象的 Informer 实例的引用。您的自定义控制器代码需要创建适当的 Informer。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Indexer reference&lt;/strong&gt;: 这是一个知道如何使用自定义资源对象的 Indexer 实例的引用。您的自定义控制器代码需要创建这个。您将使用此引用检索对象，以便稍后处理。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Resource Event Handlers&lt;/strong&gt;: 当 Informer 想要分发一个对象给你的控制器时，会调用这些回调函数。编写这些函数的典型模式是获取已分配对象的键值，并将该键值放入一个工作队列中进行进一步处理。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Work queue&lt;/strong&gt;: 这是在控制器代码中创建的队列，用于将对象的分发与处理解耦。编写 Resource Event Handler 函数来提取所分发对象的键值并将其添加到工作队列中。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Process Item&lt;/strong&gt;: 这是在代码中创建的处理 work queue 中的 items 的函数。可以有一个或多个其他函数来执行实际的处理。这些函数通常使用 &lt;a href=&#34;https://github.com/kubernetes/client-go/blob/master/examples/workqueue/main.go#L73&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Indexer 引用&lt;/a&gt; 或 Listing wrapper 来获取与键值对应的对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;informer-源码类图&#34;&gt;Informer 源码类图&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ldquoinformer-class-diagramrdquo&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&amp;amp;ldquo;Informer class diagram&amp;amp;rdquo;&#34; srcset=&#34;
+               /blog/client-go-study/clientgo_hu6b5108e216cabfd4e11ed2cb6cccfe8d_320921_a27f2a8e388925ae1e33ed876d591c85.webp 400w,
+               /blog/client-go-study/clientgo_hu6b5108e216cabfd4e11ed2cb6cccfe8d_320921_1a79a785e3d8e2f59e5b8b353559e3ba.webp 760w,
+               /blog/client-go-study/clientgo_hu6b5108e216cabfd4e11ed2cb6cccfe8d_320921_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/client-go-study/clientgo_hu6b5108e216cabfd4e11ed2cb6cccfe8d_320921_a27f2a8e388925ae1e33ed876d591c85.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;664&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      &amp;amp;ldquo;Informer class diagram&amp;amp;rdquo;
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;该类图主要描述了 Informer 中主要的接口和类之前的调用关系。大家可以参考这个类图去阅读源码。其中每个类或接口具体功能，请参考 &lt;a href=&#34;https://item.jd.com/12665791.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 源码剖析&lt;/a&gt;第五章节 client-go。&lt;/p&gt;
+&lt;h3 id=&#34;indexer-分析&#34;&gt;Indexer 分析&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Store&lt;/strong&gt; : 是一个通用对象存储和处理接口。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Indexer&lt;/strong&gt; : Indexer 扩展了多个索引的 Store，并限制每个累加器只保存当前对象（删除后为空）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;cache&lt;/strong&gt; : 根据 ThreadSafeStore 和关联的 KeyFunc 实现的 Indexer。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ThreadSafeStore&lt;/strong&gt; : 是一个允许对存储后端进行并发索引访问的接口。它类似于 Indexer，但不（必须）知道如何从给定对象中提取存储键。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;threadSafeMap&lt;/strong&gt; : 实现了 ThreadSafeStore。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;下面为具体的类图展示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ldquoindexerrdquo&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&amp;amp;ldquo;indexer&amp;amp;rdquo;&#34; srcset=&#34;
+               /blog/client-go-study/indexer_hu630a1254c91cd7e43c0581bb46f9dcec_125126_6a08baee18b0767f31bc2db8876c97d1.webp 400w,
+               /blog/client-go-study/indexer_hu630a1254c91cd7e43c0581bb46f9dcec_125126_81bbf23b2be9f3091c17e92e5cf21b7b.webp 760w,
+               /blog/client-go-study/indexer_hu630a1254c91cd7e43c0581bb46f9dcec_125126_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/client-go-study/indexer_hu630a1254c91cd7e43c0581bb46f9dcec_125126_6a08baee18b0767f31bc2db8876c97d1.webp&#34;
+               width=&#34;740&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      &amp;amp;ldquo;indexer&amp;amp;rdquo;
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;threadsafemap-分析&#34;&gt;threadSafeMap 分析&lt;/h3&gt;
+&lt;p&gt;&lt;strong&gt;threadSafeMap&lt;/strong&gt; 类中包含下面三个属性：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;items map[string]interface{}&lt;/code&gt; 保存所有数据的 map 结构。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;indexers Indexers&lt;/code&gt; 通过一个名字映射一个 IndexFunc 索引处理函数。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;indices Indices&lt;/code&gt; 通过一个名字映射一个 Index。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;下面是 threadSafeMap 结构的源码定义：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// threadSafeMap implements ThreadSafeStore
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;threadSafeMap&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;lock&lt;/span&gt;  &lt;span class=&#34;nx&#34;&gt;sync&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;RWMutex&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;items&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// indexers maps a name to an IndexFunc
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;indexers&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Indexers&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// indices maps a name to an Index
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;indices&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Indices&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是 Indexers, Indices and Index 的源码定义：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// IndexFunc knows how to compute the set of indexed values for an object.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;IndexFunc&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;obj&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{})&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;([]&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;error&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Index maps the indexed value to a set of keys in the store that match on that value
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Index&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;sets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;String&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Indexers maps a name to a IndexFunc
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Indexers&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;IndexFunc&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// Indices maps a name to an Index
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Indices&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Index&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这是一个 threadSafeMap 存储结构的示例图：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ldquothreadsafemapstoragestructurerdquo&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&amp;amp;ldquo;threadSafeMapStorageStructure&amp;amp;rdquo;&#34; srcset=&#34;
+               /blog/client-go-study/threadSafeMapStorageStructure_hue9ca19a51b5394504882fec26a03f606_47345_544ee728227a8faacfed19cbfe9fe3e8.webp 400w,
+               /blog/client-go-study/threadSafeMapStorageStructure_hue9ca19a51b5394504882fec26a03f606_47345_32de2a6de42a874b37a1c70733759e97.webp 760w,
+               /blog/client-go-study/threadSafeMapStorageStructure_hue9ca19a51b5394504882fec26a03f606_47345_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/client-go-study/threadSafeMapStorageStructure_hue9ca19a51b5394504882fec26a03f606_47345_544ee728227a8faacfed19cbfe9fe3e8.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;387&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      &amp;amp;ldquo;threadSafeMapStorageStructure&amp;amp;rdquo;
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;最后以添加一个新的对象到 threadSafeMap 为例，分析具体需要哪些操作。&lt;/p&gt;
+&lt;p&gt;首先列出源码以供参考：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;threadSafeMap&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;Add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;obj&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{})&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;lock&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Lock&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;defer&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;lock&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Unlock&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;oldObject&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;items&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;items&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;obj&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;updateIndices&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;oldObject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;obj&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// updateIndices modifies the objects location in the managed indexes, if this is an update, you must provide an oldObj
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// updateIndices must be called from a function that already has a lock on the cache
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;threadSafeMap&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;updateIndices&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;oldObj&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{},&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;newObj&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{},&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// if we got an old object, we need to remove it before we add it again
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;oldObj&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;deleteFromIndices&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;oldObj&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;indexFunc&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;range&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;indexers&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;indexValues&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;indexFunc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;newObj&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nb&#34;&gt;panic&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Errorf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;unable to calculate an index entry for key %q on index %q: %v&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;indices&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Index&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nx&#34;&gt;c&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;indices&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;_&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;indexValue&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;range&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;indexValues&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nx&#34;&gt;set&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;indexValue&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;set&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nx&#34;&gt;set&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;sets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;nx&#34;&gt;index&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;indexValue&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;set&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;nx&#34;&gt;set&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Insert&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从上面代码可以总结出下面几个步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;从 items 中获取旧的对象值，并将新的对象添加到 items 中指定键值的位置。&lt;/li&gt;
+&lt;li&gt;将新加入对象的键值更新到索引中。
+&lt;ol&gt;
+&lt;li&gt;如果旧的对象存在，则将其从索引中删除，否则进行下一步。&lt;/li&gt;
+&lt;li&gt;迭代 indexers 进行新对象的索引处理。&lt;/li&gt;
+&lt;li&gt;通过 indexers 中的 indexFunc 处理新对象，找到相应的 indexValues。&lt;/li&gt;
+&lt;li&gt;使用 indexer 的 name 从 indices 中找到对应的 index。如果对应的 index 是空，则创建一个新的 index。&lt;/li&gt;
+&lt;li&gt;迭代 indexValues 进行 index 处理。&lt;/li&gt;
+&lt;li&gt;通过 indexValue 在 index 中找到对应的 set， 如果 set 不存在，则创建一个新的 set。并添加到 index 中。&lt;/li&gt;
+&lt;li&gt;添加新对象的键值到 set 中。&lt;/li&gt;
+&lt;li&gt;返回第 5 步，直到迭代完成。&lt;/li&gt;
+&lt;li&gt;返回第 2 步，直到迭代完成。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;workqueue-分析&#34;&gt;WorkQueue 分析&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;Interface&lt;/strong&gt; : FIFO 队列接口，并支持去重处理。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;DelayingInterface&lt;/strong&gt;: 延迟队列接口，基于 &lt;strong&gt;Interface&lt;/strong&gt; 接口封装。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;RateLimitingInterface&lt;/strong&gt;: 速率限制接口，基于 &lt;strong&gt;DelayingInterface&lt;/strong&gt; 接口封装。&lt;/p&gt;
+&lt;p&gt;下面是相关类图：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ldquoworkqueuerdquo&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&amp;amp;ldquo;workqueue&amp;amp;rdquo;&#34; srcset=&#34;
+               /blog/client-go-study/workqueue_hu8353bdff1587a330015db6162cd8ab5a_112375_1dc066c00ad1061ad80cfa17f63dc71d.webp 400w,
+               /blog/client-go-study/workqueue_hu8353bdff1587a330015db6162cd8ab5a_112375_da124fda367418c3242bbbf2688ed17c.webp 760w,
+               /blog/client-go-study/workqueue_hu8353bdff1587a330015db6162cd8ab5a_112375_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/client-go-study/workqueue_hu8353bdff1587a330015db6162cd8ab5a_112375_1dc066c00ad1061ad80cfa17f63dc71d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;517&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      &amp;amp;ldquo;workqueue&amp;amp;rdquo;
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;示例参考&#34;&gt;示例参考&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;参考 K8S 官方示例 &lt;a href=&#34;https://github.com/kubernetes/sample-controller&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes/sample-controller&lt;/a&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;参考 client-go 官方示例 &lt;a href=&#34;https://github.com/kubernetes/client-go/tree/master/examples/workqueue&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;workqueue&lt;/a&gt;。这是一个典型的使用 client-go informer 的例子，它完全基于 client-go informer 的框架。几乎所有的 K8S 控制器都是基于这个框架实现的。所以个人认为 client-go 的 informer 机制是 k8S controller 实现的基石。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;可以说 Kubernetes 是当前云原生的基石。所以想要进军云原生领域，kubernetes 的学习必不可少。kubernetes 的设计理念就是通过各种控制器将系统的实际运行状态协调到声明 API 中的期待状态。而这种协调机制就是基于 client-go 实现的。同样，kubernetes 对于 ETCD 存储的缓存处理也使用到了 client-go 中的 Reflector 机制。所以学好 client-go，等于迈入了 Kubernetes 的大门。&lt;/p&gt;
+&lt;p&gt;学习 Kubernetes 及更多云原生相关技术是一个漫长的过程。所以需要一个人有极强的意志力和学习动力。如果你觉得自己缺乏这些能力，可以加入我们 &lt;a href=&#34;https://cloudnative.to/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;云原生社区&lt;/a&gt;。大家一起学习，相互督促，相互分享，相互学习，相互成长。&lt;/p&gt;
+&lt;p&gt;最后送自己和正在学习及将要学习 Kubernetes 源码的同学们一句话：&lt;strong&gt;不积跬步，无以至千里；不积小流，无以成江海！&lt;/strong&gt;&lt;/p&gt;
+&lt;h2 id=&#34;参考文章&#34;&gt;参考文章&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/client-go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Source code&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/opsnull/kubernetes-dev-docs/tree/master/client-go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes client-go 库介绍和源码解析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://tangxusc.github.io/blog/2019/05/client-go-informer%E6%9C%BA%E5%88%B6/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Client-Go informer 机制&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.jianshu.com/p/76e7b1a57d2c&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;informer 之 store 和 index&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://xigang.github.io/2019/09/21/client-go/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes Client-Go Informer 实现源码剖析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://www.programmersought.com/article/6135240470/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;client-go package Informer source code analysis&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.huweihuang.com/kubernetes-notes/code-analysis/kube-controller-manager/sharedIndexInformer.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kube-controller-manager 源码分析（三）之 Informer 机制&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/sample-controller/blob/master/docs/controller-client-go.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sample-controller&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://studygolang.com/articles/20402&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Indexer&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>构建 Kubernetes 集群 —— 选择工作节点数量和大小</title>
       <link>https://cloudnative.to/blog/architecting-kubernetes-clusters-choosing-a-worker-node-size/</link>
       <pubDate>Sun, 08 Sep 2019 18:00:00 +0800</pubDate>
@@ -3458,6 +4420,98 @@ itmes   │ObjKey1: [{&amp;#34;Added&amp;#34;,Obj1} {&amp;#34;Updated&amp;#34;,O
 &lt;p&gt;&lt;em&gt;以上哪项优缺点与您相关？哪项与您不相关？&lt;/em&gt;&lt;/p&gt;
 &lt;p&gt;话虽如此，但没有规则说所有节点必须具有相同的大小。没有什么能阻止您使用不同大小的节点来混合构建集群。Kubernetes 集群的工作节点可以是完全异构的。这可能会让您权衡两种方法的优缺点。&lt;/p&gt;
 &lt;p&gt;最后，实践是检验真理的唯一标准——最好的方法是反复试验并找到最适合您的资源配置组合！&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>容器、微服务和服务网格简史</title>
+      <link>https://cloudnative.to/blog/containers-microservices-service-meshes/</link>
+      <pubDate>Mon, 03 Jun 2019 11:20:34 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/containers-microservices-service-meshes/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://jpetazzo.github.io/2019/05/17/containers-microservices-service-meshes/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;本文通过介绍一个构建和运行微服务的平台dotCloud的历史、容器间路由，进而阐述了它与现代服务网格的相同与不同之处；接着介绍了如何实现一个类似的服务网格以及其与Istio的区别；最后引入了SuperGloo的介绍，一个管理和编排大规模服务网格的开源项目。&lt;/p&gt;
+&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;有&lt;a href=&#34;https://containerjournal.com/2018/12/12/what-is-service-mesh-and-why-do-we-need-it/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;许&lt;/a&gt;&lt;a href=&#34;https://www.nginx.com/blog/do-i-need-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多&lt;/a&gt;&lt;a href=&#34;https://www.oreilly.com/ideas/do-you-need-a-service-mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;的&lt;/a&gt;&lt;a href=&#34;https://www.datawire.io/envoyproxy/service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;材料&lt;/a&gt;是关于服务网格的，这是另一个。为什么呢？因为我想分享给你们一个观点：有一些人认为服务网格在10年前就已经存在，远早于Docker和Kubernetes这样的容器平台的兴起。我并不是说这个观点比其他观点更好或更差，但是由于服务网格是相当复杂的架构，所以我相信多种观点有助于更好地理解它们。&lt;/p&gt;
+&lt;p&gt;我将讨论dotCloud平台，这是一个建立在100多个微服务之上的平台，支持数千个运行在容器中的应用程序；我将解释在构建和运行它时所面临的挑战；以及服务网格将如何(或不会)提供帮助。&lt;/p&gt;
+&lt;h2 id=&#34;dotcloud的历史&#34;&gt;dotCloud的历史&lt;/h2&gt;
+&lt;p&gt;我已经写过关于dotCloud平台的历史和它的一些设计选择，但是我没有过多讨论它的网络层。如果你不想跳进我以前的&lt;a href=&#34;http://jpetazzo.github.io/2017/02/24/from-dotcloud-to-docker/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;关于dotCloud的博客&lt;/a&gt;，所有你需要知道的是，这是一个PaaS平台，它允许用户运行各种应用程序(Java、PHP、Python…)，支持广泛的数据服务(MongoDB, MySQL, Redis,…)和与Heroku类似的工作流：您将把代码推到平台上，平台将负责容器镜像的创建和部署。&lt;/p&gt;
+&lt;p&gt;我将告诉您流量是如何在dotCloud平台上路由的；不是因为它是特别强大或者其它(我认为这是好的时间!)，主要是因为，如果需要一种方法在一堆微服务或应用程序之间路由通信，dotCloud的设计可以很容易地与今天的工具由一个合适的团队在很短的时间去实现。因此，它将为我们提供一个很好的比较点：“如果我们自己实现它，我们会得到什么”和“如果我们使用现有的服务网格，我们会得到什么”，也就是这个传统的困境 - “构建vs购买”。&lt;/p&gt;
+&lt;h2 id=&#34;托管程序的流量路由&#34;&gt;托管程序的流量路由&lt;/h2&gt;
+&lt;p&gt;部署在dotCloud上的应用程序可以公开HTTP和TCP端点。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;HTTP端点&lt;/strong&gt;被动态添加到&lt;a href=&#34;https://github.com/hipache/hipache&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hipache&lt;/a&gt;集群的配置中。这与我们今天使用Kubernetes &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/ingress/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress&lt;/a&gt;资源和负载均衡器如&lt;a href=&#34;https://traefik.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traefik&lt;/a&gt;可以实现的功能类似。&lt;/p&gt;
+&lt;p&gt;只要域名指向dotCloud的负载均衡器，客户端就可以使用它们的关联域名连接到HTTP端点。这里没有什么特别的。&lt;/p&gt;
+&lt;p&gt;客户端可以使用指定的主机名(类似于gateway-X.dotcloud.com)和端口号连接到TCP端点。&lt;/p&gt;
+&lt;p&gt;该主机名将解析为一个“nats”服务器集群(与&lt;a href=&#34;https://nats.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;NATS&lt;/a&gt;没有任何关系)，该集群将把传入的TCP连接路由到正确的容器(或者，在有负载均衡服务的情况下，路由到正确的容器)。&lt;/p&gt;
+&lt;p&gt;如果您熟悉Kubernetes，这可能会让您想起&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#NodePort&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;NodePort&lt;/a&gt;服务。&lt;/p&gt;
+&lt;p&gt;dotCloud平台没有与&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/connect-applications-service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ClusterIP&lt;/a&gt;提供相同的服务: 为了简单起见，从平台内部和外部以相同的方式访问服务。&lt;/p&gt;
+&lt;p&gt;这已经足够简单了，HTTP和TCP路由网格的最初实现可能都是几百行Python代码，使用的算法相当简单(我敢说，相当简单)，但是随着时间的推移，它们不断发展，以处理平台的增长和额外的需求。&lt;/p&gt;
+&lt;p&gt;它不需要对现有程序代码进行大量重构。&lt;a href=&#34;https://12factor.net/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;十二因素应用程序&lt;/a&gt;尤其可以直接使用通过环境变量提供的地址信息。&lt;/p&gt;
+&lt;h2 id=&#34;它与现代服务网格有何不同&#34;&gt;它与现代服务网格有何不同?&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;可观测性&lt;/strong&gt;是有限的。TCP路由网格没有任何度量指标。至于HTTP路由网格，后来的版本提供了详细的HTTP指标，显示错误代码和响应时间；但是现代服务网格的功能远远不止于此，它还提供了与度量收集系统(例如Prometheus)的集成。&lt;/p&gt;
+&lt;p&gt;可观察性不仅从操作角度(帮助我们排除问题)来看很重要，而且对于交付诸如安全的&lt;a href=&#34;https://martinfowler.com/bliki/BlueGreenDeployment.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;blue/green deployment&lt;/a&gt;或&lt;a href=&#34;https://martinfowler.com/bliki/CanaryRelease.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;canary deployment&lt;/a&gt;这样的特性也很重要。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;路由效率&lt;/strong&gt;也受到限制。在dotCloud路由网格中，所有流量都必须经过一组专用路由节点。这意味着可能跨越几个AZ(可用性区域)边界，并显著增加延迟。我记得对一些代码做过故障排除，这些代码发出100多个SQL请求来显示给定的页面，并为每个请求打开到SQL服务器的新连接。在本地运行时，页面会立即加载，但在dotCloud上运行时，则需要几秒钟，因为每个TCP连接(以及随后的SQL请求)需要几十毫秒才能完成。在这种情况下，使用长连接就可以解决问题了。&lt;/p&gt;
+&lt;p&gt;现代服务网格做得更好。首先，确保连接在源节点上被路由。逻辑流仍然是“客户端→网格→服务”，但是现在网格在本地运行，而不是在远程节点上，所以“客户端→网格”连接是本地连接，因此非常快(微秒而不是毫秒)。&lt;/p&gt;
+&lt;p&gt;现代服务网格还实现了更智能的负载均衡算法。通过监控后端健康状况，它们可以在处理速度更快的后端上发送更多的流量，从而提高整体性能。&lt;/p&gt;
+&lt;p&gt;现代服务网格的&lt;strong&gt;安全&lt;/strong&gt;也更强大。dotCloud路由网格完全在EC2 Classic上运行，并且没有加密流量(假设有人设法嗅探到EC2上的网络流量，那么无论如何都会遇到更大的麻烦)。现代服务网格可以透明地保护我们所有的通信，例如通过相互的TLS身份验证以及后续的加密。&lt;/p&gt;
+&lt;h2 id=&#34;平台服务的流量路由&#34;&gt;平台服务的流量路由&lt;/h2&gt;
+&lt;p&gt;好的，我们已经讨论了应用程序如何通信，但是dotCloud平台本身呢?&lt;/p&gt;
+&lt;p&gt;平台本身由大约100个微服务组成，负责各种功能。其中一些服务接受来自其他服务的请求，而其中一些服务是后台工作服务，它们将连接到其他服务，但不能自己接收连接。无论哪种方式，每个服务都需要知道它需要连接到的地址的端点。&lt;/p&gt;
+&lt;p&gt;许多高级服务都可以使用上面描述的路由网格。事实上，dotCloud平台的100多个微服务中有很大一部分是作为常规应用程序部署在dotCloud平台上的。但是，少量的底层服务(特别是实现路由网格的服务)需要一些更简单的东西，需要较少的依赖关系(因为它们不能依靠自己来运行；这是一个古老的“先有鸡还是先有蛋”的问题)。&lt;/p&gt;
+&lt;p&gt;通过直接在几个关键节点上启动容器，而不是依赖于平台的构建器、调度器和运行器服务，部署了这些底层的基本平台服务。如果您想要与现代容器平台进行比较，这就像直接在节点上启动我们的控制平面，使用 &lt;code&gt;docker run&lt;/code&gt;，而不是让Kubernetes为我们做这件事。这与&lt;a href=&#34;https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubeadm&lt;/a&gt;或&lt;a href=&#34;https://github.com/kubernetes-incubator/bootkube&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bootkube&lt;/a&gt;在加载自托管集群使用&lt;a href=&#34;https://kubernetes.io/docs/tasks/administer-cluster/static-pod/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态pod&lt;/a&gt;相当类似。&lt;/p&gt;
+&lt;p&gt;这些服务以一种非常简单粗糙的方式对外开放：有一个YAML文件列出了这些服务，将它们的名称映射到它们的地址；这些服务的每个消费者都需要该YAML文件的副本作为其部署的一部分。&lt;/p&gt;
+&lt;p&gt;一方面，这是非常健壮的，因为它不涉及像Zookeeper那样维护外部键/值对存储(请记住，etcd或Consul在当时并不存在)。另一方面，它使得服务迁移变得困难。每次移动一个服务时，它的所有消费者都需要接收一个更新的YAML文件(并可能重新启动)。不是很方便!&lt;/p&gt;
+&lt;p&gt;我们最开始的解决方案是让每个消费者都连接到一个本地代理。消费者不需要知道服务的完整地址+端口，只需要知道它的端口号，并通过“localhost”连接。本地代理将处理该连接，并将其路由到实际后端。现在，当一个后端服务需要移动到另一台机器上，或按比例扩容或缩容，不再需要更新它的所有消费者，我们只需要更新所有这些本地代理；我们不再需要重新启动消费者。&lt;/p&gt;
+&lt;p&gt;（还计划过将流量封装在TLS连接中，并在接收端使用另一个代理来打开TLS并验证证书，而不涉及该接收服务，该服务将被设置为只接受&lt;code&gt;localhost&lt;/code&gt;上的连接。稍后会详细介绍。)&lt;/p&gt;
+&lt;p&gt;这与AirBNB的&lt;a href=&#34;https://medium.com/airbnb-engineering/smartstack-service-discovery-in-the-cloud-4b8a080de619&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SmartStack&lt;/a&gt;非常相似；与之显著不同的是，SmartStack 被实现并部署到生产环境中，而dotCloud的新内部路由网格在dotCloud转向Docker时被搁置。☺&lt;/p&gt;
+&lt;p&gt;我个人认为SmartStack是诸如Istio、Linkerd、Consul Connect等系统的先驱之一，因为所有这些系统都遵循这种模式:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在每个节点上运行代理&lt;/li&gt;
+&lt;li&gt;消费者连接到代理&lt;/li&gt;
+&lt;li&gt;控制平面在后端更改时更新代理的配置&lt;/li&gt;
+&lt;li&gt;… 利润!&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;实现一个服务网格&#34;&gt;实现一个服务网格&lt;/h2&gt;
+&lt;p&gt;如果我们今天必须实现一个类似的网格，我们可以使用类似的原则。例如，我们可以设置一个内部DNS区域，将服务名称映射到&lt;code&gt;127.0.0.0/8&lt;/code&gt;空间中的地址。然后在集群的每个节点上运行HAProxy，接受每个服务地址上的连接(在“127.0.0.0/8”子网中)，并将它们转发/负载均衡到适当的后端。HAProxy配置可以由&lt;a href=&#34;https://github.com/kelseyhightower/confd&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;confd&lt;/a&gt;管理，允许在etcd或Consul中存储后端信息，并在需要时自动将更新后的配置推送到HAProxy。&lt;/p&gt;
+&lt;p&gt;这几乎就是Istio的工作原理！但有一些不同之处:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Istio使用&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Proxy&lt;/a&gt;，而不是HAProxy&lt;/li&gt;
+&lt;li&gt;Istio存储后端配置使用Kubernetes API，而不是etcd或Consul&lt;/li&gt;
+&lt;li&gt;服务在内部子网中分配地址（Kubernetes集群 IP 地址），而不是“127.0.0.0/8”&lt;/li&gt;
+&lt;li&gt;Istio有一个额外的组件（Citadel）添加客户端和服务器之间的相互TLS认证&lt;/li&gt;
+&lt;li&gt;Istio增加了对新功能的支持，如断路，分布式追踪，金丝雀部署…&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;让我们快速回顾一下这些差异。&lt;/p&gt;
+&lt;h3 id=&#34;envoy代理&#34;&gt;Envoy代理&lt;/h3&gt;
+&lt;p&gt;Envoy代理是由Lyft撰写。它与其他代理（如HAProxy、NGINX、Traefik……）有许多相似之处，但Lyft编写它是因为它们需要当时这些代理中不存在的功能，而且构建一个新的代理比扩展现有代理更有意义。&lt;/p&gt;
+&lt;p&gt;Envoy可以单独使用。如果有一个给定的服务需要连接到其他服务，可以把它连接到Envoy，然后动态地在Envoy上配置和重新配置其他服务的位置，从而得到很多额外的优雅的功能，比如可观测性。不需使用定制的客户端库，也不用在代码中对请求添加追踪，而是将流量定向到Envoy，让它来收集指标。&lt;/p&gt;
+&lt;p&gt;但是Envoy也可以用作服务网格的&lt;code&gt;数据平面&lt;/code&gt;。这意味着现在将由该服务网格的&lt;code&gt;控制平面&lt;/code&gt;配置Envoy。&lt;/p&gt;
+&lt;h3 id=&#34;控制平面&#34;&gt;控制平面&lt;/h3&gt;
+&lt;p&gt;说到控制平面：Istio的实现依赖于Kubernetes API。&lt;em&gt;这和使用cond没有太大的不同。&lt;/em&gt; cond依赖etcd或Consul来监视数据存储中的一组键值。Istio依赖Kubernetes API来监视一组Kubernetes资源。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;旁白&lt;/em&gt; ：我个人认为阅读这篇文章&lt;a href=&#34;https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/protobuf.md#proposal-and-motivation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes API description&lt;/a&gt;非常有帮助。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Kubernetes API服务器是一个“dumb server”，它提供对API资源的存储、版本控制、验证、更新和监视语义。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;Istio是为与Kubernetes合作而设计的；如果您想在Kubernetes之外使用它，则需要运行Kubernetes API服务器的实例（以及etcd服务作为支持）。&lt;/p&gt;
+&lt;h3 id=&#34;服务地址&#34;&gt;服务地址&lt;/h3&gt;
+&lt;p&gt;Istio依赖于Kubernetes对集群ip地址的分配，因此Istio服务获得一个内部地址（不在“127.0.0.0/8”范围内）。&lt;/p&gt;
+&lt;p&gt;在没有Istio的Kubernetes集群上，前往给定服务的ClusterIP地址的流量被kube-proxy拦截，并发送到该代理的后端。更具体地说，如果您想了解技术细节：kube-proxy通过设置iptables规则（或IPVS负载均衡器，取决于它是如何设置的）来重写连接到集群IP地址的目标IP地址。&lt;/p&gt;
+&lt;p&gt;Istio安装在Kubernetes集群上之后，任何变化都不会发生，直到通过将 &lt;em&gt;sidecar&lt;/em&gt; 容器注入到使用者pod中，显式地为给定的消费者甚至整个namespace启用Istio。sidecar将运行一个Envoy实例，并设置一些iptables规则来拦截到其他服务的流量，并将这些流量重定向到Envoy。&lt;/p&gt;
+&lt;p&gt;结合Kubernetes DNS集成，这意味着我们的代码可以连接到一个服务名，一切都“正常工作”。换句话说，我们的代码将发出一个请求，例如&lt;code&gt;http://api/v1/users/4242&lt;/code&gt;，&lt;code&gt;api&lt;/code&gt;被解析至&lt;code&gt;10.97.105.48&lt;/code&gt;，而一个iptables规则将拦截发送给&lt;code&gt;10.97.105.48&lt;/code&gt;的连接并且重定向到他们本地Envoy代理，该代理将请求路由到实际的api的后端。唷!&lt;/p&gt;
+&lt;h3 id=&#34;其它&#34;&gt;其它&lt;/h3&gt;
+&lt;p&gt;Istio还可以使用名为&lt;em&gt;Citadel&lt;/em&gt;的组件，通过mTLS（双向的TLS）提供端到端加密和身份验证。&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Mixer&lt;/em&gt; ，Envoy的另一个功能组件，可以查询 &lt;em&gt;每一个&lt;/em&gt; 请求，并对请求做一个ad-hoc决定，该决定取决于各种因素，例如请求头、后端负载…（别担心：有丰富的规则，以确保mixer高度可用，即使它暂时不可用，Envoy可以继续代理流量。）&lt;/p&gt;
+&lt;p&gt;当然，我提到了可观察性：Envoy在提供分布式追踪的同时收集了大量的度量（metrics）。在微服务架构中，如果单个API请求必须经过微服务A、 B、 C和D，分布式追踪将在进入系统的请求添加一个惟一的标识符，并在流经这些微服务的子请求中保留该标识符，允许收集所有相关的请求调用，它们的延迟等。&lt;/p&gt;
+&lt;h2 id=&#34;构建vs购买&#34;&gt;构建vs.购买&lt;/h2&gt;
+&lt;p&gt;Istio以复杂著称。相比之下，使用我们今天已经拥有的工具，构建像我在本文开头描述的那样的路由网格相对比较简单。那么，构建我们自己的服务网格是否有意义呢?&lt;/p&gt;
+&lt;p&gt;如果我们有适度一点的需求（比如不需要可观察性，断路器，和其他细节），我们可能想建立自己的服务网格。但是如果我们正在使用Kubernetes，我们甚至可能不需要这样做，因为Kubernetes已经提供了基本的服务发现和负载平衡。&lt;/p&gt;
+&lt;p&gt;现在，如果我们有高级一点需求，“购买”服务网格可能是更好的选择。（由于Istio是开源的，所以它并不总是“购买”，但是我们仍然需要投入工程师的时间来理解它是如何工作、部署和运行的。）&lt;/p&gt;
+&lt;h2 id=&#34;istio-vs-linkerd-vs-consul-connect&#34;&gt;Istio vs. Linkerd vs. Consul Connect&lt;/h2&gt;
+&lt;p&gt;到目前为止，我们只讨论了Istio，但它并不是唯一的服务网格。&lt;a href=&#34;https://linkerd.io/2/overview/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt;是另一个流行的选择，还有&lt;a href=&#34;https://learn.hashicorp.com/consult/getting-start-k8s/l7-observability-k8s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Consul Connect&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;我们应该选哪一个?&lt;/p&gt;
+&lt;p&gt;老实说，我也不知道，而且在这一点上，我认为自己的知识不足以帮助任何人做出这个决定。不过你可以参考这些有趣的&lt;a href=&#34;https://thenewstack.io/which-service-mesh-should-i-use/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文章&lt;/a&gt;对它们做的&lt;a href=&#34;https://medium.com/solo-io/linker-or-istio-6fcd2aad6e42&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;比较&lt;/a&gt;，甚至它们的&lt;a href=&#34;https://medium.com/@michael_87395/benchmark-istio-linker-cpu-c36287e32781&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基准测试&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;一种很有潜力的方法是使用&lt;a href=&#34;https://supergloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SuperGloo&lt;/a&gt;这样的工具。SuperGloo提供了一个抽象层来简化和统一服务网格公开的api。我们可以使用SuperGloo提供的更简单的构造，并无缝地从一个服务网格切换到另一个服务网格中，而不是学习各种服务网格的特定api（在我看来，相对复杂）。有点像我们有一个描述HTTP前端和后端的中间配置格式，能够生成NGINX、HAProxy、Traefik、Apache的实际配置…&lt;/p&gt;
+&lt;p&gt;我在如何通过SuperGloo使用Istio有点涉足，在以后的博客中，我将说明如何使用SuperGloo将Istio或Linkerd添加到现有的集群，以及后者是否持有的承诺，即让我从一个路由网切换到另一个而不需要重写配置。&lt;/p&gt;
 </description>
     </item>
     
@@ -4791,6 +5845,568 @@ itmes   │ObjKey1: [{&amp;#34;Added&amp;#34;,Obj1} {&amp;#34;Updated&amp;#34;,O
 &lt;p&gt;&lt;em&gt;虚拟服务指标&lt;/em&gt;&lt;/p&gt;
 &lt;p&gt;这里介绍的情景当然仍然过于简单。在接下来的几周内，我们将不再涉及 subset 和版本的概念，以便更多地关注用户想要测试的功能，我们将转向 &lt;a href=&#34;https://en.wikipedia.org/wiki/Welch%ef%bc%8527s_t-test&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Welch’s t-test&lt;/a&gt; 算法，用于识别表现最佳的版本。同时，我们还计划自动创建 Gateway 和 Destination Rule，以便在用户不需要特定配置时隐藏所有复杂性。&lt;/p&gt;
 &lt;p&gt;以上就是这次的分享！请随时向我们提供有关此新功能以及Vamp Lamia发展方向的反馈，请不要忘记，如果您想更深入地了解 Vamp Lamia 功能，请查看我们 &lt;a href=&#34;https://github.com/magneticio/vamp2setup&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;github&lt;/a&gt; 上的 repo。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>使用Kubernetes和Istio对基于容器基础设施的全面服务监控</title>
+      <link>https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/</link>
+      <pubDate>Wed, 04 Jul 2018 17:54:13 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://www.circonus.com/2018/06/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;运营容器化基础设施给我们带来了一系列新的挑战。您需要对容器进行测试，评估您的 API 端点性能，并确定您的基础架构中的不良的组件。Istio 服务网格可在不更改代码的情况下实现 API 的检测，并且可以自由的设置服务延迟。但是，我们该如何理解所有这些数据？用数学的方式，对，就是这样。&lt;/p&gt;
+&lt;p&gt;Circonus 是 Istio 的第一个第三方适配器。在 &lt;a href=&#34;https://www.circonus.com/2017/12/circonus-istio-mixer-adapter/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;之前的文章中&lt;/a&gt;，我们讨论了第一个用于监视基于 Istio 的服务的 Istio社区适配器。这篇文章将对此进行扩展。我们将解释如何全面了解您的 Kubernetes 基础设施。我们还将解释如何为基于容器的基础架构增加 Istio 服务网格实现。&lt;/p&gt;
+&lt;h1 id=&#34;istio-概述&#34;&gt;Istio 概述&lt;/h1&gt;
+&lt;p&gt;Istio 是 Kubernetes 的服务网格，这意味着它负责所有服务之间的通信和协调，就像网络路由软件为 TCP/IP 流量所做的一样。除了 Kubernetes 之外，Istio 还可以与基于 Docker 和 Consul 的服务进行交互。与 &lt;a href=&#34;https://linkerd.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LinkerD&lt;/a&gt; 相似，Istio 已经的出现已经有很长时间了。&lt;/p&gt;
+&lt;p&gt;Istio 是由 Google、IBM、思科和 Lyft 的 &lt;a href=&#34;https://www.circonus.com/2018/06/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/envoy.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 开发的开源项目。该项目已经有一年多的历史了，而 Istio 已经进入了大规模生产环境（有案例吗？译者注）。在这篇文章发布时，&lt;a href=&#34;https://istio.io/about/notes/0.8/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;当前版本为 0.8&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;那么，Istio 是如何融入Kubernetes 生态系统的？Kubernetes 充当数据层，Istio 充当&lt;a href=&#34;https://istio.io/docs/concepts/what-is-istio/overview/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;控制层&lt;/a&gt;。Kubernetes   承载应用程序流量、处理容器编排、部署和扩展。Istio 路由应用程序流量，处理策略执行，流量管理和负载均衡。它还处理遥测，如指标、日志和跟踪。Istio 是基于容器的基础设施中负责保护微服务和报告的部分。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugpbmcj20go0bc0t7_hue298a85f275d8a8ee038647fece541a2_27667_1c828e0161e7bfbc7a0910e8730ce0ee.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugpbmcj20go0bc0t7_hue298a85f275d8a8ee038647fece541a2_27667_6e094096ac0ce6db4c6ac55af069493a.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugpbmcj20go0bc0t7_hue298a85f275d8a8ee038647fece541a2_27667_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugpbmcj20go0bc0t7_hue298a85f275d8a8ee038647fece541a2_27667_1c828e0161e7bfbc7a0910e8730ce0ee.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;408&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上图显示了服务网格架构。Istio 为每项服务部署了一个 &lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy sidecar proxy&lt;/a&gt;。Envoy 通过 gRPC 调用代理到 Istio Mixer 服务的入站请求。然后，Mixer 应用流量管理规则，并联合请求遥测。Mixer 是 Istio 的大脑。运维人员可以编写 YAML 文件来控制 Envoy 如何重定向流量。他们还可以指定监测信息推送和可观测性系统的遥测技术。可以在运行时根据需要应用规则，而无需重新启动任何 Istio 组件。&lt;/p&gt;
+&lt;p&gt;Istio 支持多种适配器将数据发送到各种监控工具。包括 Prometheus、Circonus 或 Statsd。您也可以同时启用Zipkin 和 Jaeger 追踪。而且，您可以把可视化所涉及的服务生成图形。&lt;/p&gt;
+&lt;p&gt;Istio 易于部署。&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/quick-start/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;回想起来&lt;/a&gt;，大约7到8个月之前，我们还必须通过一系列 kubectl 命令才能将 Istio 安装到 Kubernetes 集群上。虽然你仍然可以这样做，但是现在我们还可以在 Google Cloud platform，只需点击几下鼠标即可部署启用了 Istio 的Kubernetes 集群，其中包括监控、跟踪和示例应用程序。您可以快速的部署 Istio，然后使用 istioctl 命令来操作。&lt;/p&gt;
+&lt;p&gt;另一个好处是我们可以从服务中收集数据，而不需要开发人员对服务进行测试才能提供数据。这有很多好处。这减少了维护的工作量，消除了代码中的失败点。这样可以提供了供应商不可知的接口，减少了与供应商绑定的机会。&lt;/p&gt;
+&lt;p&gt;借助 Istio，我们可以部署不同版本的服务并加权它们之间的流量。Istio 本身使用多个不同的 pod 来操作，如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; kubectl get pods -n istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                     READY STATUS  RESTARTS AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-ca-797dfb66c5      1/1   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-ingress-84f75844c4 1/1   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-egress-29a16321d3  1/1   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-mixer-9bf85fc68    3/3   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-pilot-575679c565   2/2   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;grafana-182346ba12       2/2   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prometheus-837521fe34    2/2   Running  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;       2m
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Istio 不完全是轻量级的。Istio 的强大功能和灵活性来源于一些运维成本。但是，如果您的应用程序中包含多个微服务，那么您的应用程序容器将很快超过系统配置的容器。&lt;/p&gt;
+&lt;h1 id=&#34;服务级别目标slo&#34;&gt;服务级别目标（SLO）&lt;/h1&gt;
+&lt;p&gt;服务级别目标（SLO）的简要概述将为我们衡量服务的健康状况奠定基础。服务级别协议（SLA）的概念已经存在了至少十年了。但直到最近网上关于服务级别目标（SLO）和服务级别指标（SLI）相关的内容数量才迅速增加。&lt;/p&gt;
+&lt;p&gt;除了著名的 &lt;a href=&#34;https://landing.google.com/sre/book.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Google SRE书以外&lt;/a&gt;，两本关于 SLO 的新书即将发布。&lt;a href=&#34;https://www.amazon.com/Site-Reliability-Workbook-Practical-Implement/dp/1492029505&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;“站点可靠性工作手册”&lt;/a&gt;有关于 SLO 的专门章节，&lt;a href=&#34;http://shop.oreilly.com/product/0636920063964.do&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Seeking SRE&lt;/a&gt; 中有关于由 Circonus 创始人兼首席执行官 Theo Schlossnagle 定义 SLO 目标的章节。我们还建议观看&lt;a href=&#34;https://twitter.com/sethvargo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Seth Vargo&lt;/a&gt; 和 &lt;a href=&#34;https://twitter.com/lizthegrey&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Liz Fong Jones&lt;/a&gt; 的 YouTube 视频 &lt;a href=&#34;https://youtu.be/tEylFyxbDLE&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;“SLI、SLO、SLA，我的天呐！”&lt;/a&gt;，以深入了解 SLI、SLO 和 SLA 之间的差异。&lt;/p&gt;
+&lt;p&gt;总结一下：&lt;strong&gt;SLI 驱动 SLO，通知 SLA&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;服务级别指标（SLI）是衡量服务健康状况的指标。例如，我可以有一个 SLI，它表示在过去 5 分钟内，我的 95% 主页请求延迟应小于 300 毫秒。&lt;/p&gt;
+&lt;p&gt;服务级别目标（SLO）是 SLI 的目标或指标。我们采用 SLI，并扩展其范围以量化我们期望的服务在战略时间间隔内执行的情况。使用前面例子中的 SLI，我们可以说，我们希望满足 SLI 为后续年份窗口设置的标准的 99.9％。&lt;/p&gt;
+&lt;p&gt;服务级别协议（SLA）是企业与客户之间的协议，定义了未能满足 SLO 的后果。一般来说，您的 SLA 所依据的SLO 将比您的内部 SLO 更宽松，因为我们希望内部面向的目标比我们的外部目标更为严格。&lt;/p&gt;
+&lt;h1 id=&#34;red-仪表板&#34;&gt;RED 仪表板&lt;/h1&gt;
+&lt;p&gt;SLI 的哪些组合最适合量化主机和服务健康状态？在过去几年中，出现了一些新兴的标准。最高标准是 USE 方法，RED 方法和 Google SRE 手册中讨论的“四个黄金信号”。&lt;/p&gt;
+&lt;p&gt;Brendan Gregg 介绍了 &lt;a href=&#34;http://www.brendangregg.com/usemethod.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;USE 方法&lt;/a&gt;，该&lt;a href=&#34;http://www.brendangregg.com/usemethod.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;方法&lt;/a&gt;旨在根据利用率、饱和度和错误指标量化系统主机的健康状况。对于像CPU 这样的产品，我们可以将用户、系统和闲置百分比作为常见的利用率指标。我们可以使用平均负载量和运行队列进行饱和度的判定。UNIX perf 分析器是测量 CPU 错误事件的好工具。&lt;/p&gt;
+&lt;p&gt;Tom Wilkie 几年前介绍了 &lt;a href=&#34;https://www.weave.works/blog/the-red-method-key-metrics-for-microservices-architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RED 方法&lt;/a&gt;。我们使用 RED 方法监控请求率、请求错误和请求持续时间。Google SRE 手册讨论了如何使用延迟、流量、错误和饱和度指标。这些“ &lt;a href=&#34;https://landing.google.com/sre/book/chapters/monitoring-distributed-systems.html#xref_monitoring_golden-signals&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;四个黄金信号&lt;/a&gt; ”以服务健康为目标，与 RED 方法类似，但它添加了饱和度指标。在实践中，可能难以量化服务饱和度。&lt;/p&gt;
+&lt;p&gt;那么，如何监控容器？容器是短暂实体。直接监视它们来辨识服务的健康状态会带来许多复杂问题，例如高基数问题。综合监控这些容器的服务输出会更容易和更有效。如果服务是健康的，那么不必在乎单个容器是异常。服务编排框架可能将这个容器驱逐，并用新的容器取而代之。&lt;/p&gt;
+&lt;p&gt;我们思考下如何把 Istio 的 SLI 集成到 RED 仪表板。为了组成我们的 RED 仪表板，我们来看看 Istio 提供的遥测记录：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;请求按响应代码计数&lt;/li&gt;
+&lt;li&gt;请求时长&lt;/li&gt;
+&lt;li&gt;请求大小&lt;/li&gt;
+&lt;li&gt;响应大小&lt;/li&gt;
+&lt;li&gt;连接收到的字节&lt;/li&gt;
+&lt;li&gt;连接发送字节&lt;/li&gt;
+&lt;li&gt;连接时间&lt;/li&gt;
+&lt;li&gt;基于模板的元数据（度量标签）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Istio 提供了有关它收到的请求，产生响应的延迟和连接级别数据的几个指标。请注意上面列表中的前两项；我们希望将它们包含在我们的 RED 仪表板中。&lt;/p&gt;
+&lt;p&gt;Istio 还赋予我们添加度量标签的能力，这就是所谓的尺寸。因此，我们可以通过主机、集群等来分解遥测 。我们可以通过获取请求计数的一阶导数来获得每秒请求的速率。我们可以通过请求不成功的请求计数的导数来获得错误率。Istio 还向我们提供每个请求的延迟，因此我们可以记录每个服务请求完成的时间。&lt;/p&gt;
+&lt;p&gt;另外，Istio 为我们提供了一个 Grafana 仪表板，它包含我们想要的部分：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh33fcj20go08k77r_hu62954440c40ac7ba6323491d13859963_174296_6c8f6b72723ee186daca923d87a5d6ef.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh33fcj20go08k77r_hu62954440c40ac7ba6323491d13859963_174296_ba955f6cece3609a2411b3913976b0fe.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh33fcj20go08k77r_hu62954440c40ac7ba6323491d13859963_174296_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh33fcj20go08k77r_hu62954440c40ac7ba6323491d13859963_174296_6c8f6b72723ee186daca923d87a5d6ef.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;308&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们想要的组件在上面的屏幕截图中以红色圈起来。我们在左上角的每秒操作请求率，右上角的每秒失败请求数，以及底部的响应时间图。这张图上还有其他几个指标，但让我们仔细看看我们圈出的那些指标：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh936hj20go081778_hu733da99c681a2e2d3c5b3a654910d9c1_120462_2ee8e9ff5272c86215d4f534ef8b688c.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh936hj20go081778_hu733da99c681a2e2d3c5b3a654910d9c1_120462_6aa21b9641abfac91f182e4af4eee8df.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh936hj20go081778_hu733da99c681a2e2d3c5b3a654910d9c1_120462_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh936hj20go081778_hu733da99c681a2e2d3c5b3a654910d9c1_120462_2ee8e9ff5272c86215d4f534ef8b688c.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;289&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;以上屏幕截图显示了仪表板的速率组件。这非常简单。我们计算返回 200 响应代码的请求数，并绘制一段时间内的速率图。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhs1lwj20go089mzq_hu5fdb84bb19974ac117dedf08fbe036ab_132929_13a36d395029f5067ff3ddb4490a3642.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhs1lwj20go089mzq_hu5fdb84bb19974ac117dedf08fbe036ab_132929_eca330bdf506b5786666b4612c6bd024.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhs1lwj20go089mzq_hu5fdb84bb19974ac117dedf08fbe036ab_132929_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhs1lwj20go089mzq_hu5fdb84bb19974ac117dedf08fbe036ab_132929_13a36d395029f5067ff3ddb4490a3642.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;297&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Istio 仪表板为返回 5xx 错误代码的响应做了类似的操作。在上面的屏幕截图中，您可以看到它如何通过 ingress controller 或 productpage 页面本身的错误来分解错误。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhdtxwj20go08ywjw_hu7a352562eb8b4878cd6e47ba484b587b_193690_48d1f873388f30f083e51a428ccfda79.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhdtxwj20go08ywjw_hu7a352562eb8b4878cd6e47ba484b587b_193690_4a2faeaef9d16f1e3a6508525e54e5e0.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhdtxwj20go08ywjw_hu7a352562eb8b4878cd6e47ba484b587b_193690_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhdtxwj20go08ywjw_hu7a352562eb8b4878cd6e47ba484b587b_193690_48d1f873388f30f083e51a428ccfda79.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;322&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;该屏幕截图显示了请求持续时间图。此图是关于我们服务的健康状况的最丰富信息。这些数据由 Prometheus 监测系统提供，因此我们可以看到请求时间百分点，包括中位数，第90,95和第99百分位。&lt;/p&gt;
+&lt;p&gt;这些百分比为我们提供了服务如何执行的全面指示。但是，这种方法存在一些值得研究的缺陷。在低活动期间，由于样本数量有限，这些百分位数可能会大幅偏离。这可能会误导您关于这些情况下的系统性能。我们来看看这种方法可能出现的其他问题：&lt;/p&gt;
+&lt;p&gt;时间周期问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;百分位数是固定时间窗口上的聚合指标。&lt;/li&gt;
+&lt;li&gt;集群健康无法重新汇总百分位数。&lt;/li&gt;
+&lt;li&gt;百分位不能被平均（这是一个常见的错误）。&lt;/li&gt;
+&lt;li&gt;这种方法存储的聚合是输出，而不是输入。&lt;/li&gt;
+&lt;li&gt;用这种方法测量集群 SLI 是很困难的。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;百分位数通常比平均数提供更深的洞察力，因为它们用多个数据点而不是一个数据点来表示数值范围。但是像平均值一样，百分位数是一个汇总指标。它们是针对固定数据集在固定时间窗口上计算的。如果我们计算一个集群成员的持续时间百分比，我们不能将其与另一个集群成员合并，以获得整个集群的聚合性能指标。&lt;/p&gt;
+&lt;p&gt;普遍的误解是百分位可以被平均；除非产生它们的分布几乎相同的极少数情况除外。如果你只有百分位，而不是源数据，你不知道可能是这种情况。这是一个鸡生蛋还是蛋生鸡的问题。&lt;/p&gt;
+&lt;p&gt;这也意味着，如果您仅针对单个集群成员衡量基于百分比的性能，则由于缺乏可合并性而无法为整个服务设置服务级别指示符。&lt;/p&gt;
+&lt;p&gt;由于在固定的时间窗口内只有4个延迟数据点，因此我们设置有意义的 SLI（以及因此，有意义的 SLO ）的能力在此处受到限制。因此，当您使用基于百分位的持续时间指标工作时，您必须问自己，您的 SLI 是否真的有很好的 SLI。通过使用数学推算来确定 SLI，我们可以做得更好，从而全面了解服务的性能和健康状况。&lt;/p&gt;
+&lt;h1 id=&#34;直方图计量数据&#34;&gt;直方图计量数据&lt;/h1&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugb1z9j20go05uaah_hu1ca356071fe2af49560cf9b724a2b50a_40020_963548565a8c3b99004ebe7fa7bdcda6.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugb1z9j20go05uaah_hu1ca356071fe2af49560cf9b724a2b50a_40020_d4a675b6ac48ef11d3897e7d930e09bd.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugb1z9j20go05uaah_hu1ca356071fe2af49560cf9b724a2b50a_40020_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugb1z9j20go05uaah_hu1ca356071fe2af49560cf9b724a2b50a_40020_963548565a8c3b99004ebe7fa7bdcda6.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;210&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上图是使用直方图以微秒为单位显示服务延迟数据的可视化表示。样本数量位于 Y 轴上，样本值（在本例中为微秒等待时间）位于 X 轴上。这是我们在 Circonus 开发的开源直方图。（请参阅 &lt;a href=&#34;https://github.com/circonus-labs/libcircllhist&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;C 语言&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/circonus-labs/circonusllhist&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Golang 中&lt;/a&gt;的开源代码，或者&lt;a href=&#34;https://www.circonus.com/2018/05/effective-management-of-high-volume-numeric-data-with-histograms/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在此处&lt;/a&gt;阅读有关直方图的更多信息）还有一些开源的直方图实现，如 &lt;a href=&#34;https://github.com/tdunning/t-digest&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ted Dunning 的 t-消化直方图&lt;/a&gt;和 &lt;a href=&#34;http://hdrhistogram.org&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HDR 直方图&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Envoy 项目最近采用&lt;a href=&#34;https://github.com/circonus-labs/libcircllhist&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;了&lt;/a&gt; Circonus 的对数线性直方图库的&lt;a href=&#34;https://github.com/circonus-labs/libcircllhist&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; C 语言实现&lt;/a&gt;。这使得 envoy 数据可以作为分布来收集。他们在实现过程中发现了一个非常小的错误，Circonus 非常乐意修复。这就是开源的美妙之处，由于有更多的人可以查看代码，更多的人可以发现问题，并修复问题，随着时间的推移代码将会越来越好。&lt;/p&gt;
+&lt;p&gt;直方图可合并。只要边界相同，任何两个或更多的直方图都可以合并。这意味着我们可以将此分布与其他分布结合起来。可合并度量对于监控和可观察性非常有用。这允许我们合并来自类似资源的输出，例如服务成员，并获得总体服务指标。&lt;/p&gt;
+&lt;p&gt;如上图所示，此对数线性直方图中包含每个幂为 10 的 90 个间隔。您可以看到 10k 到 1M 之间分布的 90 个间隔。在每个 10 的幂下，间隔的大小增加 10 倍。这使得我们能够以高相对精度记录各种各样的值，而不需要提前知道数据分布。让我们看看当我们覆盖一些百分点时，这看起来像什么：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhj1ilj20go0583yl_hubce7bac8cec8fc460b36771576c55183_13478_e570d4af7b6dc79c3b33294d21ffd144.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhj1ilj20go0583yl_hubce7bac8cec8fc460b36771576c55183_13478_9dbaa9ae0bf970265f1b0c77b12f5666.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhj1ilj20go0583yl_hubce7bac8cec8fc460b36771576c55183_13478_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhj1ilj20go0583yl_hubce7bac8cec8fc460b36771576c55183_13478_e570d4af7b6dc79c3b33294d21ffd144.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;188&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;现在您可以看到我们的平均水平，第 50 百分位（也称为中位数）和第 90 百分位。第 90 百分位是 90％ 样本低于该值的值。&lt;/p&gt;
+&lt;p&gt;考虑我们之前的示例 SLI。通过以此格式显示延迟数据，我们可以通过将直方图合并为一个 5 分钟的数据视图，然后计算该分布的第 90 百分位数值，轻松计算服务的 SLI。如果它少于1,000毫秒，就达到了我们的目标。&lt;/p&gt;
+&lt;p&gt;上面截图中的 RED 仪表盘持续时间图有四个百分点，第50、90、95和99百分位。我们也可以覆盖这些分布的百分位数。即使没有数据，我们也可以看到请求分布看起来很粗略的表示，但是这会做出很多假设。我们看看仅基于几个百分点的假设如何误导我们，这是其他模式的分布：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh00flj20go07wjs7_hu647203ee3e2640a8b90559d84fd307f5_60331_8aaee66b95c7a485e494596879a56c5d.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh00flj20go07wjs7_hu647203ee3e2640a8b90559d84fd307f5_60331_b1071ba55653605d5cc156ac482382be.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh00flj20go07wjs7_hu647203ee3e2640a8b90559d84fd307f5_60331_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuh00flj20go07wjs7_hu647203ee3e2640a8b90559d84fd307f5_60331_8aaee66b95c7a485e494596879a56c5d.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;该直方图显示具有两种不同模式的分布。最左边的模式可能是由于缓存服务而产生的快速响应，以及来自磁盘的正确模式。仅仅使用四个百分点来衡量延迟就几乎不可能辨别出这样的分布。这给了我们一个百分点可以掩盖的复杂性的感觉。考虑具有两种以上模式的分布：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshn01jrnnj20go06hq48_hu98dcb427a814ccb4b73bb317bdd6018e_57322_9fba2fbbbf3981f450e9949e7f142249.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshn01jrnnj20go06hq48_hu98dcb427a814ccb4b73bb317bdd6018e_57322_7245fc6b232ec95bf1cf352c9943c8eb.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshn01jrnnj20go06hq48_hu98dcb427a814ccb4b73bb317bdd6018e_57322_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshn01jrnnj20go06hq48_hu98dcb427a814ccb4b73bb317bdd6018e_57322_9fba2fbbbf3981f450e9949e7f142249.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;233&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此分布至少有四种可见模式。如果我们对全分布进行数学运算，我们会在这里找到 20 多种模式。您需要记录几个百分位以接近上面的延迟分布？关于下面的分布会怎么样？&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuge1ksj20go07oabj_hud29ba1bf87f221fc1ddb617994acf0d2_73428_8495dd6a0eab21eb8084a62a9b888a17.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuge1ksj20go07oabj_hud29ba1bf87f221fc1ddb617994acf0d2_73428_f6b7909e446eee8380e9399ecd4b835c.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuge1ksj20go07oabj_hud29ba1bf87f221fc1ddb617994acf0d2_73428_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuge1ksj20go07oabj_hud29ba1bf87f221fc1ddb617994acf0d2_73428_8495dd6a0eab21eb8084a62a9b888a17.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;276&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;由许多服务组成的复杂系统将生成无法用百分位准确表示的延迟分布。您必须记录整个延迟分布才能充分表示它。这是将数据的完整分布存储在直方图中并根据需要计算百分位数的优选原因之一，而不是仅存储几个百分点。&lt;/p&gt;
+&lt;p&gt;这种直方图可视化显示了固定时间窗口上的分布。我们可以存储多个分布，以了解它随时间变化的情况，如下所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugi6lsj20go05rq5j_hu49f1d2925d1cb06ab42dd951bf287df1_157509_81ca1510951164b60913f4ba9d5cd6ed.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugi6lsj20go05rq5j_hu49f1d2925d1cb06ab42dd951bf287df1_157509_1e5bc0034384353e731834e971bdc32f.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugi6lsj20go05rq5j_hu49f1d2925d1cb06ab42dd951bf287df1_157509_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugi6lsj20go05rq5j_hu49f1d2925d1cb06ab42dd951bf287df1_157509_81ca1510951164b60913f4ba9d5cd6ed.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;207&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是一个 heapmap，它代表一组随时间变化的直方图。想象一下，这个热图中的每一列都有一个从上面看的单独的条形图，颜色用于指示每个间隔的高度。这是来自 10 个负载均衡器集群的响应延迟的 grafana 可视化。这使我们能够深入了解整个集群的系统行为，一周之内就有超过 100 万个数据样本。这里的中位数大约在 500 微秒左右，以红色带表示。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmui01hbj20go06t0vy_huddf5ecf93216aa74b4d2a353d4a0c7fb_153887_2d33875d6dc22be6b718fdf3829d297e.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmui01hbj20go06t0vy_huddf5ecf93216aa74b4d2a353d4a0c7fb_153887_23d0a05c8155610b08ae7a4517e9f384.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmui01hbj20go06t0vy_huddf5ecf93216aa74b4d2a353d4a0c7fb_153887_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmui01hbj20go06t0vy_huddf5ecf93216aa74b4d2a353d4a0c7fb_153887_2d33875d6dc22be6b718fdf3829d297e.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;245&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;以上是另一种类型的热图。此处，饱和度用于指示每个间隔的“高度”（颜色越深的色块更“饱和”）。此外，这次我们在 heatmap 上覆盖了一段时间内的百分比计算。百分位数是健壮的性的度量标准，非常有用。我们可以在这里看到，随着延迟分布向上移动，90％ 以上的百分位数是怎样增加的。&lt;/p&gt;
+&lt;p&gt;让我们来看看这些基于分布的持续时间图，看看我们是否可以生成比 Istio 仪表板样本更多的信息：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugsu6uj20go09k42b_hu7bd4523dc4b3cf1fbf2933dcd9e30ea2_162947_b90919af99b540ca48cbed35f45088b4.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugsu6uj20go09k42b_hu7bd4523dc4b3cf1fbf2933dcd9e30ea2_162947_9d3d8de5731278930357b9851afa4046.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugsu6uj20go09k42b_hu7bd4523dc4b3cf1fbf2933dcd9e30ea2_162947_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugsu6uj20go09k42b_hu7bd4523dc4b3cf1fbf2933dcd9e30ea2_162947_b90919af99b540ca48cbed35f45088b4.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;344&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上面的屏幕截图是修改后的 RED 仪表板，显示基于分布的延迟数据。在左下角，我们显示了一个固定时间窗口上的延迟直方图。在它的右边，我们使用热图将分布分解成更小的时间窗口。利用 RED 仪表板的布局，我们可以通过几个小组信息全面了解我们的服务是如何运作的。这个特定的仪表板是使用 Grafana 实现的，使用 IRONdb 时间序列数据库服务，该数据库本地存储延迟时间数据作为对数线性直方图。&lt;/p&gt;
+&lt;p&gt;我们可以进一步扩展这个 RED 仪表板，并将 SLI 覆盖到图表上：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugl9wyj20go07p41y_hucf626ad472f1db9f504f7e33ebc2789c_148935_feffedaf6baf82ccc9a7a194a4056005.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugl9wyj20go07p41y_hucf626ad472f1db9f504f7e33ebc2789c_148935_944fc0c0c3d7976cd172d6c3e51c40e8.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugl9wyj20go07p41y_hucf626ad472f1db9f504f7e33ebc2789c_148935_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugl9wyj20go07p41y_hucf626ad472f1db9f504f7e33ebc2789c_148935_feffedaf6baf82ccc9a7a194a4056005.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;277&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;对于速率面板，我们的 SLI 可能会保持每秒最低水平的请求。对于速率面板，我们的 SLI 可能会保持每秒一定数量的错误。正如我们之前研究过持续时间 SLI，我们可能希望整个服务的第 99 个百分点由多个窗格组成，以在固定窗口内保持一定的延迟。使用存储为直方图的 Istio 遥测技术可以让我们设置这些有意义的服务范围的 SLI。现在我们还有很多工作要做，而且我们可以更好地审问我们的数据（见下文）。&lt;/p&gt;
+&lt;h1 id=&#34;提出正确的问题&#34;&gt;提出正确的问题&lt;/h1&gt;
+&lt;p&gt;所以现在我们已经把这些部分放在一起，并看到了如何使用 Istio 从我们的服务中获取有意义的数据，让我们看看我们可以回答哪些问题。&lt;/p&gt;
+&lt;p&gt;我们都喜欢解决技术问题，但不是每个人都有同样的重点。业务人员想回答关于业务的问题。您需要能够回答以业务为中心的问题。让我们来看看我们已经组装的工具集，并将这些功能与业务提出 SRE 的几个问题对齐：&lt;/p&gt;
+&lt;p&gt;示例问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在大促销推广后，有多少用户在周二的速度变慢时恼怒？&lt;/li&gt;
+&lt;li&gt;我们是否在结帐服务中超额配置或者配置不足？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;考虑第一个例子。每个人都经历了一次巨大的速度下降。比方说，市场推广做得很大，流量增加了，运行速度降低了，用户抱怨网站速度缓慢。我们如何量化每个人的速度有多慢？有多少用户生气了？比方说，市场营销部门想知道这一点，以便他们可以向受影响的用户发送 10％ 折扣的电子邮件，同时也希望避免同样问题的再次发生。让我们制作一个 SLI，并假设用户注意到速度放缓并且在请求花费超过 500 毫秒时生气。我们如何计算有多少用户对这个 500 毫秒的 SLI 感到愤怒？&lt;/p&gt;
+&lt;p&gt;首先，我们需要将请求延迟记录为分发。然后我们可以将它们绘制成热图。我们可以使用分布数据来计算超过500ms SLI 的请求的百分比，方法是使用逆百分比。我们将这个答案乘以该时间窗口中的请求总数，并随时间积分。然后我们可以绘制覆盖在热图上的结果：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugwviwj20go06jdhf_hu40b7060de630822fede3749007da86eb_117677_227bc5c101fa35f009c606f5574a3455.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugwviwj20go06jdhf_hu40b7060de630822fede3749007da86eb_117677_a9faefb1c4c189a27ff5ba51be1b9e6a.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugwviwj20go06jdhf_hu40b7060de630822fede3749007da86eb_117677_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmugwviwj20go06jdhf_hu40b7060de630822fede3749007da86eb_117677_227bc5c101fa35f009c606f5574a3455.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;235&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在此屏幕截图中，我们已经圈出了发生速度降低的热图的一部分。增加的延迟分布是相当缓慢的指示。图中的线表示受到一段时间影响的请求总数。&lt;/p&gt;
+&lt;p&gt;在这个例子中，我们设法错过了 400 万个请求的 SLI。哎呦。不明显的是右边的两个额外减速，因为它们幅度较小。每个这些花费我们额外 200 万 SLI 违规。哎哟。&lt;/p&gt;
+&lt;p&gt;我们可以对这些类型进行数学分析，因为我们将数据存储为分布，而不是像百分位数之类的聚合。&lt;/p&gt;
+&lt;p&gt;我们来考虑另一个常见问题。我的服务是否置备或配置过度？&lt;/p&gt;
+&lt;p&gt;答案通常“视情况而定”。根据一天中的时间和一周的日子，负载会有所不同，除了因特殊事件而变化之外。那是在我们甚至考虑系统在负载下的行为之前。让我们把一些数学工作，并使用延迟带来可视化我们的系统如何执行：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhvtnnj20go08p0uv_huc811269b285b5a6cc08af0f28e5398f9_119746_a6076e3c70afdc991e8172caad4cf328.webp 400w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhvtnnj20go08p0uv_huc811269b285b5a6cc08af0f28e5398f9_119746_f668eca12a90149a18b9c2194967f491.webp 760w,
+               /blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhvtnnj20go08p0uv_huc811269b285b5a6cc08af0f28e5398f9_119746_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/comprehensive-container-based-service-monitoring-with-kubernetes-and-istio/61411417ly1fshmuhvtnnj20go08p0uv_huc811269b285b5a6cc08af0f28e5398f9_119746_a6076e3c70afdc991e8172caad4cf328.webp&#34;
+               width=&#34;600&#34;
+               height=&#34;313&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上面的可视化显示延迟分布随着时间的推移被延迟带分解。这里的频段显示 25ms 到 100ms，100-250ms，250-1000 和 1000ms 以下的请求数。快速的请求分组以绿色显示，请求速度的请求变慢以红色显示。&lt;/p&gt;
+&lt;p&gt;这种可视化告诉我们什么？它表明，对我们的服务的请求非常迅速地开始，然后几分钟后快速请求的百分比就会下降，大约 10 分钟后请求的缓慢百分比就会增加。这种模式重复了两次流量会话。那告诉我们关于配置的是什么？它表明，最初服务过度供应，但随后在 10-20 分钟的过程中供应不足。听起来像是做自动缩放的好机会。&lt;/p&gt;
+&lt;p&gt;我们也可以将这种类型的可视化添加到我们的 RED 仪表板。这种类型的数据对业务利益相关者来说非常好，而且它不需要大量的技术知识积累就可以用来了解对业务的影响。&lt;/p&gt;
+&lt;h1 id=&#34;结论&#34;&gt;结论&lt;/h1&gt;
+&lt;p&gt;&lt;strong&gt;我们应该监控服务而不是容器&lt;/strong&gt;。服务是长期存在的实体，而容器不是。您的用户不关心您的容器如何执行，他们关心的是服务运行的怎么样。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;我们应该记录分布而不是聚合&lt;/strong&gt;。我们应该从这些分布来产生聚合。聚集是非常有价值的信息来源。但它们无法合并，因此它们不适合进行统计分析。&lt;/p&gt;
+&lt;p&gt;Istio 免费提供了很多东西。您不必使用编写代码来实现。您无需从头开始构建高质量的应用程序框架。&lt;/p&gt;
+&lt;p&gt;通过数学提出并回答有关您的服务的问题，这对业务很重要。这就是全部，对吧？当我们可以通过回答对业务有价值的问题来使系统可靠时，我们就能实现组织的目标。&lt;/p&gt;
 </description>
     </item>
     
