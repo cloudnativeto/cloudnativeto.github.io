@@ -11721,6 +11721,505 @@ mcp: pilot/pkg/serviceregistry/mcp
     </item>
     
     <item>
+      <title>Service Mesh和API Gateway关系深度探讨</title>
+      <link>https://cloudnative.to/blog/service-mesh-and-api-gateway/</link>
+      <pubDate>Tue, 28 Apr 2020 11:20:46 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/service-mesh-and-api-gateway/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;关于Service Mesh和API Gateway之间的关系，这个问题过去两年间经常被问起，社区也有不少文章和资料给出解答。其中不乏 Christian Posta 这样的网红给出过深度介绍。我在这里做一个资料的整理和汇总，结合个人的理解给出一些看法。另外在本文最后，介绍蚂蚁金服在Service Mesh和API Gateway融合的这个最新领域的一些开创性的实践和探索，希望给大家一个更有体感的认知。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注1：为了节约篇幅，我们将直奔主题，假定读者对Service Mesh和API Gateway已有基本的了解。&lt;/p&gt;
+&lt;p&gt;备注2:  这边文章更关注于梳理整个脉络，内容不会展开的特别细，尤其是其他文章已经详细阐述的部分。如果您在浏览本文之后，还想更深入的了解细节，请继续阅读文章最后的参考资料和推荐阅读。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;原本清晰的界限定位和职责&#34;&gt;原本清晰的界限：定位和职责&lt;/h2&gt;
+&lt;p&gt;首先，Service Mesh和API Gateway在功能定位和承担的职责上有非常清晰的界限：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Service Mesh：微服务的网络通信基础设施，负责（系统内部的）服务间的通讯&lt;/li&gt;
+&lt;li&gt;API Gateway： 负责将服务以API的形式暴露（给系统外部），以实现业务功能&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;如上图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_c08d37f9ebed334e95e5091043dee125.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从功能和职责上说：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;位于最底层的是拆分好的原子微服务，以服务的形式提供各种能力&lt;/li&gt;
+&lt;li&gt;在原子微服务上是（可选的）组合服务，某些场景下需要将若干微服务的能力组合起来形成新的服务&lt;/li&gt;
+&lt;li&gt;原子微服务和组合服务部署于 &lt;strong&gt;系统内部&lt;/strong&gt;，在采用Service Mesh的情况下，由Service Mesh提供服务间通讯的能力&lt;/li&gt;
+&lt;li&gt;API Gateway用于将系统内部的这些服务暴露给 &lt;strong&gt;系统外部&lt;/strong&gt;，以API的形式接受外部请求。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;从部署上说：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Service Mesh部署在系统内部：因为原子微服务和组合服务通常不会直接暴露给外部系统&lt;/li&gt;
+&lt;li&gt;API Gateway部署在系统的边缘：一方面暴露在系统之外，对外提供API供外部系统访问；一方面部署在系统内部，以访问内部的各种服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在这里引入两个使用非常广泛的术语：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_209feadfce8c585c7587bba795d19852.webp 400w,
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_9f17930a636bbbb70cb99750fbba4279.webp 760w,
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_209feadfce8c585c7587bba795d19852.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;326&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;东西向&lt;/strong&gt;通讯：指服务间的相互访问，其通讯流量在服务间流转，流量都位于系统内部&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;南北向&lt;/strong&gt;通讯：指服务对外部提供访问，通常是通过API Gateway提供的API对外部暴露，其通讯流量是从系统外部进入系统内部。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;解释一下“东西南北”的由来：如上图所示，通常在地图上习惯性的遵循“上北下南，左东右西”的原则。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;总结：Service Mesh和API Gateway在功能和职责上分工明确，界限清晰。但如果事情就这么结束，也就不会出现Service Mesh和API Gateway关系的讨论了，自然也不会有本文。&lt;/p&gt;
+&lt;p&gt;问题的根源在哪里？&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;强烈推荐阅读：附录中 Christian Posta 的文章 &amp;ldquo;Do I Need an API Gateway if I Use a Service Mesh?&amp;ldquo;对此有深度分析和讲解。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;哲学问题网关访问内部服务算东西向还是南北向&#34;&gt;哲学问题：网关访问内部服务，算东西向还是南北向？&lt;/h2&gt;
+&lt;p&gt;如下图所示，图中黄色的线条表示的是API Gateway访问内部服务：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_c08d37f9ebed334e95e5091043dee125.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;问题来了，从流量走向看：这是外部流量进入系统后，开始访问对外暴露的服务，应该属于“南北向”通讯，典型如上图的画法。但从另外一个角度，如果我们将 API Gateway 逻辑上拆分为两个部分，先忽略对外暴露的部分，单独只看  API Gateway  访问内部服务的部分，这时可以视 API Gateway 为一个普通的客户端服务，它和内部服务的通讯更像是“东西向”通讯：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d8c9a7c4926c5d5d55309d338745e53c.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d2fde4544697be18226fa1938b906d63.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d8c9a7c4926c5d5d55309d338745e53c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;所以，API Gateway 作为一个客户端访问内部服务时，到底算南北向还是东西向，就成为一个哲学问题：完全取决于我们如何看待 API Gateway ，是作为一个整体，还是逻辑上分拆为对内对外两个部分。&lt;/p&gt;
+&lt;p&gt;这个哲学问题并非无厘头，在 API Gateway 的各种产品中，关于如何实现 “API Gateway 作为一个客户端访问内部服务” ，就通常分成两个流派：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;泾渭分明：视 API Gateway 和内部服务为两个独立事物，API Gateway访问内部服务的通讯机制自行实现，独立于服务间通讯的机制&lt;/li&gt;
+&lt;li&gt;兼容并济：视 API Gateway 为一个普通的内部服务的客户端，重用其内部服务间通讯的机制。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;而最终决策通常也和产品的定位有关：如果希望维持  API Gateway 的独立产品定位，希望可以在不同的服务间通讯方案下都可以使用，则通常选择前者，典型如kong；如果和服务间通讯方案有非常深的渊源，则通常选择后者，典型如springcloud生态下的zuul和springcloud gateway。&lt;/p&gt;
+&lt;p&gt;但无论选择哪个流派，都改变不了一个事实，当 “API Gateway 作为一个客户端访问内部服务” 时，它的确和一个普通内部服务作为客户端去访问其他服务没有本质差异：服务发现，负载均衡，流量路由，熔断，限流，服务降级，故障注入，日志，监控，链路追踪，访问控制，加密，身份认证&amp;hellip;&amp;hellip; 当我们把网关访问内部服务的功能一一列出来时，发现几乎所有的这些功能都是和服务间调用重复。&lt;/p&gt;
+&lt;p&gt;这也就造成了一个普遍现象：如果已有一个成熟的服务间通讯框架，再去考虑实现API Gateway，重用这些重复的能力就成为自然而然的选择。典型如前面提到的 springcloud 生态下的 zuul 以及后面开发的 springcloud gateway，就是以重用类库的方式实现了这些能力的重用。&lt;/p&gt;
+&lt;p&gt;这里又是一个类似的哲学问题：当 “API Gateway 作为一个客户端访问内部服务” 时，它以重用类库的方式实现了代码级别的能力重用，相当于自行实现了一个和普通服务间通讯方案完全一样的客户端，那这个“客户端”发出来的流量算东西向还是南北向？&lt;/p&gt;
+&lt;p&gt;答案不重要。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar真正的重合点&#34;&gt;Sidecar：真正的重合点&lt;/h2&gt;
+&lt;p&gt;在进入Service Mesh时代之后，Service Mesh和API gateway 的关系开始是这样：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;功能和职责清晰划分&lt;/li&gt;
+&lt;li&gt;客户端访问服务的功能高度重叠&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;此时两者的关系很清晰，而且由于当时Service Mesh和API Gateway是不同的产品，两者的重合点只是在功能上。&lt;/p&gt;
+&lt;p&gt;而随着时间的推移，当 Service Mesh 产品和 API Gateway 产品开始出现相互渗透时，两者的关系就开始变得暧昧。&lt;/p&gt;
+&lt;p&gt;在Service Mesh出现之后，如何为基于Service Mesh的服务选择合适的API Gateway方案，就慢慢开始提上日程，而其中选择重用Service Mesh的能力也自然成为一个探索的方向，并逐步出现新式API Gateway产品，其想法很直接：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;如何融合东西向和南北向的通讯方案？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;其中的一个做法就是基于Service Mesh的Sidecar来实现API Gateway，从而在南北向通讯中引入Service Mesh这种东西向通讯的方案。这里我们不展开细节，我这里援引一个图片（鸣谢赵化冰同学）来解释这个方案的思路：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_54a5263908e4e52e9730a6748f4385f0.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_f2c217e21995849d90b4de49eb926a78.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_54a5263908e4e52e9730a6748f4385f0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;244&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个时候Service Mesh和API Gateway的关系就变得有意思了，因为Service Mesh中sidecar的引入，所以前面的“哲学问题”又有了一个新的解法：API Gateway这次真的可以分拆为两个独立部署的物理实体，而不是逻辑上的两个部分：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;API Gateway本体：实现API Gateway除了访问内部服务之外的功能&lt;/li&gt;
+&lt;li&gt;Sidecar：按照Service Mesh的标准做法， 我们视API Gateway为一个部署于Service Mesh中的普通服务，为这个服务1:1的部署sidecar&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_3ed088127c7942f69ca2ad761a9a698a.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_b1b27cce2d81ade8f80fec6d35b9c9cd.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_3ed088127c7942f69ca2ad761a9a698a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个方案中，原来用于Service Mesh的sidecar，被用在了API Gateway中，替代了API Gateway中原有的客户端访问的各种功能。这个方案让API Gateway的实现简化了很多，也实现了东西向和南北向通讯能力的重用和融合，而 API Gateway可以更专注于 “API Management” 的核心功能。&lt;/p&gt;
+&lt;p&gt;此时 Service Mesh 和 API Gateway 的关系就从“泾渭分明”变成了“兼容并济”。&lt;/p&gt;
+&lt;p&gt;而采用这个方案的公司，通常都是先有Service Mesh产品，再基于Service Mesh产品规划（或者重新规划）API Gateway方案，典型如蚂蚁金服的SOFA Gateway产品是基于MOSN，而社区开源产品Ambassador和Gloo都是基于Envoy。&lt;/p&gt;
+&lt;p&gt;上述方案的优势在于API Gateway和Sidecar独立部署，职责明确，架构清晰。但是，和Service Mesh使用sidecar被质疑多一跳会造成性能开销影响效率一样，API Gateway使用Sidecar也被同样的质疑：多了一跳&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;p&gt;解决“多一跳”问题的方法简单而粗暴，基于sidecar，将API Gateway的功能加进来。这样API Gateway本体和Sidecar再次合二为一：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_163f8837dff0c118a170820e063a577f.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_020610a9ce6d1f820c23632cfeb9a6c6.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_163f8837dff0c118a170820e063a577f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;至于走到这一步之后，Service Mesh和API Gateway是什么关系：这到底算是Service Mesh/sidecar融合了API Gateway，还是API Gateway融合了Service Mesh/Sidecar？这个问题就像斑马到底是白底黑纹还是黑底白纹一样，见仁见智。&lt;/p&gt;
+&lt;h2 id=&#34;bff把融合进行到底&#34;&gt;BFF：把融合进行到底&lt;/h2&gt;
+&lt;p&gt;BFF（Backend For Frontend）的引入会让Service Mesh和API Gateway走到一个更加亲密的地步。&lt;/p&gt;
+&lt;p&gt;先来看看常规的BFF的玩法：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_82b1c5385231645bca4414f8c7a003eb.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_217f47d97dac77b6bc6774e3d569d025.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_82b1c5385231645bca4414f8c7a003eb.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;338&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这里，多增加了一个 BFF 层，介于API Gateway和内部服务（包括组合服务和原子微服务）之间。注意BFF的工作模式和组合服务很类似，都是组合多个服务。但差别在于：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;组合服务还属于服务的范畴，只是实现机制上组合了多个服务，对外暴露的依然是一个完整和规范的服务&lt;/li&gt;
+&lt;li&gt;BFF不同，BFF如名字所示，Backend For Frontend，完全是为了前端而存在，核心目标之一是简化前端的访问&lt;/li&gt;
+&lt;li&gt;对我们今天的话题而言，最关键的一点：BFF完全收口了从外部进入的流量，而组合服务没有，API Gateway是可以直接访问原子微服务的&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;“BFF完全收口外部流量”，这一点在API Gateway和Sidecar融合之后，会变得很有想象空间，我们先看按照前面的融合方式，在有BFF的情况下，API Gateway和Sidecar融合后的情景：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_96d4d14bd1670e31108c4e81cd7adebe.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_914a3273f0d0926c14625f45e18036f7.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_96d4d14bd1670e31108c4e81cd7adebe.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;374&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;放大一点，单独看API Gateway和BFF：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_42493bb04cbd51ededf65744172d2fe8.webp 400w,
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_be4073244f51e2b800b5fef26058168a.webp 760w,
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_42493bb04cbd51ededf65744172d2fe8.webp&#34;
+               width=&#34;552&#34;
+               height=&#34;416&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意到，流量从被API Gateway接收，到进入BFF在这个流程中，这个请求路径中有两个sidecar：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;和BFF部署在一起的，是没有API Gateway功能的普通Sidecar&lt;/li&gt;
+&lt;li&gt;API Gateway和Sidecar融合之后，这就是一个“有API Gateway功能的大Sidecar”（或者是“有Sidecar功能的特殊API Gateway”）：虽然扮演了API Gateway的角色，但本质上依然包含一个完整功能的sidecar，和BFF自带的Sidecar是等同的&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;所以，问题来了：为什么要放两个sidecar在流程中，缩减到一个会怎么样？我们尝试将两个Sidecar合二为一，去掉BFF自带的Sidecar，直接把扮演API Gateway的sidecar给BFF用：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_19bf30930b38a8ff63db84b4411dc7ab.webp 400w,
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_fc053a06ecb1f70b192ebd292acb723b.webp 760w,
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_19bf30930b38a8ff63db84b4411dc7ab.webp&#34;
+               width=&#34;645&#34;
+               height=&#34;287&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此时的场景是这样：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;流量直接打到BFF上（BFF前面可能会挂其他的网络组件提供负载均衡等功能）&lt;/li&gt;
+&lt;li&gt;BFF的sidecar接收流量，完成API Gateway的功能，然后将流量转给BFF&lt;/li&gt;
+&lt;li&gt;BFF通过sidecar调用内部服务（和没有合并时一致）&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_6a0cf3f9991378844eb7e7cdad30c7fe.webp 400w,
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_731b76370e8deced8226bd4660256307.webp 760w,
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_6a0cf3f9991378844eb7e7cdad30c7fe.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;389&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意这里有一个关键点，在前面时特意注明的：“&lt;strong&gt;BFF完全收口外部流量&lt;/strong&gt;”。这是前提条件，因为原有的API Gateway集群已经不再存在，如果BFF没能收口全部流量，则这些未能收口的流量会找不到API Gateway。当然，如果愿意稍微麻烦一点，在部署时清晰的划定需要暴露给外界的服务，直接在这些服务上部署带API Gateway功能的Sidecar，也是可行的，只是管理上会比BFF模式要复杂一些。&lt;/p&gt;
+&lt;p&gt;另外，在部署上，按照上面的方案，我们会发现：API Gateway“消失”了 —— 不再有一个明确物理部署的API Gateway的集群，常规的中心化的网关在这个方案中被融合到每一个BFF的实例中，从而实现另外一个重要特性：去中心化。&lt;/p&gt;
+&lt;p&gt;上述Service Mesh 和 API Gateway融合的方案，并未停留在纸面上。&lt;/p&gt;
+&lt;p&gt;在蚂蚁金服内部，我们基于Service Mesh 和 API Gateway融合 + 去中心化的思路，进行过开创性的实践和探索。以支付宝移动网关为例，在过去十年间，网关经历了从单体到微服务，从中心化到去中心化，从共享的 gateway.jar 包到利用MOSN实现网关Mesh化/Sidecar化，最终演变成了这样一个方案：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1ee19086dc89c08fdfb4b06d29218890.webp 400w,
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_9605f0d2f2cc4fed5895eb9fbb8fd01d.webp 760w,
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1ee19086dc89c08fdfb4b06d29218890.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;379&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;强烈推荐阅读：附录中我的同事贾岛的文章 “蚂蚁金服 API Gateway Mesh 思考与实践” 对此有深入介绍和详细描述。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文总结了 Service Mesh 和 API Gateway 的关系，整体上说两者的定位和职责“泾渭分明”，但在具体实现上，开始出现融合的趋势：早期传统方式是类库级别的代码复用，最新趋势是API Gateway和Sidecar 合二为一。&lt;/p&gt;
+&lt;p&gt;后者的发展才刚刚起步，包括在蚂蚁金服我们也是才开始探索这个方向，但是相信在未来一两年间，社区可能会有更多的类似产品形态出现。&lt;/p&gt;
+&lt;p&gt;补充介绍一下文中多次提到的“MOSN”：&lt;/p&gt;
+&lt;p&gt;MOSN 是 MOSN 是 Modular Open Smart Network 的简称， 是一款使用 Go 语言开发的网络代理软件，由蚂蚁金服开源并经过几十万容器的生产级验证。 MOSN 作为云原生的网络数据平面，旨在为服务提供多协议、模块化、智能化、安全的代理能力。 MOSN 可以与任何支持 xDS API 的 Service Mesh 集成，亦可以作为独立的四、七层负载均衡，API Gateway、云原生 Ingress 等使用。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;GitHub：https://github.com/mosn/mosn&lt;/li&gt;
+&lt;li&gt;官网：https://mosn.io&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;附录参考资料和推荐阅读&#34;&gt;附录：参考资料和推荐阅读&lt;/h2&gt;
+&lt;p&gt;意犹未尽的同学，欢迎继续阅读以下内容。&lt;/p&gt;
+&lt;p&gt;按文章发表的时间排序：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://konghq.com/blog/the-difference-between-api-gateways-and-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;The Difference Between API Gateways and Service Mesh&lt;/a&gt;： 2020-02，指导架构师确定何时使用API网关以及何时使用服务网格，作者Marco Palladino，来自kong。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/microservices/do-i-need-an-api-gateway-if-i-have-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Do I Need an API Gateway if I Use a Service Mesh?&lt;/a&gt;：2020-01，作者 Christian Posta，中文翻译版本请见马若飞同学的 &lt;a href=&#34;https://www.servicemesher.com/blog/do-i-need-an-api-gateway-if-i-have-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用了 Service Mesh 后我还需要 API 网关吗&lt;/a&gt;，对 Service Mesh 技术和 API 网关的对比，着重分析了两者的功能重合点和分歧点，为技术选型和落地提供了指导思路。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.infoq.cn/article/azCFGyTDGakZqaLEEDMN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;蚂蚁金服 API Gateway Mesh 思考与实践&lt;/a&gt;: 2019-12，作者贾岛，介绍蚂蚁金服支付宝网关的发展和API Gateway Mesh的由来，强烈推荐阅读，这个文章非常清晰的介绍了蚂蚁金服在Service Mesh和API Gateway融合方面的实践。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.servicemesher.com/blog/api-gateways-are-going-through-an-identity-crisis/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;API Gateway的身份认同危机&lt;/a&gt;: 2019-05, 原文作者 Christian Posta，译者周雨青，讲述API Gateway的基本理念如API的定义，API Management的含义，API Gateway模式，以及服务网格和API Gateway的关系。&lt;/li&gt;
+&lt;li&gt;长路漫漫踏歌而行：蚂蚁金服Service Mesh实践探索：2018-10，我在QCon的演讲，我分享了当时蚂蚁金服在服务间通讯范围的探索，提出将服务网格在东西向通讯中的能力重用到南北向通讯中，当时基于Sidecar的SOFA Gateway产品刚开始开发。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.getambassador.io/api-gateway-vs-service-mesh-104c01fa4784&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;API Gateway vs Service Mesh&lt;/a&gt;: 2018-09，作者Richard Li，Datawire的CEO ，在开发 Ambassador API Gateway。Ambassador 是基于 Envoy 的API Gateway开源产品，文章阐述了对服务网格和API Gateway的看法，差异，以及对两者集成的看法。&lt;/li&gt;
+&lt;li&gt;DreamMesh抛砖引玉(9)-API Gateway：2018-03，这个文章也是我写的，2018年初我和Service Mesh社区的一些朋友深入探讨之后，在DreamMesh系列博客文章中记录下了当时构想的方案，尤其对 API gateway和sidecar是分是合有详细讨论。当时想法还不够成熟，但大体方向已经有雏形了。鸣谢当时参与讨论的同学！&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/microservices-in-practice/service-mesh-vs-api-gateway-a6d814b9bf56&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh vs API Gateway&lt;/a&gt;: 2017-10，原文作者 &lt;a href=&#34;https://medium.com/@kasunindrasiri&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kasun Indrasiri&lt;/a&gt;，以及 &lt;a href=&#34;https://zhaohuabing.com/2018/04/11/service-mesh-vs-api-gateway/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;赵化冰同学翻译的中文版本&lt;/a&gt;，文章不长，主要对比了服务网格和API Gateway的产品功能，提出了两者融合的方式——在API Gateway中通过服务网格来调用下游服务。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/microservices/application-network-functions-with-esbs-api-management-and-now-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Application Network Functions With ESBs, API Management, and Now.. Service Mesh?&lt;/a&gt;：2017-08，作者 Christian Posta，讲述服务网格与ESB，消息代理和API管理之类的事物的关系。内容非常好，强烈推荐阅读（我不得不吐糟一下：配图太辣眼睛）。&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>使用了 Service Mesh 后我还需要 API 网关吗</title>
       <link>https://cloudnative.to/blog/do-i-need-an-api-gateway-if-i-have-a-service-mesh/</link>
       <pubDate>Fri, 07 Feb 2020 10:42:00 +0800</pubDate>
@@ -12793,6 +13292,196 @@ mcp: pilot/pkg/serviceregistry/mcp
     </item>
     
     <item>
+      <title>第八届 Service Mesh Meetup 特别场：Kubernetes &amp; Cloud Native X Service Mesh Meetup</title>
+      <link>https://cloudnative.to/blog/k8s-cloud-native-service-mesh-meetup/</link>
+      <pubDate>Thu, 14 Nov 2019 09:44:06 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/k8s-cloud-native-service-mesh-meetup/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-banner&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Banner&#34; srcset=&#34;
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdzto7caj31ij0u00yd_hu8787cd177dbbed7c533f41c7a14beeea_97934_f1ed3c99f1d552ce0e9e8e9f5d177bd6.webp 400w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdzto7caj31ij0u00yd_hu8787cd177dbbed7c533f41c7a14beeea_97934_4ed388faf720a1227d86d834f0141c81.webp 760w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdzto7caj31ij0u00yd_hu8787cd177dbbed7c533f41c7a14beeea_97934_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdzto7caj31ij0u00yd_hu8787cd177dbbed7c533f41c7a14beeea_97934_f1ed3c99f1d552ce0e9e8e9f5d177bd6.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;418&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Banner
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;活动主题：Kubernetes &amp;amp; Cloud Native X Service Mesh Meetup&lt;/li&gt;
+&lt;li&gt;活动时间：2019 年 11 月 24 日（星期日）9:30-16:30&lt;/li&gt;
+&lt;li&gt;活动地点：北京朝阳大望京科技商务园区宏泰东街浦项中心B座2层多功能厅&lt;/li&gt;
+&lt;li&gt;活动形式：线下活动&lt;/li&gt;
+&lt;li&gt;活动报名：&lt;a href=&#34;https://tech.antfin.com/community/activities/985?chInfo=servicemesher&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请戳这里&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;活动介绍&#34;&gt;活动介绍&lt;/h2&gt;
+&lt;h2 id=&#34;service-mesh-meetup8-特别场&#34;&gt;Service Mesh Meetup#8 特别场&lt;/h2&gt;
+&lt;p&gt;本期为 Service Mesh Meetup#8 特别场，联合 CNCF、阿里巴巴及蚂蚁金服共同举办。&lt;/p&gt;
+&lt;p&gt;不是任何一朵云都撑得住双 11。&lt;/p&gt;
+&lt;p&gt;成交 2684 亿，阿里巴巴核心系统 100% 上云。&lt;/p&gt;
+&lt;p&gt;蚂蚁金服的核心交易链路大规模上线 Service Mesh。&lt;/p&gt;
+&lt;p&gt;这次，让双 11 狂欢继续，让云原生经得起双 11 大考，也让云原生走到开发者身边。&lt;/p&gt;
+&lt;p&gt;你将收获 3 大经验加持：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;双 11 洗礼下的阿里巴巴 K8s 超大规模实践经验；&lt;/li&gt;
+&lt;li&gt;蚂蚁金服首次 Service Mesh 大规模落地经验；&lt;/li&gt;
+&lt;li&gt;阿里巴巴超大规模神龙裸金属 K8s 集群运维实践经验；&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;错过一次，再等一年哦。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kubernetes-amp-cloud-native-x-service-mesh-meetup&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes &amp;amp;amp; Cloud Native x Service Mesh Meetup&#34; srcset=&#34;
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdyy6tf6j30u021tqc6_hu2d65e4517c1f0e971aead85efae1c807_184724_f9cfb8d58e65678b0add33031ea2e092.webp 400w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdyy6tf6j30u021tqc6_hu2d65e4517c1f0e971aead85efae1c807_184724_1a55ad7e2d779e2f168d9ab113ea9593.webp 760w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdyy6tf6j30u021tqc6_hu2d65e4517c1f0e971aead85efae1c807_184724_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xdyy6tf6j30u021tqc6_hu2d65e4517c1f0e971aead85efae1c807_184724_f9cfb8d58e65678b0add33031ea2e092.webp&#34;
+               width=&#34;309&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Kubernetes &amp;amp;amp; Cloud Native x Service Mesh Meetup
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;议程&#34;&gt;议程&lt;/h2&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;时间&lt;/th&gt;
+&lt;th&gt;环节（分享主题）&lt;/th&gt;
+&lt;th&gt;分享嘉宾&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;9:00-9:30&lt;/td&gt;
+&lt;td&gt;签到&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;9:30-10:10&lt;/td&gt;
+&lt;td&gt;《释放云原生价值，双 11 洗礼下的阿里巴巴 K8s 超大规模实践》&lt;/td&gt;
+&lt;td&gt;曾凡松（逐灵），阿里巴巴高级技术专家；汪萌海（木苏），阿里巴巴技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;10:10-10:50&lt;/td&gt;
+&lt;td&gt;《蚂蚁金服双十一Service Mesh超大规模落地揭秘》&lt;/td&gt;
+&lt;td&gt;黄挺（鲁直），蚂蚁金服云原生负责人；雷志远（碧远），蚂蚁金服技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;10:50-11:30&lt;/td&gt;
+&lt;td&gt;《阿里巴巴超大规模神龙裸金属 K8s 集群运维实践》&lt;/td&gt;
+&lt;td&gt;周涛 （广侯），阿里巴巴高级技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;11:30-12:10&lt;/td&gt;
+&lt;td&gt;《深入Kubernetes的“无人区” — 蚂蚁金服双十一的调度系统》&lt;/td&gt;
+&lt;td&gt;曹寅，蚂蚁金服 Kubernetes 落地负责人&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;12:10-13:30&lt;/td&gt;
+&lt;td&gt;午休&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;13:30-14:10&lt;/td&gt;
+&lt;td&gt;《服务网格在“路口”的产品思考与实践》&lt;/td&gt;
+&lt;td&gt;宋顺（齐天），蚂蚁金服高级技术专家，开源配置中心Apollo作者&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;14:10-14:50&lt;/td&gt;
+&lt;td&gt;《阿里集团核心应用落地 Service Mesh 的挑战与机遇》&lt;/td&gt;
+&lt;td&gt;李云（至简），阿里巴巴高级技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;14:50-13:10&lt;/td&gt;
+&lt;td&gt;茶歇&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;15:10-15:50&lt;/td&gt;
+&lt;td&gt;《蚂蚁金服云原生 PaaS 实践之路》&lt;/td&gt;
+&lt;td&gt;王成昌（晙曦），蚂蚁金服技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;15:50-16:30&lt;/td&gt;
+&lt;td&gt;《函数计算在双十一小程序场景的应用》&lt;/td&gt;
+&lt;td&gt;吴天龙（木吴），阿里云函数计算技术专家&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;加入-sofa-钉钉互动群&#34;&gt;加入 SOFA 钉钉互动群&lt;/h2&gt;
+&lt;p&gt;群号：23390449，使用钉钉搜索群号即可加入，获取一手开源技术干货。&lt;/p&gt;
+&lt;h2 id=&#34;加入-sofamosn-用户交流群&#34;&gt;加入 SOFAMosn 用户交流群&lt;/h2&gt;
+&lt;p&gt;使用&lt;strong&gt;钉钉&lt;/strong&gt;扫描下面的二维码加入 SOFAMosn 用户交流群。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-sofamosn-钉钉群&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;SOFAMosn 钉钉群&#34; srcset=&#34;
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xbs396tfj3074078aa8_hu34232fba4870addd28001196b784688e_14246_a7cb397867d49bdd2b021ad5fe815563.webp 400w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xbs396tfj3074078aa8_hu34232fba4870addd28001196b784688e_14246_65f2f75e54b5a2c09d5501f20a437e54.webp 760w,
+               /blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xbs396tfj3074078aa8_hu34232fba4870addd28001196b784688e_14246_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/k8s-cloud-native-service-mesh-meetup/006y8mN6ly1g8xbs396tfj3074078aa8_hu34232fba4870addd28001196b784688e_14246_a7cb397867d49bdd2b021ad5fe815563.webp&#34;
+               width=&#34;256&#34;
+               height=&#34;260&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      SOFAMosn 钉钉群
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Service Mesh Meetup #7 成都站</title>
       <link>https://cloudnative.to/event/service-mesh-meetup-07/</link>
       <pubDate>Sat, 26 Oct 2019 13:00:00 +0800</pubDate>
@@ -12811,6 +13500,86 @@ mcp: pilot/pkg/serviceregistry/mcp
 &lt;h4 id=&#34;service-mesh下微服务的架构设计&#34;&gt;Service Mesh下微服务的架构设计&lt;/h4&gt;
 &lt;p&gt;杨彪（美团高级技术专家）&lt;/p&gt;
 &lt;p&gt;当下Service Mesh技术可以说是炙手可热，它通过容器编排、持续交付DevOps、以及微服务等理论和方法来构建和运行云原生应用。然而Service Mesh毕竟发展才短短的2年，对于我们刚刚熟悉和稳定的微服务架构又将带来哪些挑战，业务系统架构是否有必要升级到Service Mesh，我们的微服务架构设计将发生什么改变，这些问题我将在本次大会交流讨论，敬请期待。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>服务网格Kuma爬过了K8S这座大山</title>
+      <link>https://cloudnative.to/blog/kong-open-sources-kuma-the-universal-service-mesh/</link>
+      <pubDate>Wed, 11 Sep 2019 21:23:19 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kong-open-sources-kuma-the-universal-service-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://www.sdxcentral.com/articles/news/kongs-kuma-service-mesh-climbs-the-kubernetes-wall/2019/09/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;2019年9月10日，Kong正式宣布开源一款Service Mesh：Kuma。此消息一出，立即在云原生社区引起反响，各大媒体争相报道。让我们跟随SDxCentral的总编辑，一起来看看Kong的CTO如何介绍Kuma这款Service Mesh产品以及对于SMI的看法。关于Kuma的具体功能介绍可以阅读&lt;a href=&#34;https://konghq.com/blog/introducing-kuma-universal-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官网博客&lt;/a&gt;以及&lt;a href=&#34;https://github.com/Kong/kuma&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;翻译一下其Github关于Kuma功能特性的简介如下，方便读者了解：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;通用的控制平面&lt;/strong&gt;: 易于使用，分布式，可以在任何平台运行。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;轻量的数据平面&lt;/strong&gt;: 基于Envoy，可处理任意类型流量。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;自动化&lt;/strong&gt;: 在K8s平台上部署无需任何代码改动，也可在虚拟机上灵活部署。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;多租户&lt;/strong&gt;: 可在一个集群与同一个控制平面上部署多套服务网格。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;网络安全&lt;/strong&gt;: 自动mTLS加密。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量分割&lt;/strong&gt;: 灵活的ACL规则。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量追踪&lt;/strong&gt;: 与Zipkin和Jaeger自动集成。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量指标&lt;/strong&gt;: 与Prometheus/Splunk/ELK自动集成。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;代理配置模版&lt;/strong&gt;: 方便进阶(收费)用户配置Envoy。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;标签选择器&lt;/strong&gt;: 可应用不同地域的、特定于云的和面向团队的策略。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;平台中立&lt;/strong&gt;: 支持K8s, 虚拟机和裸机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;强大的APIM Ingress&lt;/strong&gt;: 与Kong网关集成。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-kuma-architecture&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;kuma-architecture&#34; srcset=&#34;
+               /blog/kong-open-sources-kuma-the-universal-service-mesh/kuma-architecture_huf05d55f9bb74f3f2ceecb319eee53f48_27805_b3e940a78ee73c9d2913f72d81588db3.webp 400w,
+               /blog/kong-open-sources-kuma-the-universal-service-mesh/kuma-architecture_huf05d55f9bb74f3f2ceecb319eee53f48_27805_e4a8c4b3206101b5c0202e2b67ea23fa.webp 760w,
+               /blog/kong-open-sources-kuma-the-universal-service-mesh/kuma-architecture_huf05d55f9bb74f3f2ceecb319eee53f48_27805_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kong-open-sources-kuma-the-universal-service-mesh/kuma-architecture_huf05d55f9bb74f3f2ceecb319eee53f48_27805_b3e940a78ee73c9d2913f72d81588db3.webp&#34;
+               width=&#34;650&#34;
+               height=&#34;386&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      kuma-architecture
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;简介&#34;&gt;简介&lt;/h2&gt;
+&lt;p&gt;Kong正在将其服务网格平台Kuma打造成一个日益复杂的生态系统，在过去几个月里，许多新加入者和选择涌现出来。&lt;/p&gt;
+&lt;p&gt;该公司声称Kuma是“一个通用的服务网格”。Kong CTO和联合创始人Marco Palladino解释说，这意味着Kuma不同于市场上的大多数服务网格项目，它的设计初衷是在&lt;a href=&#34;https://www.sdxcentral.com/monitoring/definitions/kubernets-monitoring/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;生态系统内部和外部都能工作，这包括虚拟机(VMs)、&lt;a href=&#34;https://www.sdxcentral.com/containers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;容器&lt;/a&gt;、legacy环境以及Kubernetes。&lt;/p&gt;
+&lt;p&gt;Kuma包括一个基于Envoy服务代理的通用控制平面。它结合了数据平面和进阶的控制平面，允许用户使用本地自定义资源定义(CRDs)或RESTful API设置权限、获取指标和设置路由规则。Palladino解释说，早期第一代的服务网格产品大多缺乏成熟的控制平面，需要大量的二次开发或手工定制。&lt;/p&gt;
+&lt;p&gt;他解释说：“我们希望90%的&lt;a href=&#34;https://www.sdxcentral.com/cloud/definitions/software-defined-everything-part-5-sdx-use-cases/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用例&lt;/a&gt;都易于使用，并且能够快速升级。对于另外10%用例的用户，我们有一个允许用户深入使用的策略，”他补充说，尽管Kuma的设计是为了方便使用，“但Kuma是为企业设计的，而不是业余爱好者。”&lt;/p&gt;
+&lt;p&gt;Kuma的特性包括&lt;a href=&#34;https://www.sdxcentral.com/security/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;software-defined security&lt;/a&gt;，它支持所有四层通信流的&lt;a href=&#34;https://www.sdxcentral.com/security/definitions/what-is-software-defined-security/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;mTLS&lt;/a&gt;身份验证；能够实现追踪(trace)和日志(log)记录，从而更好地分析指标；提供流量控制能力，如断路器和健康检查，以增强四层路由。&lt;/p&gt;
+&lt;p&gt;Palladino说，Kuma保护底层网络的能力提供了可靠性和更深层次的可观察性，并且无需修改任何代码。&lt;/p&gt;
+&lt;p&gt;Palladino说：“我们努力为Kuma构建一个非常平滑渐进的学习曲线。它的复杂度不会在早期压垮开发人员，并且也不会阻止开发人员走得更远。我们确实为高级用户提供了一个策略来配置底层代理数据平面。”&lt;/p&gt;
+&lt;p&gt;Kuma还利用了Kong同名的&lt;a href=&#34;https://www.sdxcentral.com/articles/news/kong-crushes-api-orchestration-challenges/2018/09/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源API网关&lt;/a&gt;。该网关管理组织与部署现代&lt;a href=&#34;https://www.sdxcentral.com/networking/nfv/definitions/microservices-architecture-telco-cloud/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;微服务&lt;/a&gt;的各种方法之间的信息流。&lt;/p&gt;
+&lt;h2 id=&#34;kuma加入服务网格竞争行列&#34;&gt;Kuma加入服务网格竞争行列&lt;/h2&gt;
+&lt;p&gt;Kuma加入了服务网格竞争行列，这个群体与日俱增，声称可以更容易地支持微服务的部署。&lt;/p&gt;
+&lt;p&gt;Palladino说：“每个人都告诉我们，他们想要使用服务网格，但实际上没有一种服务网格易于使用，而且真正适用企业生产环境。许多企业专注于Kubernetes，但对他们来说，这成为了云原生探索之旅的终点。我们提供了一个产品，允许他们拥有一个可以更早实现并支持他们迁移的服务网格。”&lt;/p&gt;
+&lt;p&gt;一个已经引起广泛注意的服务网格平台是&lt;a href=&#34;https://www.sdxcentral.com/articles/news/google-drives-direct-istio-access-into-google-kubernetes-engine/2018/11/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;。它定位于网络层，使用底层进行微服务开发和维护。这允许将管理运维与应用程序开发分离开来。&lt;/p&gt;
+&lt;p&gt;Palladino说，Istio帮助照亮了这片天空，但它仍然“非常复杂，有很多活跃的部件”。它在Kubernetes上运行得很好，但并不是所有人都在运行Kubernetes。”&lt;/p&gt;
+&lt;p&gt;他说，这种关注还会影响Linkerd和Containous等其他服务网格的选择，比如最近推出的&lt;a href=&#34;https://www.sdxcentral.com/articles/news/containous-maesh-barges-into-the-service-mesh-morass/2019/09/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Maesh平台&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;“Maesh、Linkerd和其它控制平面网格都高度关注Kubernetes，”Palladino解释说。“只有当企业采用Kubernetes时，它们才会被采用。我们通过在这一过程的早期建立安全和可观察性，实现了向Kubernetes的过渡。”&lt;/p&gt;
+&lt;p&gt;还需要努力协调服务网格平台之间的互操作性。其中之一由微软牵头，它在今年早些时候率先推出了服务网格接口&lt;a href=&#34;https://www.sdxcentral.com/articles/news/microsoft-spearheads-service-mesh-interoperability-push/2019/05/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SMI&lt;/a&gt;规范。它的目标是为开发人员提供运行在Kubernetes上的不同服务网格技术的互操作性。&lt;/p&gt;
+&lt;p&gt;Palladino将这种努力淡化为边缘化服务网格功能。&lt;/p&gt;
+&lt;p&gt;“我们根本不相信SMI，”他说。“这是将接口标准化的另一种尝试，让它变得平庸而不优秀。它采用整个社区所有服务网格的公分母，从而降低了它们对最终用户的价值。它界限很宽，但并不深入。”&lt;/p&gt;
+&lt;p&gt;Palladino认为Kuma才真正实现了可以在所有平台进行互操作。&lt;/p&gt;
+&lt;p&gt;Kong以Mashape的名字成立于2009年。2015年，它将Kong平台发布到&lt;a href=&#34;https://konghq.com/blog/ing-inc/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源&lt;/a&gt;社区，并于去年对旗下所有业务产品&lt;a href=&#34;https://konghq.com/blog/introducing-kong-inc/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;正式启用&lt;/a&gt;了该平台的名称。该公司已通过5轮融资&lt;a href=&#34;https://www.crunchbase.com/organization/konghq#section-funding-rounds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;筹集&lt;/a&gt;了6,910万美元资金，最近一次是在3月份的C轮融资，总额4,300万美元。&lt;/p&gt;
+&lt;h2 id=&#34;编者后记&#34;&gt;编者后记&lt;/h2&gt;
+&lt;p&gt;当Istio因其性能表现疲软之际，会涌现一个又一个的新玩家，给市场带来竞争与多样性，这也是用户喜闻乐见的。Kong涉足服务网格并不算太意外，我们可以了解到除了市面上的传统云厂商打造的和开源的各项服务网格产品，Consul Service Mesh的出现也让人眼前一亮。Consul Service Mesh与Kuma背后的厂商均有其成熟的开源产品做强力支撑：Consul的服务发现与注册产品，Kong的网关产品。他们各自在开源社区拥有一片天下，此时推出服务网格产品自然会有一大批“拥趸”。&lt;/p&gt;
+&lt;p&gt;Kuma的性能较之Istio以及其它服务网格产品的优劣尚未可知，但是其平台中立的思想还是值得借鉴。当前市场上，K8s并未完全普及，很多公司的产品都是部署在虚机甚至裸机上，如果此时又想尝试下服务网格技术，Kuma的出现不失为一种惊喜。&lt;/p&gt;
 </description>
     </item>
     
@@ -13893,6 +14662,542 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ol&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>洞若观火：使用OpenTracing增强Istio的调用链跟踪-篇一</title>
+      <link>https://cloudnative.to/blog/using-opentracing-with-istio-part-1/</link>
+      <pubDate>Wed, 03 Jul 2019 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/using-opentracing-with-istio-part-1/</guid>
+      <description>&lt;h2 id=&#34;什么是分布式调用跟踪&#34;&gt;什么是分布式调用跟踪？&lt;/h2&gt;
+&lt;p&gt;相比传统的“巨石”应用，微服务的一个主要变化是将应用中的不同模块拆分为了独立的进程。在微服务架构下，原来进程内的方法调用成为了跨进程的RPC调用。相对于单一进程的方法调用，跨进程调用的调试和故障分析是非常困难的，很难用传统的调试器或者日志打印来对分布式调用进行查看和分析。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/monolith-microserivce_hu2dd439b07f37e1b018942b5db1ee4b9f_23325_17b6208e176adfde199f096f7bcc4c76.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/monolith-microserivce_hu2dd439b07f37e1b018942b5db1ee4b9f_23325_18701b40ac4d369680c16ae7691e93e3.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/monolith-microserivce_hu2dd439b07f37e1b018942b5db1ee4b9f_23325_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/monolith-microserivce_hu2dd439b07f37e1b018942b5db1ee4b9f_23325_17b6208e176adfde199f096f7bcc4c76.webp&#34;
+               width=&#34;547&#34;
+               height=&#34;200&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如上图所示，一个来自客户端的请求经过了多个微服务进程。如果要对该请求进行分析，则必须将该请求经过的所有服务的相关信息都收集起来并关联在一起，这就是“分布式调用跟踪”。&lt;/p&gt;
+&lt;h2 id=&#34;什么是opentracing&#34;&gt;什么是Opentracing？&lt;/h2&gt;
+&lt;h2 id=&#34;cncf-opentracing项目&#34;&gt;CNCF Opentracing项目&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;http://https://opentracing.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing&lt;/a&gt;是&lt;a href=&#34;https://www.cncf.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNCF&lt;/a&gt;（云原生计算基金会）下的一个项目，其中包含了一套分布式调用跟踪的标准规范，各种语言的API，编程框架和函数库。Opentracing的目的是定义一套分布式调用跟踪的标准，以统一各种分布式调用跟踪的实现。目前已有大量支持&lt;a href=&#34;https://opentracing.io/docs/supported-tracers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing规范的Tracer实现&lt;/a&gt;，包括Jager,Skywalking,LightStep等。在微服务应用中采用Opentracing API实现分布式调用跟踪，可以避免vendor locking，以最小的代价和任意一个兼容Opentracing的基础设施进行对接。&lt;/p&gt;
+&lt;h2 id=&#34;opentracing概念模型&#34;&gt;Opentracing概念模型&lt;/h2&gt;
+&lt;p&gt;Opentracing的概念模型参见下图：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-opentracing概念模型&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Opentracing概念模型&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/tracing_mental_model_hu427efd32daa492ff8797e17bd68eeb36_21193_c716b43c9a4d3c0c98afc22838104c25.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/tracing_mental_model_hu427efd32daa492ff8797e17bd68eeb36_21193_f4182c9f5ecdfcb9bc5af590dbc1065e.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/tracing_mental_model_hu427efd32daa492ff8797e17bd68eeb36_21193_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/tracing_mental_model_hu427efd32daa492ff8797e17bd68eeb36_21193_c716b43c9a4d3c0c98afc22838104c25.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;200&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Opentracing概念模型
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如图所示，Opentracing中主要包含下述几个概念：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Trace： 描述一个分布式系统中的端到端事务，例如来自客户端的一个请求。&lt;/li&gt;
+&lt;li&gt;Span：一个具有名称和时间长度的操作，例如一个REST调用或者数据库操作等。Span是分布式调用跟踪的最小跟踪单位，一个Trace由多段Span组成。&lt;/li&gt;
+&lt;li&gt;Span context：分布式调用跟踪的上下文信息，包括Trace id，Span id以及其它需要传递到下游服务的内容。一个Opentracing的实现需要将Span context通过某种序列化机制(Wire Protocol)在进程边界上进行传递，以将不同进程中的Span关联到同一个Trace上。这些Wire Protocol可以是基于文本的，例如HTTP header，也可以是二进制协议。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;opentracing数据模型&#34;&gt;Opentracing数据模型&lt;/h2&gt;
+&lt;p&gt;一个Trace可以看成由多个相互关联的Span组成的有向无环图（DAG图）。下图是一个由8个Span组成的Trace：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        [Span A]  ←←←(the root span)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            |
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     +------+------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     |             |
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; [Span B]      [Span C] ←←←(Span C is a `ChildOf` Span A)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     |             |
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; [Span D]      +---+-------+
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;               |           |
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;           [Span E]    [Span F] &amp;gt;&amp;gt;&amp;gt; [Span G] &amp;gt;&amp;gt;&amp;gt; [Span H]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                       ↑
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                       ↑
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                                       ↑
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                         (Span G `FollowsFrom` Span F)
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上图的trace也可以按照时间先后顺序表示如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;––|–––––––|–––––––|–––––––|–––––––|–––––––|–––––––|–––––––|–&amp;gt; time
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; [Span A···················································]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   [Span B··············································]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      [Span D··········································]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    [Span C········································]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;         [Span E·······]        [Span F··] [Span G··] [Span H··]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Span的数据结构中包含以下内容：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;name: Span所代表的操作名称，例如REST接口对应的资源名称。&lt;/li&gt;
+&lt;li&gt;Start timestamp: Span所代表操作的开始时间&lt;/li&gt;
+&lt;li&gt;Finish timestamp: Span所代表的操作的的结束时间&lt;/li&gt;
+&lt;li&gt;Tags：一系列标签，每个标签由一个key value键值对组成。该标签可以是任何有利于调用分析的信息，例如方法名，URL等。&lt;/li&gt;
+&lt;li&gt;SpanContext：用于跨进程边界传递Span相关信息，在进行传递时需要结合一种序列化协议（Wire Protocol）使用。&lt;/li&gt;
+&lt;li&gt;References：该Span引用的其它关联Span，主要有两种引用关系，Childof和FollowsFrom。
+&lt;ul&gt;
+&lt;li&gt;Childof： 最常用的一种引用关系，表示Parent Span和Child Span之间存在直接的依赖关系。例PRC服务端Span和RPC客户端Span，或者数据库SQL插入Span和ORM Save动作Span之间的关系。&lt;/li&gt;
+&lt;li&gt;FollowsFrom：如果Parent Span并不依赖Child Span的执行结果，则可以用FollowsFrom表示。例如网上商店购物付款后会向用户发一个邮件通知，但无论邮件通知是否发送成功，都不影响付款成功的状态，这种情况则适用于用FollowsFrom表示。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;跨进程调用信息传播&#34;&gt;跨进程调用信息传播&lt;/h2&gt;
+&lt;p&gt;SpanContext是Opentracing中一个让人比较迷惑的概念。在Opentracing的概念模型中提到SpanContext用于跨进程边界传递分布式调用的上下文。但实际上Opentracing只定义一个SpanContext的抽象接口，该接口封装了分布式调用中一个Span的相关上下文内容，包括该Span所属的Trace id，Span id以及其它需要传递到downstream服务的信息。SpanContext自身并不能实现跨进程的上下文传递，需要由Tracer（Tracer是一个遵循Opentracing协议的实现，如Jaeger，Skywalking的Tracer）将SpanContext序列化后通过Wire Protocol传递到下一个进程中，然后在下一个进程将SpanContext反序列化，得到相关的上下文信息，以用于生成Child Span。&lt;/p&gt;
+&lt;p&gt;为了为各种具体实现提供最大的灵活性，Opentracing只是提出了跨进程传递SpanContext的要求，并未规定将SpanContext进行序列化并在网络中传递的具体实现方式。各个不同的Tracer可以根据自己的情况使用不同的Wire Protocol来传递SpanContext。&lt;/p&gt;
+&lt;p&gt;在基于HTTP协议的分布式调用中，通常会使用HTTP Header来传递SpanContext的内容。常见的Wire Protocol包含Zipkin使用的&lt;a href=&#34;https://github.com/openzipkin/b3-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;b3 HTTP header&lt;/a&gt;，Jaeger使用的&lt;a href=&#34;https://www.jaegertracing.io/docs/1.7/client-libraries/#trace-span-identity&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;uber-trace-id HTTP Header&lt;/a&gt;,LightStep使用的&amp;quot;x-ot-span-context&amp;quot; HTTP Header等。Istio/Envoy支持b3 header和x-ot-span-context header,可以和Zipkin,Jaeger及LightStep对接。其中b3 HTTP header的示例如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-text&#34; data-lang=&#34;text&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-B3-TraceId: 80f198ee56343ba864fe8b2a57d3eff7
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-B3-ParentSpanId: 05e3ac9a4f6e3b90
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-B3-SpanId: e457b5a2e4d86bd1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-B3-Sampled: 1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio对分布式调用跟踪的支持&#34;&gt;Istio对分布式调用跟踪的支持&lt;/h2&gt;
+&lt;p&gt;Istio/Envoy为微服务提供了开箱即用的分布式调用跟踪功能。在安装了Istio和Envoy的微服务系统中，Envoy会拦截服务的入向和出向请求，为微服务的每个调用请求自动生成调用跟踪数据。通过在服务网格中接入一个分布式跟踪的后端系统，例如zipkin或者Jaeger，就可以查看一个分布式请求的详细内容，例如该请求经过了哪些服务，调用了哪个REST接口，每个REST接口所花费的时间等。&lt;/p&gt;
+&lt;p&gt;需要注意的是，Istio/Envoy虽然在此过程中完成了大部分工作，但还是要求对应用代码进行少量修改：应用代码中需要将收到的上游HTTP请求中的b3 header拷贝到其向下游发起的HTTP请求的header中，以将调用跟踪上下文传递到下游服务。这部分代码不能由Envoy代劳，原因是Envoy并不清楚其代理的服务中的业务逻辑，无法将入向请求和出向请求按照业务逻辑进行关联。这部分代码量虽然不大，但需要对每一处发起HTTP请求的代码都进行修改，非常繁琐而且容易遗漏。当然，可以将发起HTTP请求的代码封装为一个代码库来供业务模块使用，来简化该工作。&lt;/p&gt;
+&lt;p&gt;下面以一个简单的网上商店示例程序来展示Istio如何提供分布式调用跟踪。该示例程序由eshop,inventory，billing，delivery几个微服务组成，结构如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/eshop-demo_hu2dd439b07f37e1b018942b5db1ee4b9f_15960_fdade9b0ee6b98fcbb4c62d8b7c41923.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/eshop-demo_hu2dd439b07f37e1b018942b5db1ee4b9f_15960_f3955807875613f17154db31835870a0.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/eshop-demo_hu2dd439b07f37e1b018942b5db1ee4b9f_15960_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/eshop-demo_hu2dd439b07f37e1b018942b5db1ee4b9f_15960_fdade9b0ee6b98fcbb4c62d8b7c41923.webp&#34;
+               width=&#34;432&#34;
+               height=&#34;198&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;eshop微服务接收来自客户端的请求，然后调用inventory，billing，delivery这几个后端微服务的REST接口来实现用户购买商品的checkout业务逻辑。本例的代码可以从github下载：&lt;a href=&#34;https://github.com/zhaohuabing/istio-opentracing-demo.git&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/zhaohuabing/istio-opentracing-demo.git&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;如下面的代码所示，我们需要在eshop微服务的应用代码中传递b3 HTTP Header。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; &lt;span class=&#34;nd&#34;&gt;@RequestMapping&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;value&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;/checkout&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;checkout&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nd&#34;&gt;@RequestHeader&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpHeaders&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Use HTTP GET in this demo. In a real world use case,We should use HTTP POST
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// instead.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// The three services are bundled in one jar for simplicity. To make it work,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// define three services in Kubernets.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;restTemplate&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;exchange&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;http://inventory:8080/createOrder&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpMethod&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpEntity&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;lt;&amp;gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;passTracingHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)),&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;class&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getBody&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;&amp;lt;BR&amp;gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;restTemplate&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;exchange&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;http://billing:8080/payment&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpMethod&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpEntity&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;lt;&amp;gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;passTracingHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)),&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;class&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getBody&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;&amp;lt;BR&amp;gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;restTemplate&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;exchange&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;http://delivery:8080/arrangeDelivery&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpMethod&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;GET&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpEntity&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;lt;&amp;gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;passTracingHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)),&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;class&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getBody&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;private&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpHeaders&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;passTracingHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;HttpHeaders&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;HttpHeaders&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;new&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-request-id&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-traceid&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-spanid&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-parentspanid&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-sampled&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-b3-flags&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;extractHeader&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;headers&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;x-ot-span-context&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracingHeaders&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在Kubernets中部署该程序，查看Istio分布式调用跟踪的效果。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;首先部署Kubernets cluster，注意需要启用API Server的Webhook选项&lt;/li&gt;
+&lt;li&gt;在Kubernets cluster中部署Istio，并且启用default namespace的sidecar auto injection&lt;/li&gt;
+&lt;li&gt;在Kubernets cluster中部署eshop应用&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/zhaohuabing/istio-opentracing-demo.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; istio-opentracing-demo
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git checkout without-opentracing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f k8s/eshop.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;在浏览器中打开地址：&lt;a href=&#34;http://$%7bNODE_IP%7d:31380/checkout&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://${NODE_IP}:31380/checkout&lt;/a&gt; ，以触发调用eshop示例程序的REST接口。&lt;/li&gt;
+&lt;li&gt;在浏览器中打开Jaeger的界面 &lt;a href=&#34;http://$%7bNODE_IP%7d:30088&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://${NODE_IP}:30088&lt;/a&gt; ，查看生成的分布式调用跟踪信息。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;注意:为了能在Kubernets Cluster外部访问到Jaeger的界面，需要修改Istio的缺省安装脚本，为Jaeger Service指定一个NodePort。修改方式参见下面的代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jaeger-query&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jaeger&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;jaeger-infra&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jaeger-service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;chart&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;heritage&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Tiller&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;release&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;query-http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;16686&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;16686&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;30088&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NodePort&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jaeger&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Jaeger用图形直观地展示了这次调用的详细信息，可以看到客户端请求从Ingressgateway进入到系统中，然后调用了eshop微服务的checkout接口，checkout调用有三个child span，分别对应到inventory，billing和delivery三个微服务的REST接口。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/istio-tracing_hu2dd439b07f37e1b018942b5db1ee4b9f_124313_ef25581d8c5f4ef1e67e25c27223b6d8.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing_hu2dd439b07f37e1b018942b5db1ee4b9f_124313_d0d2ec02af6fcfc0683fe62b09436822.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing_hu2dd439b07f37e1b018942b5db1ee4b9f_124313_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/istio-tracing_hu2dd439b07f37e1b018942b5db1ee4b9f_124313_ef25581d8c5f4ef1e67e25c27223b6d8.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;使用opentracing来传递分布式跟踪上下文&#34;&gt;使用Opentracing来传递分布式跟踪上下文&lt;/h2&gt;
+&lt;p&gt;Opentracing提供了基于Spring的代码埋点，因此我们可以使用Opentracing Spring框架来提供HTTP header的传递，以避免这部分硬编码工作。在Spring中采用Opentracing来传递分布式跟踪上下文非常简单，只需要下述两个步骤：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在Maven POM文件中声明相关的依赖，一是对Opentracing Spring Cloud Starter的依赖；另外由于后端接入的是Jaeger，也需要依赖Jaeger的相关jar包。&lt;/li&gt;
+&lt;li&gt;在Spring Application中声明一个Tracer bean。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Bean&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Tracer&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;jaegerTracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// The following environment variables need to set
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// JAEGER_ENDPOINT=&amp;#34;http:///{IP}:{PORT}/api/traces&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// JAEGER_PROPAGATION=&amp;#34;b3&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// JAEGER_TRACEID_128BIT=&amp;#34;true&amp;#34; Use 128bit tracer id to be compatible with the
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;c1&#34;&gt;// trace id generated by istio/envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Configuration&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;fromEnv&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;eshop-opentracing&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getTracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;注意：&lt;/p&gt;
+&lt;p&gt;Jaeger tracer缺省使用的是uber-trace-id header,而Istio/Envoy不支持该header。因此需要指定Jaeger tracer使用b3 header格式，以和Istio/Envoy兼容。&lt;/p&gt;
+&lt;p&gt;Jaeger tracer缺省使用64 bit的trace id, 而Istio/Envoy使用了128 bit的trace id。因此需要指定Jaeger tracer使用128 bit的trace id，以和Istio/Envoy生成的trace id兼容。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;部署采用Opentracing进行HTTP header传递的程序版本，其调用跟踪信息如下所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing_hu2dd439b07f37e1b018942b5db1ee4b9f_144532_1daa9b5c7274b53d697ddbf6bb32d0c6.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing_hu2dd439b07f37e1b018942b5db1ee4b9f_144532_8a0a8cc5b3ca4e42a52a51d4ae297569.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing_hu2dd439b07f37e1b018942b5db1ee4b9f_144532_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing_hu2dd439b07f37e1b018942b5db1ee4b9f_144532_1daa9b5c7274b53d697ddbf6bb32d0c6.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;366&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从上图中可以看到，相比在应用代码中直接传递HTTP header的方式，采用Opentracing进行代码埋点后，相同的调用增加了7个Span，这7个Span是由Opentracing的tracer生成的。虽然我们并没有在代码中显示创建这些Span，但Opentracing的代码埋点会自动为每一个REST请求生成一个Span，并根据调用关系关联起来。&lt;/p&gt;
+&lt;p&gt;Opentracing生成的这些Span为我们提供了更详细的分布式调用跟踪信息，从这些信息中可以分析出一个HTTP调用从客户端应用代码发起请求，到经过客户端的Envoy，再到服务端的Envoy，最后到服务端接受到请求各个步骤的耗时情况。从图中可以看到，Envoy转发的耗时在1毫秒左右，相对于业务代码的处理时长非常短，对这个应用而言，Envoy的处理和转发对于业务请求的处理效率基本没有影响。&lt;/p&gt;
+&lt;h2 id=&#34;在istio调用跟踪链中加入方法级的调用跟踪信息&#34;&gt;在Istio调用跟踪链中加入方法级的调用跟踪信息&lt;/h2&gt;
+&lt;p&gt;Istio/Envoy提供了跨服务边界的调用链信息，在大部分情况下，服务粒度的调用链信息对于系统性能和故障分析已经足够。但对于某些服务，需要采用更细粒度的调用信息来进行分析，例如一个REST请求内部的业务逻辑和数据库访问分别的耗时情况。在这种情况下，我们需要在服务代码中进行埋点，并将服务代码中上报的调用跟踪数据和Envoy生成的调用跟踪数据进行关联，以统一呈现Envoy和服务代码中生成的调用数据。&lt;/p&gt;
+&lt;p&gt;在方法中增加调用跟踪的代码是类似的，因此我们用AOP + Annotation的方式实现，以简化代码。
+首先定义一个Traced注解和对应的AOP实现逻辑：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Retention&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;RetentionPolicy&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;RUNTIME&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Target&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ElementType&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;METHOD&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Documented&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;nd&#34;&gt;@interface&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Traced&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Aspect&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Component&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;class&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;TracingAspect&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nd&#34;&gt;@Autowired&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;Tracer&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nd&#34;&gt;@Around&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;@annotation(com.zhaohuabing.demo.instrument.Traced)&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Object&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;aroundAdvice&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ProceedingJoinPoint&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jp&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;throws&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Throwable&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;class_name&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jp&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getTarget&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getClass&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getName&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;String&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;method_name&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jp&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getSignature&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;getName&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;Span&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;span&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tracer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;buildSpan&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;class_name&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;.&amp;#34;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;method_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;withTag&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;class&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;class_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                &lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;withTag&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;method&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;method_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;start&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;Object&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;jp&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;proceed&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;span&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;finish&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;result&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在需要进行调用跟踪的方法上加上Traced注解：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Component&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;class&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;DBAccess&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nd&#34;&gt;@Traced&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;void&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;save2db&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;try&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;Thread&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;sleep&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;((&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;long&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Math&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;random&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;));&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;catch&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;InterruptedException&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;printStackTrace&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nd&#34;&gt;@Component&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;class&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;BankTransaction&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nd&#34;&gt;@Traced&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;void&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;transfer&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;try&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;Thread&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;sleep&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;((&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;long&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Math&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;random&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;100&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;));&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;catch&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;InterruptedException&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;e&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;printStackTrace&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;();&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;demo程序的master branch已经加入了方法级代码跟踪，可以直接部署。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git checkout master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f k8s/eshop.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;效果如下图所示，可以看到trace中增加了transfer和save2db两个方法级的Span。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth_hu2dd439b07f37e1b018942b5db1ee4b9f_134423_e3be8b43f092fc4ab762083e20a96c5e.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth_hu2dd439b07f37e1b018942b5db1ee4b9f_134423_3c2f3ffc8f4d705b24841da65db9dd91.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth_hu2dd439b07f37e1b018942b5db1ee4b9f_134423_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth_hu2dd439b07f37e1b018942b5db1ee4b9f_134423_e3be8b43f092fc4ab762083e20a96c5e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;405&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;可以打开一个方法的Span，查看详细信息，包括Java类名和调用的方法名等，在AOP代码中还可以根据需要添加出现异常时的异常堆栈等信息。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth-method_hu2dd439b07f37e1b018942b5db1ee4b9f_168611_4635c5c0bdfb87f94af615e8e6e7f8c6.webp 400w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth-method_hu2dd439b07f37e1b018942b5db1ee4b9f_168611_f1b73e62b44475f789e989d1887814f0.webp 760w,
+               /blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth-method_hu2dd439b07f37e1b018942b5db1ee4b9f_168611_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-opentracing-with-istio-part-1/istio-tracing-opentracing-in-depth-method_hu2dd439b07f37e1b018942b5db1ee4b9f_168611_4635c5c0bdfb87f94af615e8e6e7f8c6.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;344&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;Istio/Envoy为微服务应用提供了分布式调用跟踪功能，提高了服务调用的可见性。我们可以使用Opentracing来代替应用硬编码，以传递分布式跟踪的相关http header；还可以通过Opentracing将方法级的调用信息加入到Istio/Envoy缺省提供的调用链跟踪信息中，以提供更细粒度的调用跟踪信息。&lt;/p&gt;
+&lt;h2 id=&#34;下一步&#34;&gt;下一步&lt;/h2&gt;
+&lt;p&gt;除了同步调用之外，异步消息也是微服务架构中常见的一种通信方式。在下一篇文章中，我将继续利用eshop demo程序来探讨如何通过Opentracing将Kafka异步消息也纳入到Istio的分布式调用跟踪中。&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/zhaohuabing/istio-opentracing-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;本文中eshop示例程序的源代码&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://opentracing.io/docs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing docs&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/opentracing/specification/blob/master/specification.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing specification&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/opentracing/specification/blob/master/rfc/trace_identifiers.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Opentracing wire protocols&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://istio.io/docs/tasks/telemetry/distributed-tracing/overview/#trace-context-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Trace context propagation&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/jaegertracing/using-opentracing-with-istio-envoy-d8a4246bdc15&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Using OpenTracing with Istio/Envoy&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/apache/incubator-zipkin-b3-propagation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin-b3-propagation&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.infoq.cn/article/pqy*PFPhox9OQQ9iCRTt&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 调用链埋点原理剖析—是否真的“零修改”？&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.youtube.com/watch?v=ySR_FVNX4bQ&amp;amp;t=184s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OpenTracing Project Deep Dive&lt;/a&gt;&lt;/li&gt;
+&lt;/ol&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>基于 Kubernetes 的 Service Mesh 简介</title>
+      <link>https://cloudnative.to/blog/kubernetes-service-mesh/</link>
+      <pubDate>Mon, 20 May 2019 12:09:44 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kubernetes-service-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://akomljen.com/kubernetes-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;编者按&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;文章介绍了基于Kubernetes的服务网格，简要的说明了服务网格的作用，sidecar的作用以及服务网格两个重要实现：Istio与Linkerd的起源和结构，鼓励大家上手尝试。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://akomljen.com/author/alen/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ALEN KOMLJEN&lt;/a&gt; 2018年1月28日，阅读时间4分钟&lt;/p&gt;
+&lt;p&gt;几个月前我同事问起我对于如何集成&lt;a href=&#34;https://linkerd.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt;到我们新的运行在&lt;a href=&#34;https://akomljen.com/tag/kubernetes/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;应用里面有什么想法。我的第一反应是，嘿，难道Kubernetes服务和&lt;a href=&#34;https://akomljen.com/tag/ingress/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress&lt;/a&gt;还不够么？你能够基于它们做很多事情了。再考虑服务网格的话似乎有点过度设计。通常你有一些API只对内部网络开放，然而对于现在流行的应用来说，这并不够。API通常暴露在互联网上并且也有非常大的流量。你需要在流量上有更多的控制。甚至你还需要做API版本化，做金丝雀部署，观察并记录每一个请求。这就引入了服务网格。无论你用&lt;a href=&#34;https://linkerd.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd&lt;/a&gt;或是&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;，原理上都是一样的。&lt;/p&gt;
+&lt;h2 id=&#34;为什么要用服务网格&#34;&gt;为什么要用服务网格？&lt;/h2&gt;
+&lt;p&gt;服务网格并不是和Kubernetes一起出现。然而，因为有Kubernetes，服务网格更容易被引入到你的环境中。有两个逻辑组件组成了服务网格。我们已经有了pod用于承载各个容器。Sidecar是另一个绝好的例子用于扩展和加强pod里面的主要容器。在服务网格语境里，sidecar是服务代理或者数据平面。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;服务网格是云原生的核心组件&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;为了更好的理解服务网格，你需要理解代理和反向代理这两个术语。&lt;strong&gt;代理&lt;/strong&gt;，用一句话说，用于接收流量并中转到其它地方。&lt;strong&gt;反向代理&lt;/strong&gt;，从各个地方接收流量并转交给各个服务。这种情况下，所有的客户只和一个代理实例交流。把数据平面想象为一个反向代理。Ingress也是Kubernetes里面用于暴露服务的反向代理。Ingress可以中止SSL，提供基于名称的路由，并且它主要就干这个事情。对于Kubernetes服务也是一样。如果你需要更复杂的路由该怎么做呢？&lt;/p&gt;
+&lt;p&gt;下面列举一些其它服务网格可以做的事情：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;负载均衡&lt;/li&gt;
+&lt;li&gt;精细流量策略&lt;/li&gt;
+&lt;li&gt;服务发现&lt;/li&gt;
+&lt;li&gt;服务监控&lt;/li&gt;
+&lt;li&gt;追踪&lt;/li&gt;
+&lt;li&gt;路由&lt;/li&gt;
+&lt;li&gt;服务与服务的安全通信&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;不仅有sidecar代理，所有的服务网格解决方案还包含控制器，用于定义sidecar容器应该如何工作。服务网格的控制平面是一个集中的、管理所有的服务网格和服务代理的地方。这个控制面板记录网络信息，所以它也是一个网络监控工具。&lt;/p&gt;
+&lt;p&gt;所以，为什么要用服务网格？答案很简单，你可以做上面的任何事情并且不需要修改代码。它能够节省时间与金钱。不仅如此，更重要的是，你不能跳过测试，因为它对于初学者太复杂。甚至你可以通过&lt;a href=&#34;https://istio.io/docs/concepts/traffic-management/#fault-injection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio故障注入&lt;/a&gt;模拟不同的场景，来测试系统对于失败的反应。&lt;/p&gt;
+&lt;h2 id=&#34;linkerd2与istio&#34;&gt;Linkerd2与Istio&lt;/h2&gt;
+&lt;p&gt;在一开始，我提到过两个在Kubernetes上创建服务网格的著名的解决方案。未来也许还会有其它更多的解决方案。每一个产品都试图用自己的方式解决问题，相互之间肯定会有重复的地方。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://buoyant.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Buoyant&lt;/a&gt;，这家公司创造了Linkerd，同时还创造了Conduit服务。近期，Conduit被合并到Linkerd项目，称作&lt;strong&gt;Linkerd2&lt;/strong&gt;。buoyant团队把Linkerd服务网格变成了一个更加通用的解决方案。它用Java编写，这意味着它很重。每一个pod会有一个或更多的容器，一个sidecar。&lt;a href=&#34;https://linkerd.io/2/overview/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Linkerd2&lt;/a&gt;设计应用于Kubernetes。它的开发语言包含Go-控制平面，和Rust-一个原生的服务代理，超级轻量、快速并安全。你可以定义重试和超时，定义编排规则，以及加密（TLS），同时还支持根据策略通过或拒绝请求。不仅如此，它还有一个很漂亮的控制台：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-linkerd2_dashboard&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;linkerd2_dashboard&#34; srcset=&#34;
+               /blog/kubernetes-service-mesh/empty-dashboard_huef9d4fe4b242977bcb5aa803f9c40a5d_70290_3dd62834e92fe5e3dd925402c7b965b5.webp 400w,
+               /blog/kubernetes-service-mesh/empty-dashboard_huef9d4fe4b242977bcb5aa803f9c40a5d_70290_60281f013c36f181dc57ff36af4b6394.webp 760w,
+               /blog/kubernetes-service-mesh/empty-dashboard_huef9d4fe4b242977bcb5aa803f9c40a5d_70290_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kubernetes-service-mesh/empty-dashboard_huef9d4fe4b242977bcb5aa803f9c40a5d_70290_3dd62834e92fe5e3dd925402c7b965b5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;345&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      linkerd2_dashboard
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果你喜欢控制台的话也可以用&lt;code&gt;linkerd&lt;/code&gt;CLI。&lt;/p&gt;
+&lt;p&gt;Linkerd的&lt;a href=&#34;https://linkerd.io/2/getting-started/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;入门向导&lt;/a&gt;非常不错，你可以试一试。如果想学习更多，可以看看它的&lt;a href=&#34;https://linkerd.io/docs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Istio&lt;/strong&gt;当前支持Kubernetes和&lt;a href=&#34;https://www.nomadproject.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Nomad&lt;/a&gt;，将来会添加更多的功能。Istio是一个多平台解决方案。它可以做微服务流量管理，策略应用以及聚合采样信息。Istio也是Go语言编写的轻量应用，但不同于Linkerd2，它使用&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;来做服务代理。下图说明Istio中各个部分是如何组合工作的:&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio_architecture&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;istio_architecture&#34; srcset=&#34;
+               /blog/kubernetes-service-mesh/arch_hu14653486bea49e2ef37ff19aadf9e3c0_165234_a600a1c13f87d86009d99ddd2a41f06f.webp 400w,
+               /blog/kubernetes-service-mesh/arch_hu14653486bea49e2ef37ff19aadf9e3c0_165234_47ad8ccc6fc956acde84a367b14193fd.webp 760w,
+               /blog/kubernetes-service-mesh/arch_hu14653486bea49e2ef37ff19aadf9e3c0_165234_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kubernetes-service-mesh/arch_hu14653486bea49e2ef37ff19aadf9e3c0_165234_a600a1c13f87d86009d99ddd2a41f06f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;699&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      istio_architecture
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我喜欢Istio的其中一点是&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/sidecar-injection.html#automatic-sidecar-injection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sidecar自动注入&lt;/a&gt;，前提是你已经使用&lt;a href=&#34;https://akomljen.com/package-kubernetes-applications-with-helm/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Helm&lt;/a&gt;来发布应用，这样的话就不需要手工把sidecar注入到kubernetes的配置文件里面。&lt;/p&gt;
+&lt;p&gt;在Kubernetes上安装Istio请参考&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/quick-start.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这篇快速指南&lt;/a&gt;。其它关于Istio的信息，请参考它的&lt;a href=&#34;https://istio.io/docs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这两个产品都是开源的。无论哪一个服务网格方式适合你，它们两个都很容易上手实验。不超过5分钟就可以把它跑起来。我鼓励你都去试一试然后再做决定。目前阶段Istio实现的功能比Linkerd2多了很多，并且也是一个稳定版本。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;我希望这篇文章很好的介绍了服务网格。这篇文章并不是Linkerd2和Istio之间的比较。我列举了一些功能点，这样你可以了解一下服务网格给Kubernetes带来了什么。请继续关注我们的后续文章。&lt;/p&gt;
 </description>
     </item>
     
@@ -15893,6 +17198,249 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;同时对于Istio这个产品发展的现状，作者给出了一定的担心，即目前Istio团队，发布的产品API稳定性太不稳定，不向后兼容，很多API全部改写。另一方面在发布质量上也出现过比较大的问题，造成了版本回退，发布延期等问题。同时Istio组件目前本身也有着一些瓶颈与问题如Mixer的复杂性与高成本学习，Pilot的性能瓶颈，SideCar的性能消耗。以上这些都有待Istio团队去解决。&lt;/p&gt;
 &lt;p&gt;最后整体来看，对于Istio，我个人认为Istio目前的发展状况在ServiceMesh领域中还并没有像K8S取得事实胜利，可能Istio也有可能步Linkerd的后路，为未来的产品开路和经验，但是ServiceMesh这条路无疑是正确的，我也会继续关注ServiceMesh和istio在2019年新的表现。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>通过自定义Istio Mixer Adapter在JWT场景下实现用户封禁</title>
+      <link>https://cloudnative.to/blog/using-istio-mixer-adapter-to-check-jwt/</link>
+      <pubDate>Mon, 18 Feb 2019 10:16:59 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/using-istio-mixer-adapter-to-check-jwt/</guid>
+      <description>&lt;p&gt;互联网服务离不开用户认证。JSON Web Token(后简称JWT)是一个轻巧，分布式的用户授权鉴权规范。和过去的session数据持久化的方案相比，JWT有着分布式鉴权的特点，避免了session用户认证时单点失败引起所有服务都无法正常使用的窘境，从而在微服务架构设计下越来越受欢迎。然而JWT单点授权，分布鉴权的特点也给我们带来了一个问题，即服务端无法主动回收或者BAN出相应的Token，使得即使某个服务主动封禁了一个用户时，这个用户同样可以使用之前的JWT来从其他服务获取资源。本文我们将阐述利用Istio Mixer Adapter的能力，来将所有请求在服务网格的入口边缘层进行JWT检查的例子，从而实现用户封禁与主动逐出JWT等功能。&lt;/p&gt;
+&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;在我之前的&lt;a href=&#34;http://www.servicemesher.com/blog/practice-for-coohom-using-istio-in-production/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;投稿&lt;/a&gt;中，描绘了一个非常简单的基于K8S平台的业务场景，在这里我们将会基于这个场景来进行讨论。
+对于一个简单的微服务场景，我们有着三个服务在Istio服务网格中管理。同时集群外的请求将会通过nginx-ingress转发给istio-ingressgateway以后，通过Istio VirtualService的HTTPRoute的能力转发给对应的服务，这里不再赘述。&lt;/p&gt;
+&lt;p&gt;从下图的架构模式中，我们可以看到所有的请求在进入网格时，都会通过istio-ingressgateway这个边缘节点，从而涌现出了一个非常显而易见的想法，即如果我们在所有的请求进入服务网格边缘时，进行特定的检查与策略，那么我们就能将某些不符合某种规则的请求拒绝的网格之外，比如那些携带被主动封禁JWT的HTTP请求。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07dm5m93jj30wa0k2wg9_hud82922e9677ae63de60ec0febbe1066a_45441_24c49002b462d4a738e58b250c052c63.webp 400w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07dm5m93jj30wa0k2wg9_hud82922e9677ae63de60ec0febbe1066a_45441_958d257c1488e2d59764f7c71a200bad.webp 760w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07dm5m93jj30wa0k2wg9_hud82922e9677ae63de60ec0febbe1066a_45441_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07dm5m93jj30wa0k2wg9_hud82922e9677ae63de60ec0febbe1066a_45441_24c49002b462d4a738e58b250c052c63.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;429&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;了解istio-mixer&#34;&gt;了解Istio Mixer&lt;/h2&gt;
+&lt;p&gt;为了达到我们上述的目的，我们首先需要了解一下&lt;a href=&#34;https://istio.io/docs/concepts/policies-and-telemetry/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Mixer&lt;/a&gt;这个网格控制层的组件。
+Istio Mixer 提供了一个适配器模型，它允许我们通过为Mixer创建用于外部基础设施后端接口的处理器来开发适配器。Mixer还提供了一组模版,每个模板都为适配器提供了不同的元数据集。在我们的场景下，我们将使用&lt;a href=&#34;https://istio.io/docs/reference/config/policy-and-telemetry/templates/authorization/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Auhtorization&lt;/a&gt;模板来获取我们每个请求中的元数据，然后通过Mixer check的模式来将在HTTP请求通过istio-ingressgateway进入服务网格前，通过Mixer Adapter来进行检查。&lt;/p&gt;
+&lt;p&gt;在Istio Mixer的&lt;a href=&#34;https://istio.io/docs/concepts/policies-and-telemetry/#reliability-and-latency&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;描述&lt;/a&gt;中，我们可以发现每个请求在到达数据层时，都会向Mixer做一次check操作，而当请求结束后则会向Mixer做一次report操作。在我们的场景中，我们将会在请求到达istio-ingressgateway时检查这个请求中的JWT鉴权，通过JWT的Payload中的信息来决定是否要将请求放行进入网格内部。&lt;/p&gt;
+&lt;p&gt;得益于Mixer强大的扩展能力，我们将通过经典的Handler-Instances-Rule适配模型来一步步展开，同时也意味着我们将要编写一个自定义的Istio Mixer Adapter。&lt;/p&gt;
+&lt;h2 id=&#34;mixer适配模型&#34;&gt;Mixer适配模型&lt;/h2&gt;
+&lt;p&gt;那么怎么通俗易懂的理解Handler-Instances-Rule这三者的关系呢？在我的理解下，当每个请求在服务网格的数据层中游走时，都会在开始与结束时带上各种元信息向Mixer组件通信。而Mixer组件则会根据Rule来将&lt;strong&gt;特定的请求&lt;/strong&gt;中的&lt;strong&gt;特定的数据&lt;/strong&gt;交给&lt;strong&gt;特定的处理器&lt;/strong&gt;去检查或者是记录。那么对于&lt;strong&gt;特定的请求&lt;/strong&gt;，则是通过Rule去决定；对于&lt;strong&gt;特定的数据&lt;/strong&gt;，则是通过Instances去决定；对于&lt;strong&gt;特定的处理器&lt;/strong&gt;，则是通过Handler去决定。最终Rule还把自己与Instances和Handler绑定在一起，从而让Mixer理解了将哪些请求用哪些数据做哪些处理。
+在这里我们可以通过&lt;a href=&#34;https://istio.io/docs/tasks/policy-enforcement/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio Policies Task&lt;/a&gt;中的&lt;a href=&#34;https://istio.io/docs/tasks/policy-enforcement/denial-and-list/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;黑白名单机制&lt;/a&gt;来理解一下这个模型。&lt;/p&gt;
+&lt;p&gt;在这里&lt;strong&gt;appversion.listentry&lt;/strong&gt;作为Instances，通过将&lt;strong&gt;list entry&lt;/strong&gt;作为模版，获取了每个请求中的source.labels[&amp;ldquo;version&amp;rdquo;]的值，即&lt;strong&gt;特定的数据&lt;/strong&gt;。&lt;strong&gt;whitelist.listchecker&lt;/strong&gt;作为handler，则是告诉了背后的处理器作为白名单模式只通过数据是v1与v2的请求，即&lt;strong&gt;特定的处理器&lt;/strong&gt;。最后&lt;strong&gt;checkversion.rule&lt;/strong&gt;作为rule，将&lt;strong&gt;appversion.listentry&lt;/strong&gt;和&lt;strong&gt;whitelist.listchecker&lt;/strong&gt;两者绑定在一起，并通过match字段指明哪些请求会经过这些处理流程，即&lt;strong&gt;特定的请求&lt;/strong&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;## instances&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;config.istio.io/v1alpha2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;listentry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;appversion&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;source.labels[&amp;#34;version&amp;#34;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## handler&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;config.istio.io/v1alpha2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;listchecker&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;whitelist&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# providerUrl: ordinarily black and white lists are maintained&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# externally and fetched asynchronously using the providerUrl.&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;overrides&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;v1&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;v2&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# overrides provide a static list&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;blacklist&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## rule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;config.istio.io/v1alpha2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;checkversion&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;destination.labels[&amp;#34;app&amp;#34;] == &amp;#34;ratings&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;actions&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;whitelist.listchecker&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;instances&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;appversion.listentry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;jwt-check-的架构设计&#34;&gt;JWT Check 的架构设计&lt;/h2&gt;
+&lt;p&gt;当我们理解了以上的Mixer扩展模型以后，那么对于我们在文章开头中的JWT封禁需求的Handler-Instances-Rule的模型就非常显而易见了。在我们的场景下，我们需要将所有带有JWT并且从istio-ingressgateway准备进入网格边缘的请求作为我们&lt;strong&gt;特定的请求&lt;/strong&gt;，然后从每个请求中，我们都要获取request.Header[&amp;ldquo;Authorization&amp;rdquo;]这个值来作为我们&lt;strong&gt;特定的数据&lt;/strong&gt;，最后我们通过&lt;strong&gt;特定的处理器&lt;/strong&gt;来解析这个数据，并在处理器中通过自定义的策略来决定这个请求是否通过。&lt;/p&gt;
+&lt;p&gt;当我们搞清楚了这么一个模型以后，那么之后的问题就一下子迎刃而解了。在我们的设计中，我们将要自定义一个JWTAdapter服务来作为&lt;strong&gt;特定的处理器&lt;/strong&gt;，JWTAdapter将会通过HTTP通信把数据转交给Adapter-Service来让Adapter-Service来判断这个请求是否合法，而Adapter-Service的凭证则是通过与业务服务的通信所决定。&lt;/p&gt;
+&lt;p&gt;在我们的场景中，假设每个请求所携带的JWT的Payload中有一个email属性来作为用户的唯一标识，当业务领域中的账户服务决定封禁某个用户时，他将会通知Adapter-Service，后者将会把这个信息存于某个数据持久服务中，比如Redis服务。当JWT-Adapter服务向Adapter-Service服务询问这个请求是否合法时，Adapter-Service将会通过Payload中Email属性在Redis中查询，如果查询到对应的数据，则代表这个用户被封禁，即这个请求不予通过，反之亦然。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07jnrkcu5j30qm0awgm5_huab5842d2dd430ca631f79331f46a53fe_24181_df8c3fff495ab0a4168781e84ea1affa.webp 400w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07jnrkcu5j30qm0awgm5_huab5842d2dd430ca631f79331f46a53fe_24181_59522005cf5b6e82b2331bd3e509c4f1.webp 760w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07jnrkcu5j30qm0awgm5_huab5842d2dd430ca631f79331f46a53fe_24181_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07jnrkcu5j30qm0awgm5_huab5842d2dd430ca631f79331f46a53fe_24181_df8c3fff495ab0a4168781e84ea1affa.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;282&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;如何自定义编写一个adapter&#34;&gt;如何自定义编写一个Adapter？&lt;/h2&gt;
+&lt;p&gt;说实话，自定义编写Adapter是一个上手门槛较为陡峭的一件事情。我在这里因为篇幅原因不能完全一步步细说自定义Adapter的步骤。在这里我推荐对自定义编写Adapter有兴趣的人可以根据官网的&lt;a href=&#34;https://github.com/istio/istio/wiki/Mixer-Out-Of-Process-Adapter-Dev-Guide&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自定义Mixer Adapter开发指南&lt;/a&gt;和&lt;a href=&#34;https://github.com/istio/istio/wiki/Mixer-Out-Of-Process-Adapter-Walkthrough&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自定义Mixer Adapter详细步骤&lt;/a&gt;来进行学习和尝试。在这里我给出在我的JWT-Adapter中的关键函数来进行描述。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;s&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;JwtAdapter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;HandleAuthorization&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ctx&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;r&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;authorization&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;HandleAuthorizationRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v1beta1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;CheckResult&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;error&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Infof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;received request %v\n&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;r&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;props&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;decodeValueMap&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;r&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Instance&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Subject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Properties&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Authorization&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;props&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;custom_token_auth&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;].(&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;Authorization&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;props&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;custom_token_auth&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// 没有获取到JWT,直接将请求放行
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;		&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v1beta1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;CheckResult&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;OK&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;cookie&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;props&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;custom_request_cookie&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;host&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;props&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;custom_request_host&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;host&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;www.example.com&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;url&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;userService&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;/check&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;GET&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      &lt;span class=&#34;c1&#34;&gt;//出现异常时，直接将请求放行
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;			&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v1beta1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;CheckResult&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;OK&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Content-Type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;application/json; charset=utf-8&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;cookie&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;cookie&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.(&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Header&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Add&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Authorization&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;Authorization&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.(&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// 发送请求给Adapter-Service
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;		&lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;_&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Do&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;request&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;StatusCode&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;StatusOK&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ioutil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;ReadAll&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;response&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt; &lt;span class=&#34;c1&#34;&gt;//如果有异常
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;        &lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Infof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;c1&#34;&gt;//记录异常即刻
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;			&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Infof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;success to get response from adapter-service&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;value&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;nx&#34;&gt;json&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Unmarshal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;body&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;pass&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;==&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;false&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;					&lt;span class=&#34;c1&#34;&gt;//当用户确实返回处于封禁状态中时，才返回封禁结果
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;					&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v1beta1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;CheckResult&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;						&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;WithPermissionDenied&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Banned&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;					&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Infof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;jwtadapter don&amp;#39;t have enough reason to reject this request&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;v1beta1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;CheckResult&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;status&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;OK&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;},&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过以上描述可以发现的是，在我们的场景下，我们当且仅当从Adapter-Service中确实得到了不允许通过的结果才将这个请求进行拒绝处理，而对其他情况一律进行了放行处理，即使发生了某些错误与异常。由于我们的错误处理会直接影响到这些请求能否在网格中通行，所在做Istio Mixer Check时需要时刻记住的到底是放行特定的请求，还是拒绝特定的请求，在这一点处理上需要十分谨慎与小心。&lt;/p&gt;
+&lt;h2 id=&#34;handler-instances-rule&#34;&gt;Handler-Instances-Rule&lt;/h2&gt;
+&lt;p&gt;当我们将自己的Adapter上线以后，我们只要通过声明我们得的Mixer扩展模型让Mixer识别这个Adapter并且正确处理我们想要的请求即可。这里我们再回顾一下我们之前所提到的&lt;strong&gt;特定的请求&lt;/strong&gt;，&lt;strong&gt;特定的数据&lt;/strong&gt;，&lt;strong&gt;特定的处理器&lt;/strong&gt;。
+对于特定的请求，我们需要将网格边缘的请求筛选出来，所以我们可以通过host是www.example.com并且携带了JWT作为条件将请求筛选出来。对于特定的数据，我们选用authorization作为模版，取出header中的JWT数据，最后通过&lt;strong&gt;特定的处理器&lt;/strong&gt;，将这个check请求交给jwt-adapter。至此，我们通过Istio Mixer Aadapter来进行JWT封禁的需求场景算是基本完成了。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# handler adapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;config.istio.io/v1alpha2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;h1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;adapter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jwtadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;[::]:44225&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## instances&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;config.istio.io/v1alpha2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;instance&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;icheck&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;authorization&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;params&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;     &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;properties&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;       &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;custom_token_auth&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;request.headers[&amp;#34;Authorization&amp;#34;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# rule to dispatch to handler h1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;config.istio.io/v1alpha2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;r1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;( match(request.headers[&amp;#34;Authorization&amp;#34;],&amp;#34;Bearer*&amp;#34;) == true ) &amp;amp;&amp;amp; ( match(request.host,&amp;#34;*.com&amp;#34;) == true )&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;actions&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;h1.istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;instances&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;icheck&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;扩展阅读&#34;&gt;扩展阅读&lt;/h2&gt;
+&lt;h3 id=&#34;网格边缘层验证jwt的可行性&#34;&gt;网格边缘层验证JWT的可行性？&lt;/h3&gt;
+&lt;p&gt;既然在网格边缘层能对JWT进行检查，那么能否可以做成在网格边缘层同时也进行JWT的验证？&lt;/p&gt;
+&lt;p&gt;答： 在我最初做Mixer Check时确实想到过这件事情，并且无独有偶，在&lt;a href=&#34;https://medium.com/plangrid-technology/custom-user-authentication-in-istio-67c90458b093&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PlanGrid在Istio中的用户鉴权实践&lt;/a&gt;这篇文章中，PlanGrid通过EnvoyFilter实现了在网格边缘层进行JWT以及其他鉴权协议的鉴权。但对此我的看法是，对于JWT鉴权的场景，我并不推荐这么做。因为微服务场景中，我们使用JWT的初衷就是为了分布式鉴权来分散某个服务的单点故障所带来的鉴权层的风险。当我们将用户鉴权再一次集中在网格边缘时，我们等于再一次将风险集中在了网格边缘这个单点。一旦istio-ingressgateway挂了，那么背后所有暴露的API服务将毫无防备，所以鉴权必须放在每个微服务内。另一方面，在我的&lt;a href=&#34;https://yisaer.github.io/2019/02/01/read-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;《深入浅出istio》读后感&lt;/a&gt;中提到，对于生产环境使用Istio，必须拥有一套备用的不使用Istio的环境方案，这意味着当Istio出现故障时，可以立即通过切换不使用Istio的备用环境来继续提供服务。这同时意味着Istio所提供的能力与服务不应该与业务服务所强绑定在一起，这也是为什么我在上文中将Jwt-Adapter与后面的Adapter-Service成为插件服务的原因。JWT封禁用户这个能力对我们就像一个插件一样，即装即用。即使当我们切换为备用环境时无法使用Istio，暂时失去用户封禁这个能力在我们的产品层面也完全可以接受，但对于用户鉴权则不可能。所以这意味着当我们使用Istio的能力时，一定要时刻想清楚当我们失去Istio时我们该如何应对。&lt;/p&gt;
+&lt;h2 id=&#34;关于作者&#34;&gt;关于作者&lt;/h2&gt;
+&lt;p&gt;高松，从去年毕业以后一直对服务网格与CloudNative领域充满兴趣，在工作中使用Istio在生产环境中也将近有了半年多的时间，写作分享则是平时的业余爱好之一。如果你对服务网格或者是CloudNative领域有兴趣，或者是对我的技术文章写作有想法与建议的话，欢迎联系我交流。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Yisaer&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github&lt;/a&gt; &lt;a href=&#34;https://yisaer.github.io/atom.xml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;博客RSS订阅&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07ln0lyk5j307e07974r_hu3601e9ce41ad14428c18a9c992de43b6_31716_8203574a50878523c9cbca9e6569a051.webp 400w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07ln0lyk5j307e07974r_hu3601e9ce41ad14428c18a9c992de43b6_31716_38efc8e059d41d655bf0b34588c7ebde.webp 760w,
+               /blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07ln0lyk5j307e07974r_hu3601e9ce41ad14428c18a9c992de43b6_31716_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/using-istio-mixer-adapter-to-check-jwt/007pL7qRgy1g07ln0lyk5j307e07974r_hu3601e9ce41ad14428c18a9c992de43b6_31716_8203574a50878523c9cbca9e6569a051.webp&#34;
+               width=&#34;266&#34;
+               height=&#34;261&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
 </description>
     </item>
     
@@ -18208,6 +19756,348 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;p&gt;徐运元 谐云科技云平台架构师，致力于容器 PaaS 平台、企业级容器云平台的方案设计和技术落地&lt;/p&gt;
 &lt;h4 id=&#34;envoycontour与kubernetes实践&#34;&gt;Envoy、Contour与Kubernetes实践&lt;/h4&gt;
 &lt;p&gt;冯玮 七牛容器云平台产品架构师，曾在百度和华为从事公有云领域高性能分布式计算和存储平台的架构设计和产品研发&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>为什么要选择Service Mesh？</title>
+      <link>https://cloudnative.to/blog/why-is-service-mesh/</link>
+      <pubDate>Thu, 08 Nov 2018 15:20:46 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/why-is-service-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/@tak2siva/why-is-service-mesh-8ebcd6ed9eb5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;除非你长期与世隔绝，否则你应该听说过Kubernetes，他已经称为高速发展的互联网公司的一条准则。最近又有一个热门话题&amp;ndash;Service Mesh（服务网格），它已经被这些高速发展公司用来解决一些特定的问题。所以如果你想了解什么是Service Mesh，接下来我可以给你一个更好的解释。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0r3hzbzlj20zk0ilnmj_hud55b831f5582dfa7e138f15673b87449_76045_c5ca66a428b15fa912f9173ee94d89f9.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0r3hzbzlj20zk0ilnmj_hud55b831f5582dfa7e138f15673b87449_76045_f1b4d588fb6d2850fc70df103ac2d21e.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0r3hzbzlj20zk0ilnmj_hud55b831f5582dfa7e138f15673b87449_76045_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0r3hzbzlj20zk0ilnmj_hud55b831f5582dfa7e138f15673b87449_76045_c5ca66a428b15fa912f9173ee94d89f9.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;361&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;互联网应用的演进&#34;&gt;互联网应用的演进&lt;/h2&gt;
+&lt;p&gt;为了理解Sevice Mesh的重要性，我们通过四个阶段来简短的回顾下互联网应用的发展历程。&lt;/p&gt;
+&lt;h3 id=&#34;阶段0单体应用&#34;&gt;阶段0：单体应用&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0r9265r7j208s06omxs_hu9bdf3d0877323bc8d2349c5fd4e8abac_15558_522eef42506d8369496b2a6832c3dce5.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0r9265r7j208s06omxs_hu9bdf3d0877323bc8d2349c5fd4e8abac_15558_3f8e819a6fba56c3916d51912626faeb.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0r9265r7j208s06omxs_hu9bdf3d0877323bc8d2349c5fd4e8abac_15558_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0r9265r7j208s06omxs_hu9bdf3d0877323bc8d2349c5fd4e8abac_15558_522eef42506d8369496b2a6832c3dce5.webp&#34;
+               width=&#34;316&#34;
+               height=&#34;240&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;还记得那些年吗？所有的代码库都打包成一个可执行和部署的软件包。当然，至今在某些使用场景下这个方式依然是很管用的。但是对于一些业务快速增长的互联网公司，在应用的可扩展性、快速部署和所有权等方面遇到了阻力。&lt;/p&gt;
+&lt;h3 id=&#34;阶段1微服务&#34;&gt;阶段1：微服务&lt;/h3&gt;
+&lt;p&gt;微服务的思思想很简单，依照SLA（服务等级协议）将单体应用拆分成多个模块。这种方式运行效果显著，所以广泛为企业所接受。现在，每个团队都用他们喜爱的语言、框架等自由地设计他们的微服务。然后它开始看起来就像下面这样。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0si4ef85j218g0n4tde_hu8205f46289cc7bd369f9ae5a5fcc7262_40992_debda5a4356328d2afebe038633a8373.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0si4ef85j218g0n4tde_hu8205f46289cc7bd369f9ae5a5fcc7262_40992_ea3ea21f793939e145cf863be6c75385.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0si4ef85j218g0n4tde_hu8205f46289cc7bd369f9ae5a5fcc7262_40992_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0si4ef85j218g0n4tde_hu8205f46289cc7bd369f9ae5a5fcc7262_40992_debda5a4356328d2afebe038633a8373.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;359&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们曾经在我的一个项目中开玩笑说，那里有各种语言的微服务:)&lt;/p&gt;
+&lt;p&gt;尽管微服务解决了单体应用的一些问题，但现在公司有一些严重问题。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;为每个微服务定义VM（虚拟机）规范&lt;/li&gt;
+&lt;li&gt;维护系统级别依赖操作系统版本、自动化工具（如chef）等&lt;/li&gt;
+&lt;li&gt;监控每个服务&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;对负责构建和部署的人来说这就是一个噩梦。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0vg3ks7aj20dc07iq53_hub770418f0944ad10207ebd1ea1616973_40544_c6091c2f62d145d24bb15ea94eea020e.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0vg3ks7aj20dc07iq53_hub770418f0944ad10207ebd1ea1616973_40544_a4112f33d9a3829c893660a369d3df6c.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0vg3ks7aj20dc07iq53_hub770418f0944ad10207ebd1ea1616973_40544_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0vg3ks7aj20dc07iq53_hub770418f0944ad10207ebd1ea1616973_40544_c6091c2f62d145d24bb15ea94eea020e.webp&#34;
+               width=&#34;480&#34;
+               height=&#34;270&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;而且这些服务在虚拟机中共享同一个OS，但为了达到可移植性，服务之间需要隔离或者被封装到独立的VM镜像。微服务典型的架构设计如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0vt7d9woj218g0n4tc3_hu889809897dfe8ee74a65b98ccc3e0bdb_41261_b6940cf71bf597e751489545895d7eef.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0vt7d9woj218g0n4tc3_hu889809897dfe8ee74a65b98ccc3e0bdb_41261_a09c5e9a16b01aecacc5db4899cb32c7.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0vt7d9woj218g0n4tc3_hu889809897dfe8ee74a65b98ccc3e0bdb_41261_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0vt7d9woj218g0n4tc3_hu889809897dfe8ee74a65b98ccc3e0bdb_41261_b6940cf71bf597e751489545895d7eef.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;359&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;但为每个服务/副本安装在一台独立的虚拟机上，花费是非常高的。&lt;/p&gt;
+&lt;h3 id=&#34;阶段2容器化&#34;&gt;阶段2：容器化&lt;/h3&gt;
+&lt;p&gt;容器是利用Linux中的 &lt;a href=&#34;https://en.wikipedia.org/wiki/Cgroups&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;cgroups&lt;/a&gt; 和 &lt;a href=&#34;https://en.wikipedia.org/wiki/Linux_namespaces&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;namespace&lt;/a&gt; 的一种新的操作系统级别的虚拟化技术，通过共享主机的操作系统，实现为不同的应用隔离运行环境的。Docker是目前最流行的容器运行时。&lt;/p&gt;
+&lt;p&gt;所以我们会为每个微服务创建一个容器镜像并以容器形式发布成服务。这样不仅可以在一个操作系统上实现应用运行环境的隔离，而且启动新的容器相比于启动新的VM速度更快、成本也更低！使用容器技术之后的微服务设计看起来就像这样。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx0wzyguoej218g0n4ju8_hu9f1fea6c49976a86d8428c6979038e57_37436_3a2104da64a27d390481d0a73c2ae5ba.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx0wzyguoej218g0n4ju8_hu9f1fea6c49976a86d8428c6979038e57_37436_10e3e2bc8b4a6080b40ff8c9e28c19e8.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx0wzyguoej218g0n4ju8_hu9f1fea6c49976a86d8428c6979038e57_37436_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx0wzyguoej218g0n4ju8_hu9f1fea6c49976a86d8428c6979038e57_37436_3a2104da64a27d390481d0a73c2ae5ba.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;359&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;容器化解决了构建和部署的问题，但还没有完美的监控解决方案！那要怎么办？我们还有其他问题吗？管理容器！&lt;/p&gt;
+&lt;p&gt;使用容器运行一个可靠的基础设施层需要注意以下几个重要的点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;容器的可用性&lt;/li&gt;
+&lt;li&gt;生成容器&lt;/li&gt;
+&lt;li&gt;扩容/缩容&lt;/li&gt;
+&lt;li&gt;负载均衡&lt;/li&gt;
+&lt;li&gt;服务发现&lt;/li&gt;
+&lt;li&gt;调度容器到多个主机&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;阶段3容器编排&#34;&gt;阶段3：容器编排&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx1kwi5nvpj205t05o74e_hu1abb2448305a3a83b7fe915c01cb3c68_19503_9add1d2db74dbc8378302949a1908878.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx1kwi5nvpj205t05o74e_hu1abb2448305a3a83b7fe915c01cb3c68_19503_1c91d81d782f8d0d7fdf24ff5bfdff72.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx1kwi5nvpj205t05o74e_hu1abb2448305a3a83b7fe915c01cb3c68_19503_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx1kwi5nvpj205t05o74e_hu1abb2448305a3a83b7fe915c01cb3c68_19503_9add1d2db74dbc8378302949a1908878.webp&#34;
+               width=&#34;209&#34;
+               height=&#34;204&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Kubernetes是当下最流行的容器编排工具，它彻底改变了我们对基础设施的看法。Kubernetes侧重于健康检查，可用性，负载均衡，服务发现，扩展性，跨主机调度容器等等，很神奇！&lt;/p&gt;
+&lt;p&gt;我们要的就是这样吗？&lt;/p&gt;
+&lt;p&gt;并不完全是，仅仅这样还不能解决在微服务阶段提到的服务监控/观测的问题。这只是冰山一角。微服务是分布式的，所以管理微服务不是件容易的事。&lt;/p&gt;
+&lt;p&gt;我们需要考虑一些最佳实践来便捷地运行微服务。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Metrics（延迟，成功率等）&lt;/li&gt;
+&lt;li&gt;分布式链路追踪&lt;/li&gt;
+&lt;li&gt;客户端负载均衡&lt;/li&gt;
+&lt;li&gt;熔断&lt;/li&gt;
+&lt;li&gt;流量迁移&lt;/li&gt;
+&lt;li&gt;限速&lt;/li&gt;
+&lt;li&gt;访问日志&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;像Netflix这样的公司已经推出了几种工具，并接受了那些运行微服务的做法。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Netflix Spectator（Metrics）&lt;/li&gt;
+&lt;li&gt;Netflix Ribbon（客户端负载均衡/服务发现）&lt;/li&gt;
+&lt;li&gt;Netflix Hystrix（熔断器）&lt;/li&gt;
+&lt;li&gt;Netflix Zuul（边界路由）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;现在，为了满足这些最佳实践的唯一方法是在每个微服务上使用一个客户端库来解决每个问题。所以每个服务的结构看起来就像这样。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx1ojjkrfuj212g0fymz5_hu93446704dcc11e0cc328516462a5b191_29350_a48f8502b90866db6ac87f6078c90e8e.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx1ojjkrfuj212g0fymz5_hu93446704dcc11e0cc328516462a5b191_29350_1f826532cd3cd49666cb7fd0b9b34dd7.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx1ojjkrfuj212g0fymz5_hu93446704dcc11e0cc328516462a5b191_29350_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx1ojjkrfuj212g0fymz5_hu93446704dcc11e0cc328516462a5b191_29350_a48f8502b90866db6ac87f6078c90e8e.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;286&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;但这是针对像Service A这样的用JAVA写的服务，那其他的服务要怎么办？
+如果我使用其他语言没有类似java的库要怎么办？
+怎样才能让所有团队使用/维护/升级库版本？
+我们公司有上百个服务，我要修改所有应用都使用上面的库吗？&lt;/p&gt;
+&lt;p&gt;发现了吗？自微服务诞生以来，这些一直都是个问题（语言限制、应用代码改造）。&lt;/p&gt;
+&lt;h3 id=&#34;阶段4服务网格&#34;&gt;阶段4：服务网格&lt;/h3&gt;
+&lt;p&gt;目前有多种代理为Service Mesh提供解决方案，如：&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;、Linkerd和Nginx。本文只关注Envoy的Service Mesh。&lt;/p&gt;
+&lt;p&gt;Envoy是针对微服务产生的这些问题设计出来的服务代理。&lt;/p&gt;
+&lt;p&gt;Envoy能够作为 &lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SideCar&lt;/a&gt; 运行在每个应用的旁边，形成抽象的应用网络。当基础设施中的所有服务流量通过Envoy网格流动时，通过一致的可观察性来问题区域变得容易。&lt;/p&gt;
+&lt;p&gt;如下图所示，当把Envoy作为SideCar添加到服务后，所有微服务的入站和出站流量都通过各自的Envoy代理&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/why-is-service-mesh/7267315bgy1fx1t3tisq1j218g0n4q5x_hu0ed33f8c3ba108950be863d451e9db0c_37649_f7457799018f3aa9f6dc7658c3ed485f.webp 400w,
+               /blog/why-is-service-mesh/7267315bgy1fx1t3tisq1j218g0n4q5x_hu0ed33f8c3ba108950be863d451e9db0c_37649_deb8afe7642f544a0cd0c4a26124e55f.webp 760w,
+               /blog/why-is-service-mesh/7267315bgy1fx1t3tisq1j218g0n4q5x_hu0ed33f8c3ba108950be863d451e9db0c_37649_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/why-is-service-mesh/7267315bgy1fx1t3tisq1j218g0n4q5x_hu0ed33f8c3ba108950be863d451e9db0c_37649_f7457799018f3aa9f6dc7658c3ed485f.webp&#34;
+               width=&#34;690&#34;
+               height=&#34;359&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Envoy拥有许多方便的功能&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;支持HTTP,HTTP/2和gRPC&lt;/li&gt;
+&lt;li&gt;健康检查&lt;/li&gt;
+&lt;li&gt;负载均衡&lt;/li&gt;
+&lt;li&gt;Metrics&lt;/li&gt;
+&lt;li&gt;追踪&lt;/li&gt;
+&lt;li&gt;访问日志&lt;/li&gt;
+&lt;li&gt;熔断&lt;/li&gt;
+&lt;li&gt;重试策略&lt;/li&gt;
+&lt;li&gt;超时配置&lt;/li&gt;
+&lt;li&gt;限速&lt;/li&gt;
+&lt;li&gt;支持Statsd、Prometheus&lt;/li&gt;
+&lt;li&gt;流量迁移&lt;/li&gt;
+&lt;li&gt;通过发现服务来动态调整配置（XDS）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;等……&lt;/p&gt;
+&lt;p&gt;所以通过从服务中抽象出整个网络，使用Envoy作为SideCar形成网格组成数据平面，允许我们控制上面列出的能力。&lt;/p&gt;
+&lt;p&gt;欢迎反馈，谢谢！&lt;/p&gt;
 </description>
     </item>
     
@@ -21714,6 +23604,109 @@ TracingRestTemplateInterceptor.java)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;通过一系列的设计改造，最终我们得到了一个轻量的Service Mesh实践，实现了优化灰度发布的目标。在保证了更好的控制变更范围的同时，也能以提供更稳定的服务为最终目的。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio服务网格的崛起</title>
+      <link>https://cloudnative.to/blog/the-rise-of-the-istio-service-mesh/</link>
+      <pubDate>Tue, 12 Jun 2018 15:06:25 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/the-rise-of-the-istio-service-mesh/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://www.infoworld.com/article/3273547/containers/the-rise-of-the-istio-service-mesh.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;如何确保微服务之间网络通信的可靠性、安全性和可管理性？ 使用服务网格吧！&lt;/p&gt;
+&lt;p&gt;在过去一年中，&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;服务网格技术引发关注度和吸引力的持续提升，这是一件非常有趣的事情。 事实上，在我写这篇文章时，Istio仅为0.8版本，但对于最近两届&lt;a href=&#34;https://events.linuxfoundation.org/events/kubecon-cloudnativecon-europe-2018/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;KubeCon/CloudNativeCon&lt;/a&gt;活动而言，它一直是&lt;a href=&#34;https://events.linuxfoundation.org/events/kubecon-cloudnativecon-europe-2018/program/schedule/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热门话题&lt;/a&gt;，仅在丹麦的活动中就有超过十几个不同的活动议题。 那么它为什么会这样受欢迎？&lt;/p&gt;
+&lt;p&gt;在深入研究Istio受欢迎的原因之前，让我们先来介绍一下服务网格。 这是一个通用术语，其早已被投入在多个不同场景中。例如定义不同无线设备之间的通信方法；或者定义一个系统，各个应用程序可以直接通过它与其他应用程序通信。&lt;a href=&#34;https://istio.io/docs/concepts/what-is-istio/overview.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最近&lt;/a&gt;，这个术语被用来表示应用或微服务的网络，以及它们之间的互相作用关系。后者是本文的重点。&lt;/p&gt;
+&lt;p&gt;事实上红帽公司一直参与云原生和微服务领域建设，包括四年前决定将OpenShift向Kubernetes和Docker转变，这帮助我们理解了服务网格技术，尤其是Istio的重要性。本文将探讨为什么我会坚信Istio会很受欢迎的四个原因。&lt;/p&gt;
+&lt;h2 id=&#34;微服务和转型&#34;&gt;微服务和转型&lt;/h2&gt;
+&lt;p&gt;纵观你整个职业生涯，或者结合如今的工作，你可能已经发现从代码完成开发到部署至生产之间的时间不断被延长，以至于开发资源被转移到其他项目，同时也使你的产品反馈周期变得无效或无关紧要。为了缩短交付时间，一些公司决定以功能服务架构或微服务架构来将大型应用拆散，以此提高效率。即曾经具有多种功能的单个应用程序（包）被切分成可独立更新的单个程序包。&lt;/p&gt;
+&lt;p&gt;这当然是有价值的，但同时也要承认，使用这种架构需要对单独的服务和它们之间的接口进行更多的开发治理。例如曾经定义在应用程序内部的一部分API调用关系现在上升在到网络层中。&lt;/p&gt;
+&lt;p&gt;Christian Posta的演讲“&lt;a href=&#34;https://www.slideshare.net/ceposta/the-hardest-part-of-microservices-calling-your-services&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;微服务中最困难的部分：调用你的服务&lt;/a&gt;”谈到了一个重要问题。当调用API时，你可能会认为你在处理A和B之间的直接集成调用（下图1）。然而计算机网络并不会针对直接通信进行优化（下图2）。因此在某些情况，尤其当应用处于你正考虑或使用的云环境中时，你不可避免且不得不考虑这些不同的失控物理和虚拟网络设备。例如，就可能存在这样一种情况：其中一台设备的性能低于最佳性能，这将影响整个应用程序的响应时间（下图3）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-a和b之间的调用关系图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;A和B之间的调用关系图&#34; srcset=&#34;
+               /blog/the-rise-of-the-istio-service-mesh/78a165e1gy1fs7fmkvibwj20jf0dfq40_hua4ac7e4fbdfcb6ee0f980c97f6d86460_49931_8ac83aa3fdd33e48307bb1ef4945a835.webp 400w,
+               /blog/the-rise-of-the-istio-service-mesh/78a165e1gy1fs7fmkvibwj20jf0dfq40_hua4ac7e4fbdfcb6ee0f980c97f6d86460_49931_bc37229f803df0e5330b517fb8c0492b.webp 760w,
+               /blog/the-rise-of-the-istio-service-mesh/78a165e1gy1fs7fmkvibwj20jf0dfq40_hua4ac7e4fbdfcb6ee0f980c97f6d86460_49931_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/the-rise-of-the-istio-service-mesh/78a165e1gy1fs7fmkvibwj20jf0dfq40_hua4ac7e4fbdfcb6ee0f980c97f6d86460_49931_8ac83aa3fdd33e48307bb1ef4945a835.webp&#34;
+               width=&#34;699&#34;
+               height=&#34;483&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      A和B之间的调用关系图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;微服务先驱和netflix-oss&#34;&gt;微服务先驱和Netflix OSS&lt;/h2&gt;
+&lt;p&gt;有些公司似乎是为了云计算而生的。为了在云中提供弹性服务，应用程序不得不保护自己免受环境异常影响。&lt;/p&gt;
+&lt;p&gt;Netflix构建并随后&lt;a href=&#34;https://netflix.github.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源&lt;/a&gt;了一系列涉及诸如断路、边缘路由、服务发现和负载均衡等功能的Java技术解决方案。这些组件使应用能够更好地控制通信，从而提高整体可用性。为了测试并确保组件的弹性，Netflix还使用了&lt;a href=&#34;http://principlesofchaos.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;混沌工程&lt;/a&gt;，通过将各种现实中可能存在的问题注入到应用程序的网络中，以便能在任何给定时间中断工作流。 Netflix开发的技术组合允许其应用程序投入到一个以应用程序为中心的网络中，这实际上就是服务网格。&lt;/p&gt;
+&lt;p&gt;在构建Netflix OSS堆栈的时代，虚拟机是在云中运行应用程序的唯一方式。因此Netflix选择Java作为开发语言来构建服务网格功能。&lt;/p&gt;
+&lt;p&gt;除了Netflix OSS堆栈的纯Java依赖，另一个挑战是为了实现服务网格功能，开发人员必须将Java库包含在其应用程序中，并在代码中引用来使用这些组件。但在当时，那些希望强制使用这些技术的公司无法在平台级进行如上工作。&lt;/p&gt;
+&lt;p&gt;随着&lt;a href=&#34;https://www.infoworld.com/article/3268073/containers/what-is-kubernetes-container-orchestration-explained.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;的来临，诸如服务发现和负载均衡等功能成为平台本身的一部分，并且平台允许用任何语言编写的应用程序都可以使用。通过声明式和活动状态管理，Kubernetes还能够通过自动重启无响应的应用来提高整体应用的可用性。在当今世界，Kubernetes和容器是运行微服务应用程序的标准。&lt;/p&gt;
+&lt;p&gt;在Kubernetes中，你的应用程序以由一个或多个容器组成“pod”运行。在pod中运行多个容器的技术有时也被称为“sidecar”，其实质上是一种将你的应用程序拆散，将子模块运行在共享隔离空间（pod）的解决方案。&lt;/p&gt;
+&lt;p&gt;Kubernetes为Istio这样的技术的崛起创造了有利条件。出行共享公司Lyft已经开始通过智能代理&lt;a href=&#34;https://github.com/envoyproxy/envoy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;来提供微服务部署所需的弹性和动态路由功能。 sidecar容器和Envoy这类架构允许为每个应用程序实例附加一个轻量级代理，以支持服务发现、负载均衡、断路器、链路跟踪以及服务网格的其他功能。将它与一个控制面板结合，并添加服务治理和Envoy实例配置管理功能，你就拥有了Istio。&lt;/p&gt;
+&lt;h2 id=&#34;拥抱分布式架构&#34;&gt;拥抱分布式架构&lt;/h2&gt;
+&lt;p&gt;最后，Istio和服务网格通常与“拥抱”&lt;a href=&#34;https://en.wikipedia.org/wiki/Fallacies_of_distributed_computing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;分布式计算的谬论&lt;/a&gt;有关。 换而言之，”&lt;strong&gt;Istio允许应用程序假定网络是可靠的、快速的、安全的、不变的等等——这使得分布式计算的谬论不再是谬论&lt;/strong&gt; “。说Istio和Kubernetes可以解决所有这些问题，但忽视这些谬论可能导致企业犯大错误。 企业必须接受这样一个事实：当你有多个微服务和功能服务互相交互时，你就处理分布式系统。&lt;/p&gt;
+&lt;p&gt;请参阅下面的分布式计算谬论的完整列表以及Istio的解决方案：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;谬论&lt;/th&gt;
+&lt;th&gt;Istio的解决方案&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;可靠网络&lt;/td&gt;
+&lt;td&gt;断路和负载均衡&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;延迟为零&lt;/td&gt;
+&lt;td&gt;超时和重试&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;忽略带宽&lt;/td&gt;
+&lt;td&gt;服务评级和限制&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;安全网络&lt;/td&gt;
+&lt;td&gt;相互TLS&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;拓扑不可改&lt;/td&gt;
+&lt;td&gt;服务发现&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;单一管理员&lt;/td&gt;
+&lt;td&gt;基于角色的访问控制&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;零传输成本&lt;/td&gt;
+&lt;td&gt;gRPC和Protobuf&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;同质化网络&lt;/td&gt;
+&lt;td&gt;动态路由，A/B测试和金丝雀部署&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;在我与OpenShift客户的沟通中，我经常发现他们由于自身需求，已经实现了类似Netflix模式的功能。我也对实现这些功能的团队很有兴趣，经常听到他们说“我们是断路小组”或“我们是服务发现小组”。&lt;/p&gt;
+&lt;p&gt;创建自己的服务网格功能的公司现在有机会使用Kubernetes和Istio。通过使用这些被标准化的开源技术，他们可以获得由大型社区开发的功能、整理知识和用例，并帮助他们实现更具弹性的应用程序，同时以更低的成本更快地将产品推向市场。&lt;/p&gt;
+&lt;p&gt;作者Diogenes Rettori是&lt;a href=&#34;https://www.redhat.com/en/technologies/cloud-computing/openshift&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;红帽OpenShift&lt;/a&gt;的主任产品经理。在加入OpenShift团队之前，他专注于红帽JBoss中间件的客户培训。 Diogenes拥有强大的工程背景，曾为爱立信和IBM等公司工作。&lt;/p&gt;
 </description>
     </item>
     

@@ -668,6 +668,505 @@
     </item>
     
     <item>
+      <title>Service Mesh和API Gateway关系深度探讨</title>
+      <link>https://cloudnative.to/blog/service-mesh-and-api-gateway/</link>
+      <pubDate>Tue, 28 Apr 2020 11:20:46 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/service-mesh-and-api-gateway/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;关于Service Mesh和API Gateway之间的关系，这个问题过去两年间经常被问起，社区也有不少文章和资料给出解答。其中不乏 Christian Posta 这样的网红给出过深度介绍。我在这里做一个资料的整理和汇总，结合个人的理解给出一些看法。另外在本文最后，介绍蚂蚁金服在Service Mesh和API Gateway融合的这个最新领域的一些开创性的实践和探索，希望给大家一个更有体感的认知。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注1：为了节约篇幅，我们将直奔主题，假定读者对Service Mesh和API Gateway已有基本的了解。&lt;/p&gt;
+&lt;p&gt;备注2:  这边文章更关注于梳理整个脉络，内容不会展开的特别细，尤其是其他文章已经详细阐述的部分。如果您在浏览本文之后，还想更深入的了解细节，请继续阅读文章最后的参考资料和推荐阅读。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;原本清晰的界限定位和职责&#34;&gt;原本清晰的界限：定位和职责&lt;/h2&gt;
+&lt;p&gt;首先，Service Mesh和API Gateway在功能定位和承担的职责上有非常清晰的界限：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Service Mesh：微服务的网络通信基础设施，负责（系统内部的）服务间的通讯&lt;/li&gt;
+&lt;li&gt;API Gateway： 负责将服务以API的形式暴露（给系统外部），以实现业务功能&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;如上图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_c08d37f9ebed334e95e5091043dee125.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从功能和职责上说：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;位于最底层的是拆分好的原子微服务，以服务的形式提供各种能力&lt;/li&gt;
+&lt;li&gt;在原子微服务上是（可选的）组合服务，某些场景下需要将若干微服务的能力组合起来形成新的服务&lt;/li&gt;
+&lt;li&gt;原子微服务和组合服务部署于 &lt;strong&gt;系统内部&lt;/strong&gt;，在采用Service Mesh的情况下，由Service Mesh提供服务间通讯的能力&lt;/li&gt;
+&lt;li&gt;API Gateway用于将系统内部的这些服务暴露给 &lt;strong&gt;系统外部&lt;/strong&gt;，以API的形式接受外部请求。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;从部署上说：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Service Mesh部署在系统内部：因为原子微服务和组合服务通常不会直接暴露给外部系统&lt;/li&gt;
+&lt;li&gt;API Gateway部署在系统的边缘：一方面暴露在系统之外，对外提供API供外部系统访问；一方面部署在系统内部，以访问内部的各种服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在这里引入两个使用非常广泛的术语：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_209feadfce8c585c7587bba795d19852.webp 400w,
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_9f17930a636bbbb70cb99750fbba4279.webp 760w,
+               /blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/directions_hua4205b154b414a6c9b162b19a0d449bd_54903_209feadfce8c585c7587bba795d19852.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;326&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;东西向&lt;/strong&gt;通讯：指服务间的相互访问，其通讯流量在服务间流转，流量都位于系统内部&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;南北向&lt;/strong&gt;通讯：指服务对外部提供访问，通常是通过API Gateway提供的API对外部暴露，其通讯流量是从系统外部进入系统内部。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;解释一下“东西南北”的由来：如上图所示，通常在地图上习惯性的遵循“上北下南，左东右西”的原则。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;总结：Service Mesh和API Gateway在功能和职责上分工明确，界限清晰。但如果事情就这么结束，也就不会出现Service Mesh和API Gateway关系的讨论了，自然也不会有本文。&lt;/p&gt;
+&lt;p&gt;问题的根源在哪里？&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;强烈推荐阅读：附录中 Christian Posta 的文章 &amp;ldquo;Do I Need an API Gateway if I Use a Service Mesh?&amp;ldquo;对此有深度分析和讲解。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;哲学问题网关访问内部服务算东西向还是南北向&#34;&gt;哲学问题：网关访问内部服务，算东西向还是南北向？&lt;/h2&gt;
+&lt;p&gt;如下图所示，图中黄色的线条表示的是API Gateway访问内部服务：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_c08d37f9ebed334e95e5091043dee125.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-without-bff_hub27c856e6c0599a35ff9a89fa6cf8999_108352_f7859c7321a401742114a8636976ce86.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;问题来了，从流量走向看：这是外部流量进入系统后，开始访问对外暴露的服务，应该属于“南北向”通讯，典型如上图的画法。但从另外一个角度，如果我们将 API Gateway 逻辑上拆分为两个部分，先忽略对外暴露的部分，单独只看  API Gateway  访问内部服务的部分，这时可以视 API Gateway 为一个普通的客户端服务，它和内部服务的通讯更像是“东西向”通讯：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d8c9a7c4926c5d5d55309d338745e53c.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d2fde4544697be18226fa1938b906d63.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-access-service_huf0fe3ee17f350710b258c8e9b37cd31f_88997_d8c9a7c4926c5d5d55309d338745e53c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;所以，API Gateway 作为一个客户端访问内部服务时，到底算南北向还是东西向，就成为一个哲学问题：完全取决于我们如何看待 API Gateway ，是作为一个整体，还是逻辑上分拆为对内对外两个部分。&lt;/p&gt;
+&lt;p&gt;这个哲学问题并非无厘头，在 API Gateway 的各种产品中，关于如何实现 “API Gateway 作为一个客户端访问内部服务” ，就通常分成两个流派：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;泾渭分明：视 API Gateway 和内部服务为两个独立事物，API Gateway访问内部服务的通讯机制自行实现，独立于服务间通讯的机制&lt;/li&gt;
+&lt;li&gt;兼容并济：视 API Gateway 为一个普通的内部服务的客户端，重用其内部服务间通讯的机制。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;而最终决策通常也和产品的定位有关：如果希望维持  API Gateway 的独立产品定位，希望可以在不同的服务间通讯方案下都可以使用，则通常选择前者，典型如kong；如果和服务间通讯方案有非常深的渊源，则通常选择后者，典型如springcloud生态下的zuul和springcloud gateway。&lt;/p&gt;
+&lt;p&gt;但无论选择哪个流派，都改变不了一个事实，当 “API Gateway 作为一个客户端访问内部服务” 时，它的确和一个普通内部服务作为客户端去访问其他服务没有本质差异：服务发现，负载均衡，流量路由，熔断，限流，服务降级，故障注入，日志，监控，链路追踪，访问控制，加密，身份认证&amp;hellip;&amp;hellip; 当我们把网关访问内部服务的功能一一列出来时，发现几乎所有的这些功能都是和服务间调用重复。&lt;/p&gt;
+&lt;p&gt;这也就造成了一个普遍现象：如果已有一个成熟的服务间通讯框架，再去考虑实现API Gateway，重用这些重复的能力就成为自然而然的选择。典型如前面提到的 springcloud 生态下的 zuul 以及后面开发的 springcloud gateway，就是以重用类库的方式实现了这些能力的重用。&lt;/p&gt;
+&lt;p&gt;这里又是一个类似的哲学问题：当 “API Gateway 作为一个客户端访问内部服务” 时，它以重用类库的方式实现了代码级别的能力重用，相当于自行实现了一个和普通服务间通讯方案完全一样的客户端，那这个“客户端”发出来的流量算东西向还是南北向？&lt;/p&gt;
+&lt;p&gt;答案不重要。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar真正的重合点&#34;&gt;Sidecar：真正的重合点&lt;/h2&gt;
+&lt;p&gt;在进入Service Mesh时代之后，Service Mesh和API gateway 的关系开始是这样：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;功能和职责清晰划分&lt;/li&gt;
+&lt;li&gt;客户端访问服务的功能高度重叠&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;此时两者的关系很清晰，而且由于当时Service Mesh和API Gateway是不同的产品，两者的重合点只是在功能上。&lt;/p&gt;
+&lt;p&gt;而随着时间的推移，当 Service Mesh 产品和 API Gateway 产品开始出现相互渗透时，两者的关系就开始变得暧昧。&lt;/p&gt;
+&lt;p&gt;在Service Mesh出现之后，如何为基于Service Mesh的服务选择合适的API Gateway方案，就慢慢开始提上日程，而其中选择重用Service Mesh的能力也自然成为一个探索的方向，并逐步出现新式API Gateway产品，其想法很直接：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;如何融合东西向和南北向的通讯方案？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;其中的一个做法就是基于Service Mesh的Sidecar来实现API Gateway，从而在南北向通讯中引入Service Mesh这种东西向通讯的方案。这里我们不展开细节，我这里援引一个图片（鸣谢赵化冰同学）来解释这个方案的思路：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_54a5263908e4e52e9730a6748f4385f0.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_f2c217e21995849d90b4de49eb926a78.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-with-service-mesh_hue5f03e6ac5dfd91191c9c2c237194c18_31788_54a5263908e4e52e9730a6748f4385f0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;244&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这个时候Service Mesh和API Gateway的关系就变得有意思了，因为Service Mesh中sidecar的引入，所以前面的“哲学问题”又有了一个新的解法：API Gateway这次真的可以分拆为两个独立部署的物理实体，而不是逻辑上的两个部分：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;API Gateway本体：实现API Gateway除了访问内部服务之外的功能&lt;/li&gt;
+&lt;li&gt;Sidecar：按照Service Mesh的标准做法， 我们视API Gateway为一个部署于Service Mesh中的普通服务，为这个服务1:1的部署sidecar&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_3ed088127c7942f69ca2ad761a9a698a.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_b1b27cce2d81ade8f80fec6d35b9c9cd.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-access-service-via-sidecar_huc56418c38975cec51ded52f628b5e565_113155_3ed088127c7942f69ca2ad761a9a698a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这个方案中，原来用于Service Mesh的sidecar，被用在了API Gateway中，替代了API Gateway中原有的客户端访问的各种功能。这个方案让API Gateway的实现简化了很多，也实现了东西向和南北向通讯能力的重用和融合，而 API Gateway可以更专注于 “API Management” 的核心功能。&lt;/p&gt;
+&lt;p&gt;此时 Service Mesh 和 API Gateway 的关系就从“泾渭分明”变成了“兼容并济”。&lt;/p&gt;
+&lt;p&gt;而采用这个方案的公司，通常都是先有Service Mesh产品，再基于Service Mesh产品规划（或者重新规划）API Gateway方案，典型如蚂蚁金服的SOFA Gateway产品是基于MOSN，而社区开源产品Ambassador和Gloo都是基于Envoy。&lt;/p&gt;
+&lt;p&gt;上述方案的优势在于API Gateway和Sidecar独立部署，职责明确，架构清晰。但是，和Service Mesh使用sidecar被质疑多一跳会造成性能开销影响效率一样，API Gateway使用Sidecar也被同样的质疑：多了一跳&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;p&gt;解决“多一跳”问题的方法简单而粗暴，基于sidecar，将API Gateway的功能加进来。这样API Gateway本体和Sidecar再次合二为一：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_163f8837dff0c118a170820e063a577f.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_020610a9ce6d1f820c23632cfeb9a6c6.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar_hu8317c108d3f682919948f23fbc5672f4_118375_163f8837dff0c118a170820e063a577f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;至于走到这一步之后，Service Mesh和API Gateway是什么关系：这到底算是Service Mesh/sidecar融合了API Gateway，还是API Gateway融合了Service Mesh/Sidecar？这个问题就像斑马到底是白底黑纹还是黑底白纹一样，见仁见智。&lt;/p&gt;
+&lt;h2 id=&#34;bff把融合进行到底&#34;&gt;BFF：把融合进行到底&lt;/h2&gt;
+&lt;p&gt;BFF（Backend For Frontend）的引入会让Service Mesh和API Gateway走到一个更加亲密的地步。&lt;/p&gt;
+&lt;p&gt;先来看看常规的BFF的玩法：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_82b1c5385231645bca4414f8c7a003eb.webp 400w,
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_217f47d97dac77b6bc6774e3d569d025.webp 760w,
+               /blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/relationship-with-bff_hu8eb4e2e0bfa2c646e35850acfa6b3966_122422_82b1c5385231645bca4414f8c7a003eb.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;338&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在这里，多增加了一个 BFF 层，介于API Gateway和内部服务（包括组合服务和原子微服务）之间。注意BFF的工作模式和组合服务很类似，都是组合多个服务。但差别在于：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;组合服务还属于服务的范畴，只是实现机制上组合了多个服务，对外暴露的依然是一个完整和规范的服务&lt;/li&gt;
+&lt;li&gt;BFF不同，BFF如名字所示，Backend For Frontend，完全是为了前端而存在，核心目标之一是简化前端的访问&lt;/li&gt;
+&lt;li&gt;对我们今天的话题而言，最关键的一点：BFF完全收口了从外部进入的流量，而组合服务没有，API Gateway是可以直接访问原子微服务的&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;“BFF完全收口外部流量”，这一点在API Gateway和Sidecar融合之后，会变得很有想象空间，我们先看按照前面的融合方式，在有BFF的情况下，API Gateway和Sidecar融合后的情景：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_96d4d14bd1670e31108c4e81cd7adebe.webp 400w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_914a3273f0d0926c14625f45e18036f7.webp 760w,
+               /blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/api-gateway-based-on-sidecar-with-bff_hu39aaf57ba28203eee1daf78e231d3f5e_130528_96d4d14bd1670e31108c4e81cd7adebe.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;374&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;放大一点，单独看API Gateway和BFF：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_42493bb04cbd51ededf65744172d2fe8.webp 400w,
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_be4073244f51e2b800b5fef26058168a.webp 760w,
+               /blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/two-sidecar-in-bff_hu7baae209101f190d2d2f43489815e04f_22604_42493bb04cbd51ededf65744172d2fe8.webp&#34;
+               width=&#34;552&#34;
+               height=&#34;416&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意到，流量从被API Gateway接收，到进入BFF在这个流程中，这个请求路径中有两个sidecar：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;和BFF部署在一起的，是没有API Gateway功能的普通Sidecar&lt;/li&gt;
+&lt;li&gt;API Gateway和Sidecar融合之后，这就是一个“有API Gateway功能的大Sidecar”（或者是“有Sidecar功能的特殊API Gateway”）：虽然扮演了API Gateway的角色，但本质上依然包含一个完整功能的sidecar，和BFF自带的Sidecar是等同的&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;所以，问题来了：为什么要放两个sidecar在流程中，缩减到一个会怎么样？我们尝试将两个Sidecar合二为一，去掉BFF自带的Sidecar，直接把扮演API Gateway的sidecar给BFF用：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_19bf30930b38a8ff63db84b4411dc7ab.webp 400w,
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_fc053a06ecb1f70b192ebd292acb723b.webp 760w,
+               /blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/one-sidecar-in-bff_hu6ccb64566e4e936a75bbc3febef96f67_14347_19bf30930b38a8ff63db84b4411dc7ab.webp&#34;
+               width=&#34;645&#34;
+               height=&#34;287&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;此时的场景是这样：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;流量直接打到BFF上（BFF前面可能会挂其他的网络组件提供负载均衡等功能）&lt;/li&gt;
+&lt;li&gt;BFF的sidecar接收流量，完成API Gateway的功能，然后将流量转给BFF&lt;/li&gt;
+&lt;li&gt;BFF通过sidecar调用内部服务（和没有合并时一致）&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_6a0cf3f9991378844eb7e7cdad30c7fe.webp 400w,
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_731b76370e8deced8226bd4660256307.webp 760w,
+               /blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/bff-api-gateway_hufa8ab7855af0a1dbc96110c1a7ce59ae_135500_6a0cf3f9991378844eb7e7cdad30c7fe.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;389&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;注意这里有一个关键点，在前面时特意注明的：“&lt;strong&gt;BFF完全收口外部流量&lt;/strong&gt;”。这是前提条件，因为原有的API Gateway集群已经不再存在，如果BFF没能收口全部流量，则这些未能收口的流量会找不到API Gateway。当然，如果愿意稍微麻烦一点，在部署时清晰的划定需要暴露给外界的服务，直接在这些服务上部署带API Gateway功能的Sidecar，也是可行的，只是管理上会比BFF模式要复杂一些。&lt;/p&gt;
+&lt;p&gt;另外，在部署上，按照上面的方案，我们会发现：API Gateway“消失”了 —— 不再有一个明确物理部署的API Gateway的集群，常规的中心化的网关在这个方案中被融合到每一个BFF的实例中，从而实现另外一个重要特性：去中心化。&lt;/p&gt;
+&lt;p&gt;上述Service Mesh 和 API Gateway融合的方案，并未停留在纸面上。&lt;/p&gt;
+&lt;p&gt;在蚂蚁金服内部，我们基于Service Mesh 和 API Gateway融合 + 去中心化的思路，进行过开创性的实践和探索。以支付宝移动网关为例，在过去十年间，网关经历了从单体到微服务，从中心化到去中心化，从共享的 gateway.jar 包到利用MOSN实现网关Mesh化/Sidecar化，最终演变成了这样一个方案：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1ee19086dc89c08fdfb4b06d29218890.webp 400w,
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_9605f0d2f2cc4fed5895eb9fbb8fd01d.webp 760w,
+               /blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/service-mesh-and-api-gateway/antfin-mesh-gateway_hued6ae6f94556d57599478cf3a6949453_1852032_1ee19086dc89c08fdfb4b06d29218890.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;379&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;强烈推荐阅读：附录中我的同事贾岛的文章 “蚂蚁金服 API Gateway Mesh 思考与实践” 对此有深入介绍和详细描述。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文总结了 Service Mesh 和 API Gateway 的关系，整体上说两者的定位和职责“泾渭分明”，但在具体实现上，开始出现融合的趋势：早期传统方式是类库级别的代码复用，最新趋势是API Gateway和Sidecar 合二为一。&lt;/p&gt;
+&lt;p&gt;后者的发展才刚刚起步，包括在蚂蚁金服我们也是才开始探索这个方向，但是相信在未来一两年间，社区可能会有更多的类似产品形态出现。&lt;/p&gt;
+&lt;p&gt;补充介绍一下文中多次提到的“MOSN”：&lt;/p&gt;
+&lt;p&gt;MOSN 是 MOSN 是 Modular Open Smart Network 的简称， 是一款使用 Go 语言开发的网络代理软件，由蚂蚁金服开源并经过几十万容器的生产级验证。 MOSN 作为云原生的网络数据平面，旨在为服务提供多协议、模块化、智能化、安全的代理能力。 MOSN 可以与任何支持 xDS API 的 Service Mesh 集成，亦可以作为独立的四、七层负载均衡，API Gateway、云原生 Ingress 等使用。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;GitHub：https://github.com/mosn/mosn&lt;/li&gt;
+&lt;li&gt;官网：https://mosn.io&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;附录参考资料和推荐阅读&#34;&gt;附录：参考资料和推荐阅读&lt;/h2&gt;
+&lt;p&gt;意犹未尽的同学，欢迎继续阅读以下内容。&lt;/p&gt;
+&lt;p&gt;按文章发表的时间排序：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://konghq.com/blog/the-difference-between-api-gateways-and-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;The Difference Between API Gateways and Service Mesh&lt;/a&gt;： 2020-02，指导架构师确定何时使用API网关以及何时使用服务网格，作者Marco Palladino，来自kong。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/microservices/do-i-need-an-api-gateway-if-i-have-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Do I Need an API Gateway if I Use a Service Mesh?&lt;/a&gt;：2020-01，作者 Christian Posta，中文翻译版本请见马若飞同学的 &lt;a href=&#34;https://www.servicemesher.com/blog/do-i-need-an-api-gateway-if-i-have-a-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用了 Service Mesh 后我还需要 API 网关吗&lt;/a&gt;，对 Service Mesh 技术和 API 网关的对比，着重分析了两者的功能重合点和分歧点，为技术选型和落地提供了指导思路。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.infoq.cn/article/azCFGyTDGakZqaLEEDMN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;蚂蚁金服 API Gateway Mesh 思考与实践&lt;/a&gt;: 2019-12，作者贾岛，介绍蚂蚁金服支付宝网关的发展和API Gateway Mesh的由来，强烈推荐阅读，这个文章非常清晰的介绍了蚂蚁金服在Service Mesh和API Gateway融合方面的实践。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.servicemesher.com/blog/api-gateways-are-going-through-an-identity-crisis/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;API Gateway的身份认同危机&lt;/a&gt;: 2019-05, 原文作者 Christian Posta，译者周雨青，讲述API Gateway的基本理念如API的定义，API Management的含义，API Gateway模式，以及服务网格和API Gateway的关系。&lt;/li&gt;
+&lt;li&gt;长路漫漫踏歌而行：蚂蚁金服Service Mesh实践探索：2018-10，我在QCon的演讲，我分享了当时蚂蚁金服在服务间通讯范围的探索，提出将服务网格在东西向通讯中的能力重用到南北向通讯中，当时基于Sidecar的SOFA Gateway产品刚开始开发。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.getambassador.io/api-gateway-vs-service-mesh-104c01fa4784&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;API Gateway vs Service Mesh&lt;/a&gt;: 2018-09，作者Richard Li，Datawire的CEO ，在开发 Ambassador API Gateway。Ambassador 是基于 Envoy 的API Gateway开源产品，文章阐述了对服务网格和API Gateway的看法，差异，以及对两者集成的看法。&lt;/li&gt;
+&lt;li&gt;DreamMesh抛砖引玉(9)-API Gateway：2018-03，这个文章也是我写的，2018年初我和Service Mesh社区的一些朋友深入探讨之后，在DreamMesh系列博客文章中记录下了当时构想的方案，尤其对 API gateway和sidecar是分是合有详细讨论。当时想法还不够成熟，但大体方向已经有雏形了。鸣谢当时参与讨论的同学！&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/microservices-in-practice/service-mesh-vs-api-gateway-a6d814b9bf56&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh vs API Gateway&lt;/a&gt;: 2017-10，原文作者 &lt;a href=&#34;https://medium.com/@kasunindrasiri&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kasun Indrasiri&lt;/a&gt;，以及 &lt;a href=&#34;https://zhaohuabing.com/2018/04/11/service-mesh-vs-api-gateway/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;赵化冰同学翻译的中文版本&lt;/a&gt;，文章不长，主要对比了服务网格和API Gateway的产品功能，提出了两者融合的方式——在API Gateway中通过服务网格来调用下游服务。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.christianposta.com/microservices/application-network-functions-with-esbs-api-management-and-now-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Application Network Functions With ESBs, API Management, and Now.. Service Mesh?&lt;/a&gt;：2017-08，作者 Christian Posta，讲述服务网格与ESB，消息代理和API管理之类的事物的关系。内容非常好，强烈推荐阅读（我不得不吐糟一下：配图太辣眼睛）。&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>Service Mesh Meetup #6 广州站</title>
       <link>https://cloudnative.to/event/service-mesh-meetup-06/</link>
       <pubDate>Sun, 11 Aug 2019 13:00:00 +0800</pubDate>
@@ -2608,6 +3107,1226 @@
 &lt;p&gt;崔秀龙 HPE 软件分析师，Kubernetes 权威指南作者之一，Kubernetes、Istio 项目成员&lt;/p&gt;
 &lt;h4 id=&#34;roundtable回顾2018service-mesh-蓄势待发&#34;&gt;Roundtable：回顾2018，Service Mesh 蓄势待发&lt;/h4&gt;
 &lt;p&gt;主持人：宋净超，ServiceMesher 社区联合创始人&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Knative：重新定义 serverless</title>
+      <link>https://cloudnative.to/blog/knative-redefine-serverless/</link>
+      <pubDate>Wed, 02 Jan 2019 11:35:38 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/knative-redefine-serverless/</guid>
+      <description>&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ypjjbxj30k00f0q6r_hu2e38c54f1ca0dc74fb8b5fbe52af5d4f_75991_8caca862e55e4bb4d08182438d9f58b8.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ypjjbxj30k00f0q6r_hu2e38c54f1ca0dc74fb8b5fbe52af5d4f_75991_c44884666fe68d56c566504b9b85a280.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ypjjbxj30k00f0q6r_hu2e38c54f1ca0dc74fb8b5fbe52af5d4f_75991_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ypjjbxj30k00f0q6r_hu2e38c54f1ca0dc74fb8b5fbe52af5d4f_75991_8caca862e55e4bb4d08182438d9f58b8.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;大家好，今天给大家来的演讲专题是“Knative：重新定义Serverless”, 我是来自蚂蚁金服中间件的敖小剑。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yi4z9yj30k00f040w_hu6c8dfd880936928bd168c54a51b8b11b_72801_ad8683191ff95348872c424da68e970f.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yi4z9yj30k00f040w_hu6c8dfd880936928bd168c54a51b8b11b_72801_cc5b6a656b29ed33f89d43b842a685af.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yi4z9yj30k00f040w_hu6c8dfd880936928bd168c54a51b8b11b_72801_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yi4z9yj30k00f040w_hu6c8dfd880936928bd168c54a51b8b11b_72801_ad8683191ff95348872c424da68e970f.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是我的个人资料，有兴趣的同学可以关注的我的个人技术博客网站 &lt;a href=&#34;https://skyao.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://skyao.io&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yeu4gcj30k00f0my3_hua515fef7721745605fecebf67944ece4_30259_0fc0588293ecde0dbbe3bd8fa3422fe2.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yeu4gcj30k00f0my3_hua515fef7721745605fecebf67944ece4_30259_410edcf7db6c191d237a4d90ba0a6d24.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yeu4gcj30k00f0my3_hua515fef7721745605fecebf67944ece4_30259_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yeu4gcj30k00f0my3_hua515fef7721745605fecebf67944ece4_30259_0fc0588293ecde0dbbe3bd8fa3422fe2.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这次演讲的内容将会有这些，首先给大家介绍一下knative是什么，然后是knative的主要组件，让大家对knative有一个基本的了解。之后我会简单的对knative做一些分析和探讨，以及介绍一下knative后续的发展。希望本次的内容让大家能够对knative有一个基本的认知。&lt;/p&gt;
+&lt;h2 id=&#34;什么是knative&#34;&gt;什么是knative？&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymud2uj30k00f00tn_huf52121dfd77e20f126b04cb53bd7f52f_31765_f652f10733961e01c1716a76f09ddc8d.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymud2uj30k00f00tn_huf52121dfd77e20f126b04cb53bd7f52f_31765_0863e7089fcf7ff8ea40f3414317c5c8.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymud2uj30k00f00tn_huf52121dfd77e20f126b04cb53bd7f52f_31765_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ymud2uj30k00f00tn_huf52121dfd77e20f126b04cb53bd7f52f_31765_f652f10733961e01c1716a76f09ddc8d.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative是Google牵头发起的 serverless 项目。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yanrbxj30k00f075o_hud74e527f5b12a99f5808428e27848f5d_43297_8a926ffc007cafa6c5090292a0bf0346.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yanrbxj30k00f075o_hud74e527f5b12a99f5808428e27848f5d_43297_41ac35ee6562f0eb9a5c38fb732c9e21.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yanrbxj30k00f075o_hud74e527f5b12a99f5808428e27848f5d_43297_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yanrbxj30k00f075o_hud74e527f5b12a99f5808428e27848f5d_43297_8a926ffc007cafa6c5090292a0bf0346.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是Knative的项目定义，注意这句话里面几个关键字：kubernetes，serverless，workload。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yczkalj30k00f03zo_huf0c4d3adb9b43b9ccee54c72ed7e08e1_36821_d17731272409290c8cb09c34da4bf922.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yczkalj30k00f03zo_huf0c4d3adb9b43b9ccee54c72ed7e08e1_36821_98f608bc75513eb76c1e42e90b843cd7.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yczkalj30k00f03zo_huf0c4d3adb9b43b9ccee54c72ed7e08e1_36821_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yczkalj30k00f03zo_huf0c4d3adb9b43b9ccee54c72ed7e08e1_36821_d17731272409290c8cb09c34da4bf922.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是最近几年 Google 做大型项目的常态：产品刚出来，阵营就已经很强大了，所谓先声夺人。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8v7unj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_8b11e5cf497f2436512759212fbeb766.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8v7unj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_86b183453077a6fc01d290b50bfb5260.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8v7unj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2y8v7unj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_8b11e5cf497f2436512759212fbeb766.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这是目前Knative项目的进展，可以看到这是一个非常新的项目，刚刚起步。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;备注：这是截至2018-11-24演讲当天的情况，到2018年12月底，knative已经发布了v0.2.2和v0.2.3两个bugfix版本。但也还只是 0.2 &amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yot2wbj30k00f0dh0_hub69e694653f399be07523eb990d7bb71_39159_bc89fb75cd8e4d68d328f4ba3ed4afcc.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yot2wbj30k00f0dh0_hub69e694653f399be07523eb990d7bb71_39159_badfc8925ec225d0282552df6221baa5.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yot2wbj30k00f0dh0_hub69e694653f399be07523eb990d7bb71_39159_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yot2wbj30k00f0dh0_hub69e694653f399be07523eb990d7bb71_39159_bc89fb75cd8e4d68d328f4ba3ed4afcc.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们来看一下，在knative出来前， serverless 领域已有的实现，包括云端提供的产品和各种开源项目。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yo906aj30k00f0di1_hu43a20ac26055195109bb6c2a69bea857_66882_9f98794bf25aab0e32656ad856ff491a.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yo906aj30k00f0di1_hu43a20ac26055195109bb6c2a69bea857_66882_b2d9908f3df59f8f18fb5e2f0dab8524.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yo906aj30k00f0di1_hu43a20ac26055195109bb6c2a69bea857_66882_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yo906aj30k00f0di1_hu43a20ac26055195109bb6c2a69bea857_66882_9f98794bf25aab0e32656ad856ff491a.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这幅图片摘自The New Stack的一个serverless 调查，我们忽略调查内容，仅仅看看这里列出来的serverless产品的数量——感受是什么？好多serverless项目，好多选择！&lt;/p&gt;
+&lt;p&gt;那问题来了：到底该怎么选？&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ya58f5j30k00f00up_hu32a105a28eebe57cb504319189e61707_60741_bbf00ca32024de6f54babab5b3fbad06.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ya58f5j30k00f00up_hu32a105a28eebe57cb504319189e61707_60741_172581b024523f5d1e2c73c36d9ee9f9.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ya58f5j30k00f00up_hu32a105a28eebe57cb504319189e61707_60741_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ya58f5j30k00f00up_hu32a105a28eebe57cb504319189e61707_60741_bbf00ca32024de6f54babab5b3fbad06.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这就是目前 serverless 的问题：由于缺乏标准，市场呈现碎片化。不同厂商，不同项目，各不相同，因此无论怎么选择，都面临一个风险：供应商绑定！&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylfrl8j30k00f03zx_huc483fdfb8f222f5fe5379971cef1ca1e_46184_234af184aac8358774907249bb36139f.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylfrl8j30k00f03zx_huc483fdfb8f222f5fe5379971cef1ca1e_46184_848080b9b557167367f7f718f9db73d4.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylfrl8j30k00f03zx_huc483fdfb8f222f5fe5379971cef1ca1e_46184_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ylfrl8j30k00f03zx_huc483fdfb8f222f5fe5379971cef1ca1e_46184_234af184aac8358774907249bb36139f.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这段话来自 knative 的官方介绍，google 推出 knative 的理由和动机。其中第一条和第二条针对的是当前 serverless 市场碎片的现状。而第四条多云战略，则是针对供应商绑定的风险。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yjj4hrj30k00f0q4o_huce2effc190f8cbed39e3231c2c8cf9df_53821_d6cbf64661e32770aa5db36671c56d73.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yjj4hrj30k00f0q4o_huce2effc190f8cbed39e3231c2c8cf9df_53821_a7aaf9f11683f82ee3ffadfbb1e8723b.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yjj4hrj30k00f0q4o_huce2effc190f8cbed39e3231c2c8cf9df_53821_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yjj4hrj30k00f0q4o_huce2effc190f8cbed39e3231c2c8cf9df_53821_d6cbf64661e32770aa5db36671c56d73.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;google描述knative的动机之一，是将云原生中三个领域的最佳实践结合起来。&lt;/p&gt;
+&lt;p&gt;小结：&lt;/p&gt;
+&lt;p&gt;当前 serverless 市场产品众多导致碎片化严重，存在厂商绑定风险，而 google 推出 knative ，希望能提供一套简单易用的 serverless 方案，实现 serverless 的标准化和规范化。&lt;/p&gt;
+&lt;h2 id=&#34;knative的主要组件&#34;&gt;Knative的主要组件&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y9rm2nj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_29e3a678822cd2045d3aa9f133a04ccc.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y9rm2nj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_84a19e3538d14b625683e1f2b61b849f.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y9rm2nj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2y9rm2nj30k00f0gmk_huca99ac5472260e4c22c7f17aafedabdd_32850_29e3a678822cd2045d3aa9f133a04ccc.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;第二部分，来介绍一下knative的主要组件。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylvenwj30k00f0409_hue5ce241d4bb4e4a1507631fc9d2f684b_54897_1d582cbe55786cddff856b7086f99e3e.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylvenwj30k00f0409_hue5ce241d4bb4e4a1507631fc9d2f684b_54897_29b5a0d0ecf27398d23824bac7362c97.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ylvenwj30k00f0409_hue5ce241d4bb4e4a1507631fc9d2f684b_54897_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ylvenwj30k00f0409_hue5ce241d4bb4e4a1507631fc9d2f684b_54897_1d582cbe55786cddff856b7086f99e3e.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;前面提到，google 推出 knative ，试图将云原生中三个领域的最佳实践结合起来。反应到 knative 产品中，就是这三大主要组件：Build，Serving，Eventing。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yqp82zj30k00f0taa_hu6ef424b13b093219e60e0746c1665449_50722_b9a3f6d371b8e260bdd830d89ad54da9.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yqp82zj30k00f0taa_hu6ef424b13b093219e60e0746c1665449_50722_699b93fdb8d331cfc157b7664d002833.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yqp82zj30k00f0taa_hu6ef424b13b093219e60e0746c1665449_50722_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yqp82zj30k00f0taa_hu6ef424b13b093219e60e0746c1665449_50722_b9a3f6d371b8e260bdd830d89ad54da9.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative Build 组件，实现从代码到容器的目标。为什么不直接使用 dockfile 来完成这个事情？&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykxse9j30k00f0q51_hufa7e8b7ac131e71fe9377223c7879178_65665_fb67863cdec4ff756ba75fc88384ba69.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykxse9j30k00f0q51_hufa7e8b7ac131e71fe9377223c7879178_65665_7e26c82ebf3a34d0a9a56b190ca0f73f.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykxse9j30k00f0q51_hufa7e8b7ac131e71fe9377223c7879178_65665_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ykxse9j30k00f0q51_hufa7e8b7ac131e71fe9377223c7879178_65665_fb67863cdec4ff756ba75fc88384ba69.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative Build 在实现时，是表现为 kubernetes 的 CRD，通过 yaml 文件来定义构建过程。这里引入了很多概念如：build，builder，step，template，source等。另外支持用 service account 做身份验证。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydy8wvj30k00f00uh_hueaca8b4503ef1b00224eb2add4a883d7_55337_8b1f1d49c929bd6feca9a8cc12ee39e5.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydy8wvj30k00f00uh_hueaca8b4503ef1b00224eb2add4a883d7_55337_af77b4922540fa58bdb0d37502c4c171.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydy8wvj30k00f00uh_hueaca8b4503ef1b00224eb2add4a883d7_55337_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ydy8wvj30k00f00uh_hueaca8b4503ef1b00224eb2add4a883d7_55337_8b1f1d49c929bd6feca9a8cc12ee39e5.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative Serving组件的职责是运行应用以对外提供服务，即提供服务、函数的运行时支撑。&lt;/p&gt;
+&lt;p&gt;注意定义中的三个关键：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;kubernetes-based：基于k8s，也仅支持k8s，好处是可以充分利用k8s平台的能力&lt;/li&gt;
+&lt;li&gt;scale-to-zero：serverless 最重要的卖点之一，当然要强调&lt;/li&gt;
+&lt;li&gt;request-driven compute：请求驱动的计算&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;值得注意的是，除了k8s之外，还有另外一个重要基础：istio！后面会详细聊这个。&lt;/p&gt;
+&lt;p&gt;Knative Serving项目同样也提供了自己的中间件原语，以支持如图所示的几个重要特性。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ybms2rj30k00f00um_hu1681e8638b72faf159ba9cb1d81e9d85_59129_17d1543bb13ec8811f2a5e6757b6d7cc.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ybms2rj30k00f00um_hu1681e8638b72faf159ba9cb1d81e9d85_59129_a7bbaf4310ff0883601b249cf9e5d5a4.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ybms2rj30k00f00um_hu1681e8638b72faf159ba9cb1d81e9d85_59129_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ybms2rj30k00f00um_hu1681e8638b72faf159ba9cb1d81e9d85_59129_17d1543bb13ec8811f2a5e6757b6d7cc.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;knative中有大量的概念抽象，而在这之后的背景，说起来有些意思：knative 觉得 kubernetes 和 istio 本身的概念非常多，多到难于理解和管理，因此 knative 决定要自己提供更高一层的抽象。至于这个做法，会是釜底抽薪解决问题，还是雪上加霜让问题更麻烦&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;p&gt;knative的这些抽象都是基于 kubernetes 的 CRD 来实现，具体抽象概念有：Service、Route、Configuration 和 Revision。特别提醒的是，右边图中的 Service 是 knative 中的 service 概念，&lt;code&gt;service.serving.knative.dev&lt;/code&gt;，而不是大家通常最熟悉的 k8s 的 service。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynrcmoj30k00f0wgc_hu2e1b476413655045b457777996c7cf5d_58829_d79aa7897a53faa25f4d304bbc39e1b0.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynrcmoj30k00f0wgc_hu2e1b476413655045b457777996c7cf5d_58829_205cef5fe8dc2a603922fbaadde82bbf.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynrcmoj30k00f0wgc_hu2e1b476413655045b457777996c7cf5d_58829_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ynrcmoj30k00f0wgc_hu2e1b476413655045b457777996c7cf5d_58829_d79aa7897a53faa25f4d304bbc39e1b0.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;对于Knative Serving 组件，最重要的特性就是自动伸缩的能力。目前伸缩边界支持从0到无限，容许通过配置设置。&lt;/p&gt;
+&lt;p&gt;Knative 目前是自己实现的 autoscaler ，原来比较简单：Revision 对应的pod由 k8s deployment 管理，pod上的工作负载上报 metrics，汇总到 autoscaler 分析判断做决策，在需要时修改 replicas 数量来实现自动伸缩（后面会再讲这块存在的问题）。&lt;/p&gt;
+&lt;p&gt;当收缩到0，或者从0扩展到1时，情况会特别一些。knative在这里提供了名为 Activator 的设计，如图所示：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Istio Route 控制流量走向，正常情况下规则设置为将流量切到工作负载所在的pod&lt;/li&gt;
+&lt;li&gt;当没有流量，需要收缩到0时，规则修改为将流量切到 Activator ，如果一直没有流量，则什么都不发生。此时autoscaler 通过 deployment 将 replicas 设置为0。&lt;/li&gt;
+&lt;li&gt;当新的流量到来时，流量被 Activator 接收，Activator 随即拉起 pod，在 pod 和工作负载准备好之后，再将流量转发过去&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yj0vbkj30k00f0wfe_huc994e757b91faa9dc8304fa51a13449c_30566_b2d674da5a5716987cb8c13f47696e36.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yj0vbkj30k00f0wfe_huc994e757b91faa9dc8304fa51a13449c_30566_1a9a7f53b385326a683d93b15695b030.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yj0vbkj30k00f0wfe_huc994e757b91faa9dc8304fa51a13449c_30566_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yj0vbkj30k00f0wfe_huc994e757b91faa9dc8304fa51a13449c_30566_b2d674da5a5716987cb8c13f47696e36.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative Eventing 组件负责事件绑定和发送，同样提供多个抽象概念：Flow，Source，Bus，以帮助开发人员摆脱概念太多的负担（关于这一点，我保留意见）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynaza9j30k00f075w_hu71a5b268e65c8b821ce96f61ac9eb878_52421_efabe039b4b0a0b0bd6b66d4fc7a66c0.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynaza9j30k00f075w_hu71a5b268e65c8b821ce96f61ac9eb878_52421_9ddbfb53c6cdf64b600f72ee404025ef.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ynaza9j30k00f075w_hu71a5b268e65c8b821ce96f61ac9eb878_52421_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ynaza9j30k00f075w_hu71a5b268e65c8b821ce96f61ac9eb878_52421_efabe039b4b0a0b0bd6b66d4fc7a66c0.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Bus 是对消息总线的抽象。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yr4beaj30k00f0wg3_hu1345244a9261a39484efd8813e4dea28_51984_7b774e3bc5e9cc8447eef57b05da1716.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yr4beaj30k00f0wg3_hu1345244a9261a39484efd8813e4dea28_51984_6d0a792fc94133786ca41d3d412127d8.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yr4beaj30k00f0wg3_hu1345244a9261a39484efd8813e4dea28_51984_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yr4beaj30k00f0wg3_hu1345244a9261a39484efd8813e4dea28_51984_7b774e3bc5e9cc8447eef57b05da1716.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Source 是事件数据源的抽象。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yk1kkij30k00f0q4j_huecb9741d57c0dfc6ccdac439bf9ad492_51245_d024de5537a54ada9d79e3a126222383.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yk1kkij30k00f0q4j_huecb9741d57c0dfc6ccdac439bf9ad492_51245_5fc39a8e92f3ea1ff982ca26d528727f.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yk1kkij30k00f0q4j_huecb9741d57c0dfc6ccdac439bf9ad492_51245_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yk1kkij30k00f0q4j_huecb9741d57c0dfc6ccdac439bf9ad492_51245_d024de5537a54ada9d79e3a126222383.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative 在事件定义方面遵循了 cloudevents 规范。&lt;/p&gt;
+&lt;p&gt;小结：&lt;/p&gt;
+&lt;p&gt;简单介绍了一下 knative 中的三大组件，让大家对 knative 的大体架构和功能有个基本的认知。这次就不再继续深入 knative 的实现细节，以后有机会再展开。&lt;/p&gt;
+&lt;h2 id=&#34;knative分析和探讨&#34;&gt;Knative分析和探讨&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfiktvj30k00f0q3w_hu3ad5eec275c1ff488717d0ae2cee765f_31059_1f408911414233939585226dbcf73a2f.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfiktvj30k00f0q3w_hu3ad5eec275c1ff488717d0ae2cee765f_31059_a73227aafa0af29e1f38ba5a896de9f1.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfiktvj30k00f0q3w_hu3ad5eec275c1ff488717d0ae2cee765f_31059_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yfiktvj30k00f0q3w_hu3ad5eec275c1ff488717d0ae2cee765f_31059_1f408911414233939585226dbcf73a2f.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在第三部分，我们来分析探讨一下 knative 的产品定位，顺便也聊一下为什么我们会看好 knative。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ygta4hj30k00f0758_hu3a416105d110e1d9b8b1185e148ff9bf_30481_40e956d60f9987d2694e7bd21ab38ec2.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ygta4hj30k00f0758_hu3a416105d110e1d9b8b1185e148ff9bf_30481_74e8334a4744367534b593ada68e3303.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ygta4hj30k00f0758_hu3a416105d110e1d9b8b1185e148ff9bf_30481_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ygta4hj30k00f0758_hu3a416105d110e1d9b8b1185e148ff9bf_30481_40e956d60f9987d2694e7bd21ab38ec2.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先，最重要的一点是：knative &lt;strong&gt;不是&lt;/strong&gt;一个 Serverless 实现，而是一个 Serviceless 平台。&lt;/p&gt;
+&lt;p&gt;也就是说，knative 不是在现有市场上的20多个 serverless 产品和开源项目的基础上简单再增加一个新的竞争者，而是通过建立一个标准而规范的 serverless 平台，容许其他 serverless 产品在 knative 上运行。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yq94l2j30k00f00ug_hu0d5076fe3d1c61a8cbf2d52f299fa31d_53541_cb31500bde8addb9c7697694dce2eba0.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yq94l2j30k00f00ug_hu0d5076fe3d1c61a8cbf2d52f299fa31d_53541_a9c86ae0a4d5256b6ad6bd9c647c92c9.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yq94l2j30k00f00ug_hu0d5076fe3d1c61a8cbf2d52f299fa31d_53541_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yq94l2j30k00f00ug_hu0d5076fe3d1c61a8cbf2d52f299fa31d_53541_cb31500bde8addb9c7697694dce2eba0.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Knative 在产品规划和设计理念上也带来了新的东西，和传统 serverless 不同。工作负载和平台支撑是 knative 最吸引我们的地方。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfrimxj30k00f00tv_hu3b2ca9fdbb8f6479329f6b1733b4f309_38383_4437dd7475c6b47986c0ff0fd1f91af0.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfrimxj30k00f00tv_hu3b2ca9fdbb8f6479329f6b1733b4f309_38383_85334dce1ce8dde5d9cdc5ef3b298dbc.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yfrimxj30k00f00tv_hu3b2ca9fdbb8f6479329f6b1733b4f309_38383_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yfrimxj30k00f00tv_hu3b2ca9fdbb8f6479329f6b1733b4f309_38383_4437dd7475c6b47986c0ff0fd1f91af0.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;要不要Istio？这是 knative 一出来就被人诟病和挑战的点：因为 Istio 的确是复杂度有点高。而 k8s 的复杂度，还有 knative 自身的复杂度都不低，再加上 Istio&amp;hellip;&amp;hellip;&lt;/p&gt;
+&lt;p&gt;关于这一点，个人的建议是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果原有系统中没有规划 Istio/Service mesh 的位置，那么为了 knative 而引入 Istio 的确是代价偏高。可以考虑用其他方式替代，最新版本的 knative 已经实现了对 Istio 的解耦，容许替换。&lt;/li&gt;
+&lt;li&gt;如果本来就有规划使用 Istio/Service mesh ，比如像我们蚂蚁这种，那么 knative 对 Istio 的依赖就不是问题了，反而可以组合使用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;而 kubernetes + servicemesh + serverless 的组合，我们非常看好。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydgkfej30k00f0abb_hudf234930641456788813ea2fe4238e59_41623_6d34a9adfb2ce376830661410ca06bfa.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydgkfej30k00f0abb_hudf234930641456788813ea2fe4238e59_41623_c43d249e027cef656472023cca5dfe8e.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ydgkfej30k00f0abb_hudf234930641456788813ea2fe4238e59_41623_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ydgkfej30k00f0abb_hudf234930641456788813ea2fe4238e59_41623_6d34a9adfb2ce376830661410ca06bfa.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当然，knative 体系的复杂度问题是无法回避的：kubernetes，istio，knative 三者都是复杂度很高的产品， 加在一起整体复杂度就非常可观了，挑战非常大。&lt;/p&gt;
+&lt;h2 id=&#34;knative后续发展&#34;&gt;Knative后续发展&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykhnnvj30k00f0gmk_huea4ad3711f915d08404edfd08f723161_30844_a395372f5c07bf53fe943bbe4b7353c5.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykhnnvj30k00f0gmk_huea4ad3711f915d08404edfd08f723161_30844_157123fad9272debcfe89a3c3028db50.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ykhnnvj30k00f0gmk_huea4ad3711f915d08404edfd08f723161_30844_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ykhnnvj30k00f0gmk_huea4ad3711f915d08404edfd08f723161_30844_a395372f5c07bf53fe943bbe4b7353c5.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;第四个部分，我们来展望一下 knative 的后续发展，包括如何解决一些现有问题。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yb5n5nj30k00f03zp_hu4dc6d20bbc31afd3b64db3e15196b381_40220_a7fddc86b6c3c087b2b56dd497eed34f.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yb5n5nj30k00f03zp_hu4dc6d20bbc31afd3b64db3e15196b381_40220_6d83bd91a024c0cd20a8588f062f9fef.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yb5n5nj30k00f03zp_hu4dc6d20bbc31afd3b64db3e15196b381_40220_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yb5n5nj30k00f03zp_hu4dc6d20bbc31afd3b64db3e15196b381_40220_a7fddc86b6c3c087b2b56dd497eed34f.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;第一个问题就是性能问题。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yefneyj30k00f075m_hu61034b31b827e1e66b7310fdab5fc0c5_44136_0afcb1809dfdf154bc607598a568f8df.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yefneyj30k00f075m_hu61034b31b827e1e66b7310fdab5fc0c5_44136_c6fa5d25500990b762ff60c6fdec641f.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yefneyj30k00f075m_hu61034b31b827e1e66b7310fdab5fc0c5_44136_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yefneyj30k00f075m_hu61034b31b827e1e66b7310fdab5fc0c5_44136_0afcb1809dfdf154bc607598a568f8df.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Queue Proxy也是一个现存的需要替换的模块。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yimwxxj30k00f00tt_hu0be1fd9738a3095c770e9cb6d2ee9484_36300_b6abea0a1b297d976128d040e3a91965.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yimwxxj30k00f00tt_hu0be1fd9738a3095c770e9cb6d2ee9484_36300_9d913121a5e33cea3eec42ae7755b680.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yimwxxj30k00f00tt_hu0be1fd9738a3095c770e9cb6d2ee9484_36300_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yimwxxj30k00f00tt_hu0be1fd9738a3095c770e9cb6d2ee9484_36300_b6abea0a1b297d976128d040e3a91965.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;前面讲过 knative 的 Autoscaler 是自行实现的，而 k8s 目前已经有比较健全原生能力： HPA 和 Custom Metrics。目前 knative 已经有计划要转而使用 k8s 的原生能力。这也符合 Cloud Native 的玩法：将基础能力下沉到 k8s 这样的基础设施，上层减负。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ycjvmtj30k00f0q41_hu95812786dcf379c957a75b50e4897542_36614_c9e54e96f277e4a202c4b09c17dd5788.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ycjvmtj30k00f0q41_hu95812786dcf379c957a75b50e4897542_36614_4d8b3637cf7427f7f38e336ef34178fc.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ycjvmtj30k00f0q41_hu95812786dcf379c957a75b50e4897542_36614_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ycjvmtj30k00f0q41_hu95812786dcf379c957a75b50e4897542_36614_c9e54e96f277e4a202c4b09c17dd5788.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;除了下沉到 k8s 之外，autoscaler还有很多细节需要在后续版本中完善。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8qjlcj30k00f075c_huadcfdaf0ed6a9d0d937cce59e38515bc_35841_94276822fad83c7e41d2dae63879d8bc.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8qjlcj30k00f075c_huadcfdaf0ed6a9d0d937cce59e38515bc_35841_a7b11d4d13edc1347a3cba9ab5852aa4.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y8qjlcj30k00f075c_huadcfdaf0ed6a9d0d937cce59e38515bc_35841_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2y8qjlcj30k00f075c_huadcfdaf0ed6a9d0d937cce59e38515bc_35841_94276822fad83c7e41d2dae63879d8bc.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;对事件源和消息系统的支持也远不够完善，当然考虑到目前才 0.2.0 版本，可以理解。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y989gtj30k00f0gn0_hu7bb2da260d1e907cdee49288cf8f8597_45706_e992ff9206fc6338363763413c975459.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y989gtj30k00f0gn0_hu7bb2da260d1e907cdee49288cf8f8597_45706_ffd9377a8421846532ae8c739c716ad4.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2y989gtj30k00f0gn0_hu7bb2da260d1e907cdee49288cf8f8597_45706_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2y989gtj30k00f0gn0_hu7bb2da260d1e907cdee49288cf8f8597_45706_e992ff9206fc6338363763413c975459.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;目前 knative 还没有规划 workflow 类的产品。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymbqcvj30k00f0wgf_hu8b0a32f7a7bee8fce1a066a066f71874_60472_34a44d1ecf0f1f770ab25ce726ad303d.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymbqcvj30k00f0wgf_hu8b0a32f7a7bee8fce1a066a066f71874_60472_39f6d9feba776124828a14a7a5b549a4.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2ymbqcvj30k00f0wgf_hu8b0a32f7a7bee8fce1a066a066f71874_60472_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2ymbqcvj30k00f0wgf_hu8b0a32f7a7bee8fce1a066a066f71874_60472_34a44d1ecf0f1f770ab25ce726ad303d.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在网络路由能力方面也有很多欠缺，上面是 knative 在文档中列出来的需求列表。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yc0iq9j30k00f0gn5_huef88602e855103db1b4f015e2bcd2030_47520_992662fee157e48a8843b13ce9e5a595.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yc0iq9j30k00f0gn5_huef88602e855103db1b4f015e2bcd2030_47520_c8bf9e50f05d01fc1739fa8572b2d590.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yc0iq9j30k00f0gn5_huef88602e855103db1b4f015e2bcd2030_47520_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yc0iq9j30k00f0gn5_huef88602e855103db1b4f015e2bcd2030_47520_992662fee157e48a8843b13ce9e5a595.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;最后聊聊 knative 的可拔插设计，这是 knative 在架构设计上的一个基本原则：顶层松耦合，底层可拔插。&lt;/p&gt;
+&lt;p&gt;最顶层是 Build / Serving / Eventing 三大组件，中间是各种能力，通过 k8s 的 CRD 方式来进行声明，然后底层是各种实现，按照 CRD 的要求进行具体的实现。&lt;/p&gt;
+&lt;p&gt;在这个体系中，用户接触的是 Build / Serving / Eventing 通用组件，通过通过标准的 CRD 进行行为控制，而和底层具体的实现解耦。理论上，之后在实现层做适配，knative 就可以运行在不同的底层 serverless 实现上。从而实现 knative 的战略目标：提供 serverless 的通用平台，实现 serverless 的标准化和规范化。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yhmny2j30k00f03zg_huf1eb1a2f7f354f340fdc151551e41aee_30607_b92395fc38a1a04ab517015b83e061b8.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yhmny2j30k00f03zg_huf1eb1a2f7f354f340fdc151551e41aee_30607_c9af8c20eedf201bf22dc6de1d890323.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yhmny2j30k00f03zg_huf1eb1a2f7f354f340fdc151551e41aee_30607_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yhmny2j30k00f03zg_huf1eb1a2f7f354f340fdc151551e41aee_30607_b92395fc38a1a04ab517015b83e061b8.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;最后，我们对 knative 做一个简单总结。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yg9jwdj30k00f0q49_hu6ecf96dbbd9752b5d8fb6cbce4e1c478_43341_a5f5fcd2d47bcf7cc3b9d336a3a69f02.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yg9jwdj30k00f0q49_hu6ecf96dbbd9752b5d8fb6cbce4e1c478_43341_fd231b6f180575fd67abedc9e23fd604.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yg9jwdj30k00f0q49_hu6ecf96dbbd9752b5d8fb6cbce4e1c478_43341_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yg9jwdj30k00f0q49_hu6ecf96dbbd9752b5d8fb6cbce4e1c478_43341_a5f5fcd2d47bcf7cc3b9d336a3a69f02.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;先谈一下 knative 的优势，首先是 knative 自身的几点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;产品定位准确：针对市场现状，不做竞争者而是做平台&lt;/li&gt;
+&lt;li&gt;技术方向明确：基于 k8s，走 cloud native 方向&lt;/li&gt;
+&lt;li&gt;推出时机精准：k8s 大势已成，istio 接近成熟&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;然后，再次强调：kubernetes + service mesh + serverless 的组合，在用好的前提下，应该威力不凡。&lt;/p&gt;
+&lt;p&gt;此外，knative 在负载的支撑上，不拘泥于传统的FaaS，可以支持 BaaS 和传统应用，在落地时适用性会更好，使用场景会更广泛。（备注：在这里我个人有个猜测，knative 名字中 native 可能指的是 native workload，即在 k8s 和 cloud native 语义下的原生工作负载，如果是这样，那么 google 和 knative 的这盘棋就下的有点大了。）&lt;/p&gt;
+&lt;p&gt;最后，考虑到目前 serverless 的市场现状，对 serverless 做标准化和规范化，出现一个 serverless 平台，似乎也是一个不错的选择。再考虑到 google 拉拢大佬和社区一起干的一贯风格，携 k8s 和 cloud native 的大势很有可能实现这个目标。&lt;/p&gt;
+&lt;p&gt;当然，knative 目前存在的问题也很明显，细节不说，整体上个人感觉有：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;成熟度：目前才 0.2 版本，实在太早期，太多东西还在开发甚至规划中。希望随着时间的推移和版本演进，knative 能尽快走向成熟。&lt;/li&gt;
+&lt;li&gt;复杂度：成熟度的问题还好说，总能一步一步改善的，无非是时间问题。但是 knative 的系统复杂度过高的问题，目前看来几乎是不可避免的。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;最后，对 knative 的总结，就一句话：&lt;strong&gt;前途不可限量，但是成长需要时间&lt;/strong&gt;。让我们拭目以待。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yh7tksj30k00f03zu_hu5dbeb818854d87e92c1999f1399d508a_42413_ca72458bc3535d1d3762aa2c97dee251.webp 400w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yh7tksj30k00f03zu_hu5dbeb818854d87e92c1999f1399d508a_42413_7e93c7dfb2fe3380fa10c21b2437d363.webp 760w,
+               /blog/knative-redefine-serverless/006tNbRwly1fys2yh7tksj30k00f03zu_hu5dbeb818854d87e92c1999f1399d508a_42413_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/knative-redefine-serverless/006tNbRwly1fys2yh7tksj30k00f03zu_hu5dbeb818854d87e92c1999f1399d508a_42413_ca72458bc3535d1d3762aa2c97dee251.webp&#34;
+               width=&#34;720&#34;
+               height=&#34;540&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;广告时间，欢迎大家加入 servicemesher 社区，也可以通过关注 servicemesher 微信公众号来及时了解 service mesh 技术的最新动态。&lt;/p&gt;
 </description>
     </item>
     

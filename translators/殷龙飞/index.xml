@@ -4004,6 +4004,518 @@ This is my message
     </item>
     
     <item>
+      <title>使用Istio控制Serverless架构Fn Project中的函数间流量路由</title>
+      <link>https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/</link>
+      <pubDate>Wed, 04 Jul 2018 17:44:01 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://hackernoon.com/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd56607913b8&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;在本文中，我将解释如何在 &lt;a href=&#34;https://fnproject.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn 函数&lt;/a&gt;之间使用 &lt;a href=&#34;http://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 服务网格实现基于版本的流量路由。&lt;/p&gt;
+&lt;p&gt;我将首先解释 &lt;a href=&#34;http://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 路由的基础知识以及将 Fn 部署和运行在 Kubernetes 上的方式。最后，我将解释我是如何利用 Istio 服务网格及其路由规则在两个不同的 Fn 函数之间路由流量的。&lt;/p&gt;
+&lt;p&gt;请注意，接下来的解释非常基本和简单——我的目的不是解释 Istio 或 Fn 的深入细节，而是解释得足够清楚，让您可以了解如何使自己的路由工作。&lt;/p&gt;
+&lt;h3 id=&#34;istio-路由入门&#34;&gt;Istio 路由入门&lt;/h3&gt;
+&lt;p&gt;让我花了一点时间来解释 &lt;a href=&#34;http://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 路由如何工作。Istio 使用 sidecar 容器（ &lt;code&gt;istio-proxy&lt;/code&gt; ）注入到您部署的应用中。注入的代理会劫持所有进出该 pod 的网络流量。部署中所有这些代理的集合与 Istio 系统的其他部分进行通信，以确定如何以及在何处&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/request-routing/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由流量&lt;/a&gt;（以及其他一些很酷的事情，如&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/mirroring/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;流量镜像&lt;/a&gt;、&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/fault-injection/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;故障注入&lt;/a&gt;和&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/circuit-breaking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;断路由&lt;/a&gt;）。&lt;/p&gt;
+&lt;p&gt;为了解释这是如何工作的，我们将开始运行一个 Kubernetes 服务（&lt;code&gt;myapp&lt;/code&gt;）和两个特定版本的应用程序部署（&lt;code&gt;v1&lt;/code&gt;和&lt;code&gt;v2&lt;/code&gt;）。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyerrbpzj20sa09c74h_hu0bd7e48214cf2ce257f7183ce46130d4_78318_67a84839621561efc9f11d66fdd19588.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyerrbpzj20sa09c74h_hu0bd7e48214cf2ce257f7183ce46130d4_78318_be4d4c0ab842af0018db8b293b0f1a9d.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyerrbpzj20sa09c74h_hu0bd7e48214cf2ce257f7183ce46130d4_78318_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyerrbpzj20sa09c74h_hu0bd7e48214cf2ce257f7183ce46130d4_78318_67a84839621561efc9f11d66fdd19588.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;251&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在上图中，我们有 &lt;code&gt;myapp&lt;/code&gt; 一个选择器设置为 Kubernetes 的服务 &lt;code&gt;app=myapp&lt;/code&gt; ，这意味着它将查找具有 &lt;code&gt;app=myapp&lt;/code&gt; 标签集的所有 Pod，并将流量发送给它们。基本上，如果您执行此操作，&lt;code&gt;curl myapp-service&lt;/code&gt; 您将从运行 v1 版本应用程序的 pod 或运行 v2 版本的 pod 获得响应。&lt;/p&gt;
+&lt;p&gt;我们还有两个 Kubernetes 部署，这些部署&lt;code&gt;myapp&lt;/code&gt;运行了 v1 和 v2 代码。除 &lt;code&gt;app=myapp&lt;/code&gt; 标签外，每个 pod 还将&lt;code&gt;version&lt;/code&gt;标签设置为 &lt;code&gt;v1&lt;/code&gt;或 &lt;code&gt;v2&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;上图中的所有内容都是可以从 Kubernetes 中开箱即用的。&lt;/p&gt;
+&lt;p&gt;进入 Istio 环节。为了能够做到更智能化和基于权重的路由，我们需要安装 &lt;a href=&#34;http://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;，然后将代理注入到我们的每个&lt;a href=&#34;http://istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;容器中&lt;/a&gt;，如下面的另一个图片所示。下图中的每个 pod 都有一个带有 Istio 代理的容器（用蓝色图标表示）和运行应用的容器。在上图中，我们只有一个容器在每个 pod 中运行——应用程序容器。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyg6hkmsj20sa09cglu_hu54e50941ebc207a9d3fc01c6eca97aab_87363_7f17663f73091527092802b6b6b7e8c1.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyg6hkmsj20sa09cglu_hu54e50941ebc207a9d3fc01c6eca97aab_87363_32aa7f0860ae3ab395e6b0bad03cf796.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyg6hkmsj20sa09cglu_hu54e50941ebc207a9d3fc01c6eca97aab_87363_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyg6hkmsj20sa09cglu_hu54e50941ebc207a9d3fc01c6eca97aab_87363_7f17663f73091527092802b6b6b7e8c1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;251&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;请注意，Istio 比图中显示的要多得多。我没有展示在 Kubernetes 集群上部署的其他 Istio Pod 和服务——注入的 Istio 代理与这些 Pod 和服务进行通信，以便知道如何正确路由流量。有关 Istio 不同部分的深入解释，请参阅&lt;a href=&#34;https://istio.io/docs/concepts/traffic-management/overview/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;此处&lt;/a&gt;的文档。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;如果我们现在可以调整&lt;code&gt;myapp&lt;/code&gt;服务，那么我们仍然会得到与第一个图中的设置完全相同的结果：来自&lt;code&gt;v1&lt;/code&gt;和&lt;code&gt;v2&lt;/code&gt; pod 的随机响应。唯一的区别在于网络流量从服务流向Pod的方式。在第二种情况下，对服务的任何调用都在 Istio 代理中结束，然后代理根据定义的路由规则决定将流量路由到哪里。&lt;/p&gt;
+&lt;p&gt;就像 Kubernetes 一样，Istio 路由规则也是使用 YAML 定义的，它们看起来像这样：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyh7i2qnj20o60hcta2_hua9462e42a4913f27534aa7176f83b040_140856_22ffe11f3dcc34429a5db5c274b59dd3.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyh7i2qnj20o60hcta2_hua9462e42a4913f27534aa7176f83b040_140856_65c9d1999347bc0b30f98808c2ff81ae.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyh7i2qnj20o60hcta2_hua9462e42a4913f27534aa7176f83b040_140856_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyh7i2qnj20o60hcta2_hua9462e42a4913f27534aa7176f83b040_140856_22ffe11f3dcc34429a5db5c274b59dd3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;545&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上述路由规则接收请求&lt;code&gt;myapp-service&lt;/code&gt;并将其重新路由到标记为 Pod 的请求&lt;code&gt;version=v1&lt;/code&gt; 。这就是具有上述路由规则的图表的样子：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhoj9ngj20sa0gkaai_hudddd4b84b3669d0daceb7916d03ff1dc_128444_9dc7a9f0f2045549ec475a1fc2f6d62b.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhoj9ngj20sa0gkaai_hudddd4b84b3669d0daceb7916d03ff1dc_128444_8af5a63a1dc508a289f8064e08087f0f.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhoj9ngj20sa0gkaai_hudddd4b84b3669d0daceb7916d03ff1dc_128444_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhoj9ngj20sa0gkaai_hudddd4b84b3669d0daceb7916d03ff1dc_128444_9dc7a9f0f2045549ec475a1fc2f6d62b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;445&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;底部的 Istio 大图标代表 Istio 部署/服务，其中包括正在读取的路由规则。这些规则然后用于重新配置在每个 pod 内运行的 Istio 代理 sidecar。&lt;/p&gt;
+&lt;p&gt;有了这个规则，如果我们 curl 服务，我们只能从标有标签为 &lt;code&gt;version=v1&lt;/code&gt;（图中的蓝色连接器描述）的 pod 获取响应。&lt;/p&gt;
+&lt;p&gt;现在我们已经了解了路由如何工作，我们可以研究 &lt;a href=&#34;http://fnproject.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn&lt;/a&gt; ，部署它并查看它是如何工作的，以及我们是否可以使用 Istio 以某种方式设置路由。&lt;/p&gt;
+&lt;h3 id=&#34;在-kubernetes-上的-fn-函数&#34;&gt;在 Kubernetes 上的 Fn 函数&lt;/h3&gt;
+&lt;p&gt;我们将从 Kubernetes 上的一些 &lt;a href=&#34;http://fnproject.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn&lt;/a&gt; 片段的基本图表开始。您可以使用 &lt;a href=&#34;http://github.com/fnproject/fn-helm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Helm chart&lt;/a&gt; 将 Fn 部署在您的 Kubernetes 集群之上。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhzsbtfj20ca09jq33_hu9ba06f052d07f6346456e38ad75da943_60785_47e63404373707232eac842a72dc1473.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhzsbtfj20ca09jq33_hu9ba06f052d07f6346456e38ad75da943_60785_5019bc058506489db29a73efd35f6e74.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhzsbtfj20ca09jq33_hu9ba06f052d07f6346456e38ad75da943_60785_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyhzsbtfj20ca09jq33_hu9ba06f052d07f6346456e38ad75da943_60785_47e63404373707232eac842a72dc1473.webp&#34;
+               width=&#34;442&#34;
+               height=&#34;343&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;图表顶部的 Fn API 服务是 Fn 的入口点，它用于管理您的 Function（创建，部署，运行等）——这是&lt;code&gt;FN_API_URL&lt;/code&gt;在 Fn 项目中引用的 URL 。&lt;/p&gt;
+&lt;p&gt;该服务反过来将调用路由到 Fn 负载均衡器（即标记为  &lt;code&gt;role=fn-lb&lt;/code&gt; 的任何 Pod ）。然后，负载均衡器会发挥神奇的作用，并将调用路由到&lt;code&gt;fn-service&lt;/code&gt; pod 的实例。这作为 Kubernetes DaemonSet 的一部分部署，并且通常每个 Kubernetes 节点都有一个该 pod 的实例。&lt;/p&gt;
+&lt;p&gt;有了这些简单的基础知识，让我们创建并部署一些 Function，并考虑如何进行流量路由。&lt;/p&gt;
+&lt;h3 id=&#34;创建和部署函数&#34;&gt;创建和部署函数&lt;/h3&gt;
+&lt;p&gt;如果您想遵循下面的教程，请确保已将 &lt;a href=&#34;https://hackernoon.com/part-ii-fn-load-balancer-585babd90456&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn 部署到您的 Kubernetes 群集&lt;/a&gt;（我正在使用 Docker for Mac ）并安装 &lt;a href=&#34;https://github.com/fnproject/cli&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn CLI&lt;/a&gt; 并运行以下命令来创建应用程序和一些功能：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 创建app文件夹&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir hello-app &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; hello-app
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;name: hello-app&amp;#34;&lt;/span&gt; &amp;gt; app.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Create a V1 function&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;fn init --name v1 --runtime go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; ..
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Create a V2 function&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir v2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; v2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;fn init --name v2 --runtime go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; ..
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用上述命令，您已创建应用程序的根目录，名为&lt;code&gt;hello-app&lt;/code&gt;。在这个目录中，我们创建了两个目录，每个目录下都有一个 Function：&lt;strong&gt;v1&lt;/strong&gt;和一个**v2。**Boilerplate Go Function 使用&lt;code&gt;fn init&lt;/code&gt; 指定使用 Go 作为运行时。这是目录的结构：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;├── app.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;├── v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│   ├── Gopkg.toml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│   ├── func.go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│   ├── func.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;│   └── test.json
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;└── v2
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ├── Gopkg.toml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ├── func.go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ├── func.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    └── test.json
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打开这&lt;code&gt;func.go&lt;/code&gt;两个目录并更新返回的消息以包含版本号——我们这样做的原因是可以快速区分哪个 Function 被调用。以下是v1的&lt;code&gt;func.go&lt;/code&gt;的样子（&lt;code&gt;Hello V1&lt;/code&gt;）：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyii51b6j215u0fedhe_hu1c7318c0f724e1c70bc8177387cb14d2_140299_f081f43310a44c2c71b00271f19e19d3.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyii51b6j215u0fedhe_hu1c7318c0f724e1c70bc8177387cb14d2_140299_dc3207bd4602ed19220510ba59e6c6d0.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyii51b6j215u0fedhe_hu1c7318c0f724e1c70bc8177387cb14d2_140299_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyii51b6j215u0fedhe_hu1c7318c0f724e1c70bc8177387cb14d2_140299_f081f43310a44c2c71b00271f19e19d3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;279&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;更改完成后就可以将这些功能部署到在 Kubernetes 上运行的 Fn 服务。为此，您必须将&lt;code&gt;FN_REGISTRY&lt;/code&gt;环境变量设置为指向您的 Docker 镜像仓库的用户名。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;因为我们在 Kubernetes 集群上运行 Fn，所以我们不能使用本地构建的映像 - 它们需要推送到Kubernetes集群可以访问的 Docker 镜像仓库。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;现在我们可以使用 &lt;a href=&#34;https://github.com/fnproject/cli&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Fn CLI&lt;/a&gt; 来部署这些函数：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;FN_API_URL&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;http://localhost:80 fn deploy --all
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;上面的命令假设 Fn API 服务暴露在 localhost:80 上（默认情况下，如果您在 Docker for Mac 中使用Kubernetes 支持）。如果使用不同的集群，则可以将 FN_API_URL 替换为 fn-api 服务的外部 IP 地址。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在 Docker 构建和推送完成之后，我们的函数就被部署到 Fn 服务中了，我们可以尝试调用它们。&lt;/p&gt;
+&lt;p&gt;部署到 Fn 服务的任何函数都有一个唯一的 URL，其中包含应用程序名称和路由名称。通过我们的应用程序名称和路由，我们可以访问已部署的函数 &lt;code&gt;http://$(FN_API_URL)/r/hello-app/v1&lt;/code&gt; 。所以，如果我们想调用&lt;code&gt;v1&lt;/code&gt;路由，我们可以这样做：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl http://localhost/r/hello-app/v1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;message&amp;#34;&lt;/span&gt;:&lt;span class=&#34;s2&#34;&gt;&amp;#34;Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同样，调用&lt;code&gt;v2&lt;/code&gt;路由将返回 Hello V2 消息。&lt;/p&gt;
+&lt;h4 id=&#34;但函数在哪里运行&#34;&gt;但函数在哪里运行？&lt;/h4&gt;
+&lt;p&gt;如果您在调用函数时查看正在创建/删除的 pod ，您会注意到没有真正改变——即没有 pod 创建或删除。原因是 Fn不会像 Kubernetes pod 一样创建函数 ，因为这太慢了。相反，所有 Fn 函数的部署和调用都发生在 fn-service pod 中。然后，Fn 负载均衡器负责部署和路由到这些 pod ，以最优化的方式部署/执行函数。&lt;/p&gt;
+&lt;p&gt;因此，我们没有函数的 Kubernetes pod/service ，但 Istio 要求我们拥有可以路由到的服务和 pod。在这种情况下，我们如何使用 Istio 呢 ？&lt;/p&gt;
+&lt;h3 id=&#34;思考&#34;&gt;思考&lt;/h3&gt;
+&lt;p&gt;让我将函数从图片中解放出来，并思考为了能让 Istio 路由工作我们需要做什么：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes 服务—— hello 应用程序的入口点&lt;/li&gt;
+&lt;li&gt;针对 hello-app v1 的 Kubernetes deployment&lt;/li&gt;
+&lt;li&gt;针对 hello-app v2 的 Kubernetes deployment&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;正如 Istio 路由入门一节开头部分所解释的，我们还必须在两个 deployment 中添加一个代表版本和 &lt;code&gt;app=hello-app&lt;/code&gt; 的标签。服务上的选择器会选择 &lt;code&gt;app=hello-app&lt;/code&gt; 的标签——特定于版本的标签将由 Istio 路由规则添加。&lt;/p&gt;
+&lt;p&gt;为此，每个特定于版本的部署都需要最终以正确的路由（例如&lt;code&gt;/r/hello-app/v1&lt;/code&gt;）调用 Fn 负载均衡器。由于一切都在 Kubernetes 中运行，我们知道 Fn 负载均衡器服务的名称，所以我们可以做到这一点。&lt;/p&gt;
+&lt;p&gt;因此，我们需要一个位于部署中的容器，它在调用时将呼叫转发到特定路径上的 Fn 负载均衡器。&lt;/p&gt;
+&lt;p&gt;这是图中表示的上述想法：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyiscib2j20ce0jogm3_hu0b287b17256307b6bba2116fa2d84595_104631_12b49134a17e970878abe04ed0828e0b.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyiscib2j20ce0jogm3_hu0b287b17256307b6bba2116fa2d84595_104631_bcd6de52f0b83801c7b1cdf1cc979d7d.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyiscib2j20ce0jogm3_hu0b287b17256307b6bba2116fa2d84595_104631_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyiscib2j20ce0jogm3_hu0b287b17256307b6bba2116fa2d84595_104631_12b49134a17e970878abe04ed0828e0b.webp&#34;
+               width=&#34;446&#34;
+               height=&#34;708&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们有一个服务代表我们的应用程序和两个特定于版本的部署，并直接路由到 Fn 服务中运行的 Function 。&lt;/p&gt;
+&lt;h4 id=&#34;简单的代理&#34;&gt;简单的代理&lt;/h4&gt;
+&lt;p&gt;为了实现这一点，我们需要某种代理服务器来接收所有调用并将它们转发给 Fn 服务。下面是一个简单的Nginx 配置，它完全符合我们的要求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-lua&#34; data-lang=&#34;lua&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;events&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;worker_connections&lt;/span&gt;  &lt;span class=&#34;mi&#34;&gt;4096&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;http&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;upstream&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;fn&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;server&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;server&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;my&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;fn&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;api.default&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;server&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;listen&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;location&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;/&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;proxy_pass&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;//&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;fn&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;r&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;hello&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;proxy_set_header&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;X&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Real&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;IP&lt;/span&gt;  &lt;span class=&#34;err&#34;&gt;$&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;remote_addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;proxy_set_header&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;X&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Forwarded&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;For&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;$&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;remote_addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;n&#34;&gt;proxy_set_header&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Host&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;$&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置解释：调用 &lt;code&gt;/&lt;/code&gt;，就将其转发到 &lt;code&gt;http://fn-server/r/hello-app/v1&lt;/code&gt;（&lt;code&gt;fn-server&lt;/code&gt;定义为上游），解析到&lt;code&gt;my-fn-api.default&lt;/code&gt;（这是 fn-api 在 Kubernetes 的 &lt;code&gt;default&lt;/code&gt; namespace 中的服务名称）。&lt;/p&gt;
+&lt;p&gt;我用一个脚本创建了一个 Docker 镜像，该脚本基于您传入的上游和路由值生成 Nginx 配置。该镜像在 &lt;a href=&#34;https://hub.docker.com/r/pj3677/simple-proxy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker hub 上提供&lt;/a&gt;，您可以在&lt;a href=&#34;https://github.com/peterj/fn-simple-proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;查看源代码。&lt;/p&gt;
+&lt;h4 id=&#34;部署到-kubernetes&#34;&gt;部署到 Kubernetes&lt;/h4&gt;
+&lt;p&gt;现在，我们可以创建 Kubernetes YAML 文件，包括 service、deployment 以及我们将用于访问函数的 ingress。&lt;/p&gt;
+&lt;p&gt;以下是 deployment 文件的摘录，以显示我们如何设置&lt;code&gt;UPSTREAM&lt;/code&gt;、 &lt;code&gt;ROUTE&lt;/code&gt;  环境变量和设置标签。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyjnxkj2j20si0m60uq_hue812762ba69205160c3aca8360906465_205682_4740bc071951ebce97f09d6bbc479059.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyjnxkj2j20si0m60uq_hue812762ba69205160c3aca8360906465_205682_21870af53f27aa9ff4411253ceef834e.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyjnxkj2j20si0m60uq_hue812762ba69205160c3aca8360906465_205682_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyjnxkj2j20si0m60uq_hue812762ba69205160c3aca8360906465_205682_4740bc071951ebce97f09d6bbc479059.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;591&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;UPSTREAM&lt;/code&gt;和&lt;code&gt;ROUTE&lt;/code&gt;环境变量由 simple-proxy 容器读取，Nginx 的配置文件会根据这些值生成。&lt;/p&gt;
+&lt;p&gt;服务的 YAML 文件也没什么特别，我们只是将选择器设置为&lt;code&gt;app: hello-app&lt;/code&gt; ：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyk1a1pmj20si0jata9_hu1bddbd992eebb8cc2dc4b282898baf18_158444_9496d124bd25ae4a299dd775d9e26c55.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyk1a1pmj20si0jata9_hu1bddbd992eebb8cc2dc4b282898baf18_158444_e156fc16586f52d84faf882b6f3ab031.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyk1a1pmj20si0jata9_hu1bddbd992eebb8cc2dc4b282898baf18_158444_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyk1a1pmj20si0jata9_hu1bddbd992eebb8cc2dc4b282898baf18_158444_9496d124bd25ae4a299dd775d9e26c55.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;514&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;最后一部分是 Istio ingress，我们设置了将所有传入流量路由到后端服务的规则：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyki4sz2j20si0jagnc_hu0040d4a0e44c1aeb7e74218e03b5ab4c_183932_af689ec22c12c54c0fd1bdac9daf5cec.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyki4sz2j20si0jagnc_hu0040d4a0e44c1aeb7e74218e03b5ab4c_183932_af52325149733de47b453ee9835fe763.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyki4sz2j20si0jagnc_hu0040d4a0e44c1aeb7e74218e03b5ab4c_183932_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoyki4sz2j20si0jagnc_hu0040d4a0e44c1aeb7e74218e03b5ab4c_183932_af689ec22c12c54c0fd1bdac9daf5cec.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;514&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;要部署这些，您可以使用&lt;code&gt;kubectl&lt;/code&gt;来部署 ingress 和服务，使用&lt;code&gt;istioctl kube-inject&lt;/code&gt;来注入 Istio 代理。&lt;/p&gt;
+&lt;p&gt;随着一切部署完毕，你应该会得到以下 Kubernetes 资源：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;hello-app-deployment-v1（使用指向 v1 路由的 simple-proxy 镜像部署）&lt;/li&gt;
+&lt;li&gt;hello-app-deployment-v2（使用指向 v2 路由的 simple-proxy 镜像部署）&lt;/li&gt;
+&lt;li&gt;hello-app-service（在 hello-app 部署中针对 v1 和 v2 pod 的服务）&lt;/li&gt;
+&lt;li&gt;指向 hello-app-service 的 ingress，并给增加注解，将 ingress.class 赋值为  “istio”&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;现在，如果我们调用 hello-app-service 或调用 ingress ，我们应该从 v1 和 v2  函数中获得随机响应。以下是对 ingress 进行调用的示例输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;k&#34;&gt;while&lt;/span&gt; true&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;do&lt;/span&gt; sleep 1&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; curl http://localhost:8082&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V1&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V1&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V2&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V2&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V2&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V1&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;{“message”:”Hello V1&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;“message”:”Hello V2&lt;span class=&#34;s2&#34;&gt;&amp;#34;}
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你会注意到我们随机获得了 V1 和 V2 的响应 - 这正是我们现在想要的！&lt;/p&gt;
+&lt;h3 id=&#34;istio-规则&#34;&gt;Istio 规则&lt;/h3&gt;
+&lt;p&gt;在我们的服务和部署已启动并运行（和正在运行）的情况下，我们可以为 Fn 函数创建 Istio 路由规则。让我们以一个简单的 v1 规则开始，该规则将所有对 &lt;code&gt;hello-app-service&lt;/code&gt; 的调用（&lt;code&gt;weight: 100&lt;/code&gt;）路由到标记为的 &lt;code&gt;v1&lt;/code&gt;的 pod 上：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoykynfcsj20si0hcwfx_hu32716bb4aad13c015274d8f148f2f610_149380_f3ef2700089e80596a3f119a6b0c9a12.webp 400w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoykynfcsj20si0hcwfx_hu32716bb4aad13c015274d8f148f2f610_149380_412e7203942956d7934ee3d3aedd460a.webp 760w,
+               /blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoykynfcsj20si0hcwfx_hu32716bb4aad13c015274d8f148f2f610_149380_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoykynfcsj20si0hcwfx_hu32716bb4aad13c015274d8f148f2f610_149380_f3ef2700089e80596a3f119a6b0c9a12.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;462&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;您可以通过运行应用此规则&lt;code&gt;kubectl apply -f v1-rule.yaml&lt;/code&gt;。查看运行中的路由的最佳方法是运行一个连续调用端点的循环——这样您就可以看到混合（v1/v2）和全部v1的响应。&lt;/p&gt;
+&lt;p&gt;就像我们将 &lt;code&gt;v1&lt;/code&gt; 的路由规则定义为 100% 的权重那样，我们可以类似地定义一条规则将所有内容路由到&lt;code&gt;v2&lt;/code&gt;，或者将规则路由 50％ 的流量 &lt;code&gt;v1&lt;/code&gt; 和 50％ 的流量&lt;code&gt;v2&lt;/code&gt;，如下面的演示所示。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsoysfirnig20f80a0dli.gif&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;一旦我证明了这一点，简单的 curl 命令，好了，我停下来：）&lt;/p&gt;
+&lt;p&gt;幸运的是，&lt;a href=&#34;https://medium.com/@carimura/the-importance-of-devops-to-serverless-f671070efb9&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Chad Arimura&lt;/a&gt; 在他关于 DevOps 对无服务器的重要性的文章中进一步说明了这一点（警报：DevOps 不会消失）。他使用 Spinnaker 对在实际 Kubernetes 集群上运行的 Fn 函数进行加权蓝绿部署。看看他的演示视频：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/traffic-routing-between-fn-functions-using-fn-project-and-istio-fd/61411417ly1fsozs9eudag20w00k0kk0.gif&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;结论&#34;&gt;结论&lt;/h3&gt;
+&lt;p&gt;每个人可能都会认同服务网格在无服务函数领域的重要性。如果使用服务网格（如路由、流量镜像、故障注入和其他一些东西），可以获得许多好处。&lt;/p&gt;
+&lt;p&gt;我看到的最大挑战是缺乏以开发人员为中心的工具，让开发人员能够利用所有这些漂亮和酷炫的功能。设置这个项目和演示来运行几次并不太复杂。&lt;/p&gt;
+&lt;p&gt;但是，这是两个函数，它们就返回一个字符串，并没有别的。这是一个简单的演示。考虑运行数百或数千个函数并在它们之间建立不同的路由规则。然后管理所有这些函数。或者推出新版本并监控故障。&lt;/p&gt;
+&lt;p&gt;我认为在进行函数管理、服务网格管理、路由、其他酷炫的功能方面有很多的机会（和挑战），因此对于每个参与者都很直观。&lt;/p&gt;
+&lt;h3 id=&#34;谢谢阅读&#34;&gt;谢谢阅读&lt;/h3&gt;
+&lt;p&gt;对这篇文章的任何反馈我都非常欢迎！你也可以在 &lt;a href=&#34;http://twitter.com/pjausovec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Twitter&lt;/a&gt; 和 &lt;a href=&#34;http://github.com/peterj&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GitHub&lt;/a&gt; 上关注我。如果你喜欢这一点，并希望在我写更多东西时得到通知，你应该订阅&lt;a href=&#34;https://tinyletter.com/pjausovec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我的通讯&lt;/a&gt;！&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>利用Let&#39;s Encrypt 为Istio（Envoy）添加TLS 支持</title>
       <link>https://cloudnative.to/blog/istio-envoy-cert-manager-lets-encrypt-for-tls/</link>
       <pubDate>Mon, 25 Jun 2018 20:30:52 +0800</pubDate>

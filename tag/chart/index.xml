@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>chart | 云原生社区</title>
+    <link>https://cloudnative.to/tag/chart/</link>
+      <atom:link href="https://cloudnative.to/tag/chart/index.xml" rel="self" type="application/rss+xml" />
+    <description>chart</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 04 Jun 2018 16:09:57 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/media/sharing.png</url>
+      <title>chart</title>
+      <link>https://cloudnative.to/tag/chart/</link>
+    </image>
+    
+    <item>
+      <title>Istio 0.8的Helm Chart解析</title>
+      <link>https://cloudnative.to/blog/helm-chart-for-istio-0-8/</link>
+      <pubDate>Mon, 04 Jun 2018 16:09:57 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/helm-chart-for-istio-0-8/</guid>
+      <description>&lt;p&gt;儿童节期间，拖拉了一个多月的 Istio 0.8 正式发布了，这可能是 Istio 1.0 之前的最后一个 LTS 版本，意义重大。&lt;/p&gt;
+&lt;p&gt;新版本中，原来的 Kubernetes 安装文件 &lt;code&gt;install/kubernetes/istio.yaml&lt;/code&gt;，变成了 &lt;code&gt;install/kubernetes/istio-demo.yaml&lt;/code&gt;，是的，你没看错，这个 LTS 的安装文件名字叫 demo。查看了一下文档，大概察觉到不靠谱的 Istio 发布组的意图了：这个项目的组件相对比较复杂，原有的一些选项是靠 ConfigMap 以及 istioctl 分别调整的，现在通过重新设计的 Helm Chart，安装选项用 values.yml 或者 helm 命令行的方式来进行集中管理了。下面就由看看 Istio 的 Helm Chart 的安装部署及其结构。&lt;/p&gt;
+&lt;h2 id=&#34;使用-helm-安装-istio&#34;&gt;使用 Helm 安装 Istio&lt;/h2&gt;
+&lt;p&gt;安装包内的 Helm 目录中包含了 Istio 的 Chart，官方提供了两种方法：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;用 Helm 生成 istio.yaml，然后自行安装。&lt;/li&gt;
+&lt;li&gt;用 Tiller 直接安装。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;很明显，两种方法并没有什么本质区别。例如第一个命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-sh&#34; data-lang=&#34;sh&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm template install/kubernetes/helm/istio &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --name istio --namespace  &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    istio-system &amp;gt; &lt;span class=&#34;nv&#34;&gt;$HOME&lt;/span&gt;/istio.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里说的是使用 &lt;code&gt;install/kubernetes/helm/istio&lt;/code&gt; 目录中的 Chart 进行渲染，生成的内容保存到 &lt;code&gt;$HOME/istio.yaml&lt;/code&gt; 文件之中。而第二个命令&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm template install/kubernetes/helm/istio &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --name istio --namespace istio-system &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    --set sidecarInjectorWebhook.enabled&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &amp;gt; &lt;span class=&#34;nv&#34;&gt;$HOME&lt;/span&gt;/istio.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只是设置了 Chart 中的一个变量 &lt;code&gt;sidecarInjectorWebhook.enabled&lt;/code&gt; 为 False。从而禁止自动注入属性生效。&lt;/p&gt;
+&lt;p&gt;我们照猫画虎，看看命令二的结果提交到 Kubernetes 中会发生什么事情。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm template install/kubernetes/helm/istio --name istio &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;--namespace istio-system --set sidecarInjectorWebhook.enabled&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &amp;gt; &lt;span class=&#34;nv&#34;&gt;$HOME&lt;/span&gt;/istio.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create namespace istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create -f &lt;span class=&#34;nv&#34;&gt;$HOME&lt;/span&gt;/istio.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;根据不同的网络情况，可能需要几分钟的等待，最后会看到这些 Pod 在运行：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-ini&#34; data-lang=&#34;ini&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-citadel-ff5696f6f-h4rdz&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-cleanup-old-ca-rp5p6&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-egressgateway-58d98d898c-5jnpz&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-ingress-6fb78f687f-wsl5q&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-ingressgateway-6bc7c7c4bc-hhrh7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-mixer-post-install-d2kl5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-pilot-6c5c6b586c-dqv2w&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-policy-5c7fbb4b9f-xmv6f&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-statsd-prom-bridge-6dbb7dcc7f-27tx7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;istio-telemetry-54b5bf4847-9gpr7&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;na&#34;&gt;prometheus-586d95b8d9-gb846&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
+&lt;li&gt;过去的 istio-ca 现已更名 istio-citadel。&lt;/li&gt;
+&lt;li&gt;istio-cleanup-old-ca 是一个 job，用于清理过去的 Istio 遗留下来的 CA 部署（包括 sa、deploy 以及 svc 三个对象）。&lt;/li&gt;
+&lt;li&gt;istio-mixer-post-install 同样也是一个 job，和上面的 Job 一样，简单的调用 kubectl 创建第三方资源，从而避免了之前的 CDR 需要重复创建的尴尬状况。&lt;/li&gt;
+&lt;li&gt;egressgateway、ingress 以及 ingressgateway，可以看出边缘部分的变动很大，以后会另行发文。&lt;/li&gt;
+&lt;li&gt;和从前不同，缺省已经打开了监控界面。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;helm-chart-的安装配置&#34;&gt;Helm Chart 的安装配置&lt;/h3&gt;
+&lt;p&gt;下面的配置项目，都可以使用 helm 的 &lt;code&gt;--set key=value&lt;/code&gt; 来设置，可以重复使用，用来设置多个值。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;选项&lt;/th&gt;
+&lt;th&gt;说明&lt;/th&gt;
+&lt;th&gt;缺省值&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;global.hub&lt;/td&gt;
+&lt;td&gt;绝大部分镜像所在的镜像库地址&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;docker.io/istionightly&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.tag&lt;/td&gt;
+&lt;td&gt;Istio 使用的绝大部分镜像的 Tag&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;circleci-nightly&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.proxy.image&lt;/td&gt;
+&lt;td&gt;指定 Proxy 的镜像名称&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;proxyv2&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.imagePullPolicy&lt;/td&gt;
+&lt;td&gt;镜像拉取策略&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;IfNotPresent&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.controlPlaneSecurityEnabled&lt;/td&gt;
+&lt;td&gt;控制面是否启动 mTLS&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;false&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.mtls.enabled&lt;/td&gt;
+&lt;td&gt;服务间是否缺省启用 mTLS&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;false&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.mtls.mtlsExcludedServices&lt;/td&gt;
+&lt;td&gt;禁用 mTLS 的 FQDN 列表&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;- kubernetes.default.svc.cluster.local&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.rbacEnabled&lt;/td&gt;
+&lt;td&gt;是否创建 RBAC 规则&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;true&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.refreshInterval&lt;/td&gt;
+&lt;td&gt;Mesh 发现间隔&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;10s&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.arch.amd64&lt;/td&gt;
+&lt;td&gt;amd64 架构中的调度策略，0：never；1: least preferred；2：no preference；3：most preferred&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;2&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.arch.s390x&lt;/td&gt;
+&lt;td&gt;amd64 架构中的调度策略，0：never；1: least preferred；2：no preference；3：most preferred&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;2&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;global.arch.ppc64le&lt;/td&gt;
+&lt;td&gt;amd64 架构中的调度策略，0：never；1: least preferred；2：no preference；3：most preferred&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;2&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;galley.enabled&lt;/td&gt;
+&lt;td&gt;是否安装 Galley 用于进行服务端的配置验证，需要 1.9 版本以上的 Kubernetes&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;false&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;上面的内容来自&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/helm-install/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;，其实这是不符合实际情况的（Istio 用户的日常）。在 &lt;code&gt;install/kubernetes/helm/istio/values.yaml&lt;/code&gt; 中，包含这一发行版本中的所有的缺省值。可以直接修改或者新建 values.yaml，并在 helm 命令行使用 &lt;code&gt;-f my-values.yaml&lt;/code&gt; 参数来生成自行定制的 &lt;code&gt;istio.yaml&lt;/code&gt;&lt;/p&gt;
+&lt;h2 id=&#34;解读-istio-helm-chart-中的模块&#34;&gt;解读 Istio Helm Chart 中的模块&lt;/h2&gt;
+&lt;p&gt;打开 Istio 的 Chart 之后，发现其中并没有任何组件的内容，只有两个 Configmap 对象的模板。其安装主体再次很非主流的通过依赖 Chart 的方式实现了完全的模块化。因此这个 Chart 的主体，实际上是 &lt;code&gt;requirements.yaml&lt;/code&gt;，打开这个文件，会看到规规矩矩的列出很多模块，例如：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-xml&#34; data-lang=&#34;xml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  - name: sidecarInjectorWebhook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    version: 0.8.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    # repository: file://../sidecarInjectorWebhook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    condition: sidecarInjectorWebhook.enabled
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这表明在 &lt;code&gt;sidecarInjectorWebhook&lt;/code&gt; 取值为 &lt;code&gt;enabled&lt;/code&gt; 的时候，就渲染这一模板。因此这里可以看做是模块的启用停用的控制点。这里列出的模块包括：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;模块&lt;/th&gt;
+&lt;th&gt;描述&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;egressgateway&lt;/td&gt;
+&lt;td&gt;外发流量网关&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;galley&lt;/td&gt;
+&lt;td&gt;在 K8S 服务端验证 Istio 的 CRD 资源的合法性&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;grafana&lt;/td&gt;
+&lt;td&gt;Dashboard&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;ingress&lt;/td&gt;
+&lt;td&gt;Ingress Controller&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;ingressgateway&lt;/td&gt;
+&lt;td&gt;Ingress Gateway&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;mixer&lt;/td&gt;
+&lt;td&gt;Mixer&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;pilot&lt;/td&gt;
+&lt;td&gt;Pilot&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;prometheus&lt;/td&gt;
+&lt;td&gt;Prometheus&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;security&lt;/td&gt;
+&lt;td&gt;安全相关内容&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;servicegraph&lt;/td&gt;
+&lt;td&gt;调用关系图&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;sidecarInjectorWebhook&lt;/td&gt;
+&lt;td&gt;自动注入&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;tracing&lt;/td&gt;
+&lt;td&gt;Zipkin Jeager 的跟踪服务&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;下面逐一做一下简要说明&lt;/p&gt;
+&lt;h3 id=&#34;egressgateway&#34;&gt;egressgateway&lt;/h3&gt;
+&lt;p&gt;外发通信的网关。&lt;/p&gt;
+&lt;p&gt;他的设置保存在 &lt;code&gt;values.yaml&lt;/code&gt; 的 &lt;code&gt;egressgateway&lt;/code&gt; 一节中（都是保存在同名分支下，后面不再重复）。部署内容包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Deployment 和 Service：一个 proxy。&lt;/li&gt;
+&lt;li&gt;HPA&lt;/li&gt;
+&lt;li&gt;RBAC 相关内容&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;可定制项目包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;服务端口和类型&lt;/li&gt;
+&lt;li&gt;HPA 实例数量上下限&lt;/li&gt;
+&lt;li&gt;资源限制&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;galley&#34;&gt;galley&lt;/h3&gt;
+&lt;p&gt;之前的 istio 版本中，只能通过 istioctl 验证 Istio 相关 CRD 的有效性，这个模块提供一个在服务端验证 CRD 的方法，他的部署内容包含：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Deployement 和 Service。&lt;/li&gt;
+&lt;li&gt;RBAC 相关&lt;/li&gt;
+&lt;li&gt;用于 CRD 校验的 ValidatingWebhookConfiguration 对象。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;校验目标包含 Pilot（例如 destinationpolicies 和 routerules） 和 Mixer（例如 memquotas 和 prometheuses） 两类 CRD。&lt;/p&gt;
+&lt;h3 id=&#34;grafana&#34;&gt;grafana&lt;/h3&gt;
+&lt;p&gt;一个带有 Istio 定制 Dashboard 的 Grafana 封装。&lt;/p&gt;
+&lt;p&gt;实际上将其镜像中的 Dashboard 复制出来就可以在其他 Grafana 实例上运行了。&lt;/p&gt;
+&lt;p&gt;定制内容的 &lt;code&gt;grafana.ingress.*&lt;/code&gt; 中包含 Ingress 的配置，用于外网访问。&lt;/p&gt;
+&lt;h3 id=&#34;ingress&#34;&gt;ingress&lt;/h3&gt;
+&lt;p&gt;Istio 的 Ingress Controller&lt;/p&gt;
+&lt;p&gt;具体部署内容和 egresscontroller 基本一致。&lt;/p&gt;
+&lt;h3 id=&#34;ingressgateway&#34;&gt;ingressgateway&lt;/h3&gt;
+&lt;p&gt;0.8.0 新增功能，为 Ingress 通信提供 Istio rules/destination 等特性。&lt;/p&gt;
+&lt;p&gt;部署内容和 ingress 类似。&lt;/p&gt;
+&lt;h3 id=&#34;mixer&#34;&gt;mixer&lt;/h3&gt;
+&lt;p&gt;Mixer 负责的是遥测和前置检查，他的 Chart 相对比较复杂，部署内容包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;和前面的版本不同，Mixer 的部署分成了两个部分，分别是 Policy 和 Telemetry 两个 Deployment 对象。&lt;/li&gt;
+&lt;li&gt;Service 也同样分成两个，其中 telemetry service 多了一个 prometheus 端口&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;crds.yaml&lt;/code&gt; 中包含了 mixer 所支持的所有 crd 定义（例如 memquotas 和 prometheuses）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;create-custom-resources-job.yaml&lt;/code&gt; 中包含了用于创建 crd 的 Job 对象。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;pilot&#34;&gt;pilot&lt;/h3&gt;
+&lt;p&gt;Pilot 承上启下，负责服务发现和向 Proxy 下发配置。除了常规的 Deployment 和 Service 之外，还包含了 &lt;code&gt;crds.yaml&lt;/code&gt;，用于声明 CRD 资源类型（例如 destinationpolicies 和 routerules）。&lt;/p&gt;
+&lt;h3 id=&#34;prometheus&#34;&gt;prometheus&lt;/h3&gt;
+&lt;p&gt;这个组件跟前面的 Grafana 类似，也是一个预定义的镜像。这个模板中的 Configmap 就是 Prometheus 的抓取配置，可以直接用到其他的 Prometheus 实例之中。&lt;/p&gt;
+&lt;h3 id=&#34;security&#34;&gt;security&lt;/h3&gt;
+&lt;p&gt;旧版本中的 Istio-ca&lt;/p&gt;
+&lt;p&gt;Security 部分的部署内容包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;RBAC&lt;/li&gt;
+&lt;li&gt;Job：使用 kubectl 清理旧版本 istio-ca 实例。&lt;/li&gt;
+&lt;li&gt;Deployment，原 CA。&lt;/li&gt;
+&lt;li&gt;Service：开放两个端口，分别服务于 http 和 gRPC。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;servicegraph&#34;&gt;servicegraph&lt;/h3&gt;
+&lt;p&gt;Service Graph 支持，和 Grafana 基本一致。&lt;/p&gt;
+&lt;h3 id=&#34;sidecarinjectorwebhook&#34;&gt;sidecarInjectorWebhook&lt;/h3&gt;
+&lt;p&gt;这一部分的功能是自动为 K8S 对象注入 Envoy。主要包含：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Deployment 和 Service&lt;/li&gt;
+&lt;li&gt;RBAC 相关&lt;/li&gt;
+&lt;li&gt;一个 &lt;code&gt;MutatingWebhookConfiguration&lt;/code&gt; 对象，会监听 Pod 的创建事件，用于自动注入。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;tracing&#34;&gt;tracing&lt;/h3&gt;
+&lt;p&gt;Jeager 的跟踪支持，总体情况跟 Prometheus 和 Grafana 等监控组件类似，配置项和暴露服务方面稍有区别：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;配置中包含 Jaeger 的环境变量的控制。&lt;/li&gt;
+&lt;li&gt;开启 jaeger 开关，会启用 Jaeger 的几个服务端口。&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>

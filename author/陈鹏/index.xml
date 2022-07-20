@@ -5,12 +5,337 @@
     <link>https://cloudnative.to/author/%E9%99%88%E9%B9%8F/</link>
       <atom:link href="https://cloudnative.to/author/%E9%99%88%E9%B9%8F/index.xml" rel="self" type="application/rss+xml" />
     <description>陈鹏</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Thu, 25 Feb 2021 08:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Fri, 26 Feb 2021 12:00:00 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/author/%E9%99%88%E9%B9%8F/avatar_hue38add62c87b7486d80c9f3fda25dfc1_12220_270x270_fill_q75_lanczos_center.jpg</url>
       <title>陈鹏</title>
       <link>https://cloudnative.to/author/%E9%99%88%E9%B9%8F/</link>
     </image>
+    
+    <item>
+      <title>使用 CLion 搭建 istio-proxy (envoy) 开发环境</title>
+      <link>https://cloudnative.to/blog/use-clion-read-envoy-source/</link>
+      <pubDate>Fri, 26 Feb 2021 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/use-clion-read-envoy-source/</guid>
+      <description>&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
+&lt;p&gt;要想深入学习 istio，还得学习下数据面的实现，istio 的数据面使用了 envoy，在 istio group 下有个叫 &lt;a href=&#34;https://github.com/istio/proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proxy&lt;/a&gt; 的仓库，包含了一些 istio 用到的一些 envoy 扩展，编译时将 envoy 代码作为库来引用，最终使用 bazel 编译出 istio 版本的 Envoy。&lt;/p&gt;
+&lt;p&gt;代码量非常庞大，如果没有智能的代码跳转、查找引用与实现，阅读和开发起来简直低效的要命。如何更加高效呢？关键在于 IDE/编辑器 的代码索引能力要好，需要能够准确跳转和查询，vscode 用的同学比较多，但它的 c/c++ 插件不够智能，很多情况无法跳转，而且效率较低；它还有个 clangd 的插件，基于 LSP，但不够成熟。这方面做的最好的目前还是来自 JetBrains 的 CLion，不过它需要依赖 &lt;code&gt;CMakeLists.txt&lt;/code&gt; 文件来解析项目结构，由于 c/c++ 没有统一的结构标准，不同项目结构千差万别，不太好自动生成 &lt;code&gt;CMakeLists.txt&lt;/code&gt;，需要我们先理解项目结构，然后编写 &lt;code&gt;CMakeLists.txt&lt;/code&gt; 来让 CLion 进行解析。&lt;/p&gt;
+&lt;p&gt;虽然社区有人针对 bazel 构建的项目写了一个通用脚本 &lt;a href=&#34;https://github.com/lizan/bazel-cmakelists&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bazel-cmakelists&lt;/a&gt; ，但很久没维护，测试了用它来生成最新 envoy 的 &lt;code&gt;CMakeLists.txt&lt;/code&gt; ，由于代码量庞大，最终会 OOM 而失败。&lt;/p&gt;
+&lt;p&gt;所以我们需要另寻更好的方法，不太了解这方面的同学弄起来会比较麻烦，本人也折腾了好一段时间才搞定，本文记录下方法和心得，以供大家参考。&lt;/p&gt;
+&lt;h2 id=&#34;克隆代码&#34;&gt;克隆代码&lt;/h2&gt;
+&lt;p&gt;首先克隆 &lt;a href=&#34;https://github.com/istio/proxy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio-proxy&lt;/a&gt; 的代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/istio/proxy.git istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最好切到某个稳定的 release 分支上：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git checkout -b release-1.9 origin/release-1.9
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;项目分析&#34;&gt;项目分析&lt;/h2&gt;
+&lt;p&gt;istio-proxy 代码库中主要只包含了在 istio 里用到的一些 envoy 扩展，代码量不大，源码主要分布在 src 与 extensions 目录，但编译需要很久，因为它实际编译的是 envoy，只是利用 bazel 将自身代码作为扩展编译进 envoy（得益于 envoy 的扩展机制），从这个 bazel 的 &lt;a href=&#34;https://github.com/istio/proxy/blob/master/src/envoy/BUILD&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BUILD 文件&lt;/a&gt; 就能看得出来：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;envoy_cc_binary(
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    name = &amp;#34;envoy&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    repository = &amp;#34;@envoy&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    visibility = [&amp;#34;//visibility:public&amp;#34;],
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    deps = [
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//extensions/access_log_policy:access_log_policy_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//extensions/attributegen:attributegen_plugin&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//extensions/metadata_exchange:metadata_exchange_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//extensions/stackdriver:stackdriver_plugin&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//extensions/stats:stats_plugin&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/extensions/wasm:wasm_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/http/alpn:config_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/http/authn:filter_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/tcp/forward_downstream_sni:config_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/tcp/metadata_exchange:config_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/tcp/sni_verifier:config_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;//src/envoy/tcp/tcp_cluster_rewrite:config_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;@envoy//source/exe:envoy_main_entry_lib&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    ],
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;)
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;其中 &lt;code&gt;@envoy&lt;/code&gt; 表示引用 envoy 代码库，main 函数也位于 envoy 代码库中。那么 envoy 代码库从哪儿来的呢？bazel 在构建时会自动下载指定的依赖，envoy 的代码来源在 &lt;a href=&#34;https://github.com/istio/proxy/blob/master/WORKSPACE&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WORKSPACE&lt;/a&gt; 中有指定：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http_archive(
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    name = &amp;#34;envoy&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    sha256 = ENVOY_SHA256,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    strip_prefix = ENVOY_REPO + &amp;#34;-&amp;#34; + ENVOY_SHA,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    url = &amp;#34;https://github.com/&amp;#34; + ENVOY_ORG + &amp;#34;/&amp;#34; + ENVOY_REPO + &amp;#34;/archive/&amp;#34; + ENVOY_SHA + &amp;#34;.tar.gz&amp;#34;,
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;)
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;bazel 会自动下载指定版本的源码包来编译。&lt;/p&gt;
+&lt;h2 id=&#34;如果获取依赖源文件&#34;&gt;如果获取依赖源文件？&lt;/h2&gt;
+&lt;p&gt;由于 istio-proxy 依赖了大量的第三方源文件，我们要阅读代码需要将这些源文件都下下来，只要将它编译一次，所有依赖源文件以及 generated 的代码都可以自动给你备好，所以我们需要对它进行一次编译。&lt;/p&gt;
+&lt;p&gt;由于编译 envoy 有复杂的工具链依赖，官方推荐使用容器进行编译，在执行 &lt;code&gt;make&lt;/code&gt; 前加个 &lt;code&gt;BUILD_WITH_CONTAINER=1&lt;/code&gt; 即可指定使用容器编译，免去复杂的环境依赖。但 bazel 编译会将依赖和 generated 的源文件都软链到临时目录，如果用容器编译，就会丢失这部分代码，而我们阅读 istio-proxy 代码时最关键的就是这部分代码了，所以不能用容器编译。&lt;/p&gt;
+&lt;h2 id=&#34;安装-bazelisk&#34;&gt;安装 bazelisk&lt;/h2&gt;
+&lt;p&gt;不用容器编译就需要本机环境基本满足工具链要求，首先是需要安装 bazel，由于 bazel 版本很多，不同 istio-proxy (envoy) 版本依赖的 bazel 版本也不一样，我们可以直接安装 &lt;a href=&#34;https://github.com/bazelbuild/bazelisk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bazelisk&lt;/a&gt; ，一个用于 bazel 多版本管理的工具，它可以自动识别项目中 &lt;a href=&#34;https://github.com/istio/proxy/blob/master/.bazelversion&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;.bazelversion&lt;/a&gt; 文件，选取指定版本的 bazel 来进行构建（可以自动下载对应版本的 bazel 二进制文件）。&lt;/p&gt;
+&lt;p&gt;如果是 macOS 用户，安装很简单：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;brew install bazelisk
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;如果之前已安装过 bazel，可以使用 &lt;code&gt;brew link --overwrite bazelisk&lt;/code&gt; 强制覆盖。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;其它平台的可以在 &lt;a href=&#34;https://github.com/bazelbuild/bazelisk/releases&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;release&lt;/a&gt; 页面下载最新的二进制文件，重命名为 &lt;code&gt;bazel&lt;/code&gt; 然后放到 &lt;code&gt;PATH&lt;/code&gt; 下。&lt;/p&gt;
+&lt;h2 id=&#34;其它依赖&#34;&gt;其它依赖&lt;/h2&gt;
+&lt;p&gt;如果是 macOS 用户，确保务必安装好 xcode，方便跳转系统库函数，安装命令：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;xcode-select --install
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;另外主要还有 python3（macOS 自带），其它依赖通常都系统自带，可以先不用管，等如果编译报错了再看。&lt;/p&gt;
+&lt;p&gt;更多依赖可参考 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/start/building#requirements&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt; 。&lt;/p&gt;
+&lt;h2 id=&#34;编译&#34;&gt;编译&lt;/h2&gt;
+&lt;p&gt;在 istio-proxy 代码根目录执行以下命令进行编译：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;make build_envoy
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;环境没问题的话会经过漫长的构建和编译，通常可能几十分钟，取决于电脑配置。&lt;/p&gt;
+&lt;p&gt;编译完后会发现 bazel 为我们生成了一些目录软链：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-1_hud2776ac9fddb34bfe3de67f6b3529650_22992_b8384c3f6ed989a0c8b992d6efa3b08c.webp 400w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-1_hud2776ac9fddb34bfe3de67f6b3529650_22992_341f6ec0348e9a6b77e54772c6bcbfd5.webp 760w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-1_hud2776ac9fddb34bfe3de67f6b3529650_22992_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-1_hud2776ac9fddb34bfe3de67f6b3529650_22992_b8384c3f6ed989a0c8b992d6efa3b08c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;50&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;bazel 输出目录结构可参考官方文档 &lt;a href=&#34;https://docs.bazel.build/versions/master/output_directories.html#layout-diagram&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Output Directory Layout&lt;/a&gt; 。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;我们主要关注以下两个目录：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;bazel-istio-proxy&lt;/strong&gt;：包含构建 istio-proxy 用到的源文件（包含依赖）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;bazel-bin&lt;/strong&gt;：包含一些 generated 代码。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;生成源码文件列表&#34;&gt;生成源码文件列表&lt;/h2&gt;
+&lt;p&gt;在 istio-proxy 根目录创建脚本文件 &lt;code&gt;generate-srcs.sh&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;#!/bin/bash
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; -ex
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;bazel_dir&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;bazel-&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;PWD&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;##*/&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;find -L -E &lt;span class=&#34;nv&#34;&gt;$bazel_dir&lt;/span&gt;/external src extensions -regex &lt;span class=&#34;s1&#34;&gt;&amp;#39;.*\.(cc|c|cpp)&amp;#39;&lt;/span&gt; &amp;gt; sourcefiles.txt
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;执行此脚本可以生成 istio-proxy 及其依赖的源文件列表（&lt;code&gt;sourcefiles.txt&lt;/code&gt;），用于在 &lt;code&gt;CMakeLists.txt&lt;/code&gt; 中引用。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注：&lt;/strong&gt; &lt;code&gt;$bazel_dir/external&lt;/code&gt; 下包含内容较多，全部索引的话 CLion 可能会比较卡，很多代码基本也都不会看，可以适当缩小范围，按需来配置，比如先只添加 &lt;code&gt;$bazel_dir/external/envoy&lt;/code&gt;，后续有需要再添加其它目录，然后 &lt;code&gt;Reload Cmake Project&lt;/code&gt; 重新索引。&lt;/p&gt;
+&lt;h2 id=&#34;生成-cmakeliststxt&#34;&gt;生成 CMakeLists.txt&lt;/h2&gt;
+&lt;p&gt;然后就可以在 istio-proxy 项目根目录创建下 &lt;code&gt;CMakeLists.txt&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cmake_minimum_required(VERSION 3.15)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;STRING( REGEX REPLACE &amp;#34;.*/(.*)&amp;#34; &amp;#34;\\1&amp;#34; CURRENT_FOLDER ${CMAKE_CURRENT_SOURCE_DIR} )
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;project(istio-proxy)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;macro(print_all_variables)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    message(STATUS &amp;#34;print_all_variables------------------------------------------{&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    get_cmake_property(_variableNames VARIABLES)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    foreach (_variableName ${_variableNames})
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        message(STATUS &amp;#34;${_variableName}=${${_variableName}}&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    endforeach()
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    message(STATUS &amp;#34;print_all_variables------------------------------------------}&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;endmacro()
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;set(CMAKE_CXX_STANDARD 17)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;add_definitions(-DNULL_PLUGIN) # enable wasm nullvm navigation
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;file(STRINGS sourcefiles.txt all_SRCS)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;message(STATUS &amp;#34;CMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;message(STATUS &amp;#34;CMAKE_HOME_DIRECTORY=${CMAKE_HOME_DIRECTORY}&amp;#34;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;add_executable(istio-proxy ${all_SRCS})
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;set(istio_include_dirs
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./src&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./extensions&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/envoy&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/envoy/source&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/envoy/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/envoy/api/wasm/cpp&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/boringssl/src/include/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_gabime_spdlog/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_c_ares_c_ares&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_google_absl&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_google_cel_cpp&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_google_protobuf/src&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_fmtlib_fmt/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_eile_tclap/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_grpc_grpc/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_envoyproxy_protoc_gen_validate/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_tencent_rapidjson/include/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_datadog_dd_opentracing_cpp/include/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_libevent_libevent/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_mirror_tclap/include&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_grpc_grpc&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_circonus_labs_libcircllhist/src/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_nodejs_http_parser&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_nghttp2_nghttp2/lib/includes/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_cyan4973_xxhash/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_google_flatbuffers/include/&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-${CURRENT_FOLDER}/external/com_github_fmtlib_fmt/test&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin/external/envoy_api&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin/external/mixerapi_git&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin/external/com_envoyproxy_protoc_gen_validate&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin/external/com_google_googleapis&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &amp;#34;./bazel-bin/external/com_github_cncf_udpa&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;target_include_directories(istio-proxy PUBLIC ${istio_include_dirs})
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;解释一下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;add_executable&lt;/code&gt; 将需要索引的源文件列表 (&lt;code&gt;sourcefiles.txt&lt;/code&gt;) 加进索引。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;target_include_directories&lt;/code&gt; 将用到的一些纯头文件目录加进索引（不包含实现代码，主要是一些接口），这里也是可以按需进行增删。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;使用-clion-阅读&#34;&gt;使用 CLion 阅读&lt;/h2&gt;
+&lt;p&gt;不要直接打开 istio-proxy 目录，而是 Open 时选中 &lt;code&gt;CMakeLists.txt&lt;/code&gt;，然后 &lt;code&gt;Open as Project&lt;/code&gt;:&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-2_hue9f4163d83d1a0187edc1abfa25c358a_13001_7a874a57f6f543667d1e2bd4198b9665.webp 400w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-2_hue9f4163d83d1a0187edc1abfa25c358a_13001_69ec65e8b09cb37ff47b9228c170daca.webp 760w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-2_hue9f4163d83d1a0187edc1abfa25c358a_13001_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-2_hue9f4163d83d1a0187edc1abfa25c358a_13001_7a874a57f6f543667d1e2bd4198b9665.webp&#34;
+               width=&#34;454&#34;
+               height=&#34;148&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;弹出 &lt;code&gt;Load Project&lt;/code&gt; 时不要勾选 &lt;code&gt;Clean project&lt;/code&gt;，不然退出 CLion 时会执行 &lt;code&gt;make clean&lt;/code&gt;，导致把 bazel 生成的源文件都给删除掉，就没法跳转了：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-6_huf403687cf91b911c3a1f43c03b5bace0_16225_f52aab59b1ff1f3a2f44eec869fb6650.webp 400w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-6_huf403687cf91b911c3a1f43c03b5bace0_16225_fde69435a31b0f070dfa228818303544.webp 760w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-6_huf403687cf91b911c3a1f43c03b5bace0_16225_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-6_huf403687cf91b911c3a1f43c03b5bace0_16225_f52aab59b1ff1f3a2f44eec869fb6650.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;183&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;然后就会开始索引，完成后就可以愉快的看代码了，先从 main 看起吧 (&lt;code&gt;bazel-istio-proxy/external/envoy/source/exe/main.cc&lt;/code&gt;):&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-3.gif&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;查找引用：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-4_hueb974a45bbc295dfd4f2592a732c1d74_217981_0898c9731316d4e79c0a72f1a28364b0.webp 400w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-4_hueb974a45bbc295dfd4f2592a732c1d74_217981_1feaa85b2aa6c7eaf28a49490c37a8b5.webp 760w,
+               /blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-4_hueb974a45bbc295dfd4f2592a732c1d74_217981_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-4_hueb974a45bbc295dfd4f2592a732c1d74_217981_0898c9731316d4e79c0a72f1a28364b0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;446&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;跳转到实现：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34;
+           src=&#34;https://cloudnative.to/blog/use-clion-read-envoy-source/use-clion-read-envoy-source-code-5.gif&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;小结&#34;&gt;小结&lt;/h2&gt;
+&lt;p&gt;本文介绍了如何使用 CLion 来阅读 istio-proxy (envoy) 的代码，包含源码结构分析、环境搭建，以及生成 CLion 所需要的 &lt;code&gt;CMakeLists.txt&lt;/code&gt; 文件的方法，最后也展示了效果，希望对你有所帮助。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>在生产环境使用 Istio 前的若干考虑要素</title>

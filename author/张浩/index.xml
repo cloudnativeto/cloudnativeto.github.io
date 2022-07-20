@@ -873,6 +873,386 @@ $ ip a s SVC
     </item>
     
     <item>
+      <title>Kubernetes v1.17&#43; 集群下 CNI 使用 VXLAN 模式 SVC 有 63 秒延迟的触发原因定位</title>
+      <link>https://cloudnative.to/blog/kubernetes-1-17-vxlan-63s-delay/</link>
+      <pubDate>Thu, 28 May 2020 15:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kubernetes-1-17-vxlan-63s-delay/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的 A 记录 UDP 下查询可能有问题。原因是 &lt;code&gt;v1.17+&lt;/code&gt; 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面， WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是 &lt;code&gt;05/28&lt;/code&gt;，最开始发现是上周五也就是 &lt;code&gt;05/23&lt;/code&gt; 号，文章从时间线写起，因为很多时候想发文章但是没空。&lt;/p&gt;
+&lt;p&gt;2020-07-19 官方版本 v1.18.6, v1.16.13, v1.17.9+ 已经修复这个问题，可以同版本内升级，或者只切 kube-proxy 版本。&lt;/p&gt;
+&lt;h2 id=&#34;由来&#34;&gt;由来&lt;/h2&gt;
+&lt;p&gt;上周五我经过同事的工位看到同事的桌面是 &lt;code&gt;kubectl get po&lt;/code&gt; 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套 &lt;code&gt;1.18.2&lt;/code&gt; 的集群。1.18 的 kube-proxy 的 ipvs 包的 parseIP 有 bug ，我推荐他换 &lt;code&gt;v1.17.5&lt;/code&gt;。他当时在部署一个入门的 SVC 实验，无法解析域名。使用 dig 命令排查了下，下面是对照：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;dig @&amp;lt;podIP&amp;gt; +short kubernetes.default.svc.cluster.local&lt;/code&gt; 能解析&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;dig @10.96.0.10 +short kubernetes.default.svc.cluster.local&lt;/code&gt; 超时&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;很多市面上的 kubeadm 部署教程都是直接命令 &lt;code&gt;kubeadm init&lt;/code&gt; 的，所以我推荐同事去按照我文章的 &lt;a href=&#34;https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubeadm 部署&lt;/a&gt; 一套后再试试，叫他用&lt;code&gt;v1.17&lt;/code&gt;的最新版本&lt;code&gt;v1.17.5&lt;/code&gt;，结果还是上面一样。 coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;curl -I 10.96.0.10:9153/metrics&lt;/code&gt; 超时，很久之后才有返回&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;curl -I &amp;lt;podIP&amp;gt;:9153/metrics&lt;/code&gt; 能直接返回&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;涉及到本次排查的信息为：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get node -o wide
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME     STATUS   ROLES    AGE    VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                KERNEL-VERSION          CONTAINER-RUNTIME
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master   Ready    master   7d8h   v1.18.2   10.0.100.3    &amp;lt;none&amp;gt;        CentOS Linux &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Core&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   3.10.0-957.el7.x86_64   docker://19.3.8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;node1    Ready    &amp;lt;none&amp;gt;   7d7h   v1.18.2   10.0.100.4    &amp;lt;none&amp;gt;        CentOS Linux &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Core&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   3.10.0-957.el7.x86_64   docker://19.3.8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;node2    Ready    &amp;lt;none&amp;gt;   7d7h   v1.18.2   10.0.100.15   &amp;lt;none&amp;gt;        CentOS Linux &lt;span class=&#34;m&#34;&gt;7&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Core&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;   3.10.0-957.el7.x86_64   docker://19.3.8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get po -o wide -n kube-system -l k8s-app&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;kube-dns
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE    NOMINATED NODE   READINESS GATES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;coredns-546565776c-v5wwg   1/1     Running   &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt;          25h   10.244.2.73   node2   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;多次尝试发现很久的时间都是一样，用 time 命令观察了下一直是 63 秒返回。包括其他任何 SVC 都是这样。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;time&lt;/span&gt;    curl -I 10.96.0.10:9153/metrics
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;200&lt;/span&gt; OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0.0.4&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;charset&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;utf-8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Wed, &lt;span class=&#34;m&#34;&gt;25&lt;/span&gt; May &lt;span class=&#34;m&#34;&gt;2020&lt;/span&gt; 08:39:35 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real	1m3.091s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user	0m0.002s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sys	0m0.007s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;proxyMode 是 ipvs ，用 ipvsadm 看下超时的时候的状态，一直是 &lt;code&gt;SYN_RECV&lt;/code&gt;，也就是发送了 SYN ，没收到回包。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -lnc &lt;span class=&#34;p&#34;&gt;|&amp;amp;&lt;/span&gt; grep &lt;span class=&#34;m&#34;&gt;9153&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TCP 00:59  SYN_RECV    10.96.0.10:41282   10.96.0.10:9153    10.244.2.73:9153
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;抓包&#34;&gt;抓包&lt;/h3&gt;
+&lt;p&gt;因为 CNI 使用的 flannel ，用的 VXLAN 模式。master 上抓 9153 和 &lt;code&gt;flannel.1&lt;/code&gt; 的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[root@master /root]# tcpdump -nn -i flannel.1 port 9153
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on flannel.1, link-type EN10MB (Ethernet), capture size 262144 bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:56.705696 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17148909 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:57.708489 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17149912 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:59.712458 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17151916 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:03.716441 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17155920 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:11.732562 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17163936 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:27.764498 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17179968 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.828493 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829565 IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829611 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829714 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829897 IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831300 IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831322 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831435 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831633 IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831660 IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[root@master /root]# tcpdump -nn -i eth0 port 8472
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:56.705718 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17148909 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:57.708523 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17149912 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:30:59.712478 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17151916 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:03.716452 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17155920 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:11.732590 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17163936 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:27.764513 IP 10.0.100.3.48683 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17179968 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.828541 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829521 IP 10.0.100.15.56771 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829617 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829729 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.829883 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831292 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831327 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831448 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831612 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.831665 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[root@node2 /root]# tcpdump -nn  -i eth0 port 8472
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.836137 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [S], seq 911217171, win 43690, options [mss 65495,sackOK,TS val 17212032 ecr 0,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.836328 IP 10.0.100.15.56771 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [S.], seq 435819916, ack 911217172, win 27960, options [mss 1410,sackOK,TS val 17212067 ecr 17212032,nop,wscale 7], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.836811 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.836910 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [P.], seq 1:88, ack 1, win 342, options [nop,nop,TS val 17212033 ecr 17212067], length 87
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.836951 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [.], ack 88, win 219, options [nop,nop,TS val 17212067 ecr 17212033], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838385 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [P.], seq 1:113, ack 88, win 219, options [nop,nop,TS val 17212069 ecr 17212033], length 112
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838522 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 113, win 342, options [nop,nop,TS val 17212034 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838621 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [F.], seq 88, ack 113, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838703 IP 10.0.100.15.34571 &amp;gt; 10.0.100.3.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.2.73.9153 &amp;gt; 10.244.0.0.2201: Flags [F.], seq 113, ack 89, win 219, options [nop,nop,TS val 17212069 ecr 17212035], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838836 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先看上面的第一部分，搜了下资料，得知 TCP 默认 SYN 报文最大 retry 5 次，每次超时了翻倍，&lt;code&gt;1s -&amp;gt; 3s -&amp;gt; 7s -&amp;gt; 15s -&amp;gt; 31s -&amp;gt; 63s&lt;/code&gt;。只有 63 秒的时候 node 的机器上才收到了 VXLAN 的报文。说明 POD 所在  node 压根没收到 63 秒之前的。&lt;/p&gt;
+&lt;p&gt;一般 LVS 的 dr 模式下 TCP 的时间戳混乱或者其他几个 ARP 的内核参数不对下 &lt;code&gt;SYN&lt;/code&gt; 是一直收不到的而不是63秒后有结果，所以和内核相关参数无关。于是同样上面的步骤 tcpdump 抓包，加上&lt;code&gt;-w filename.pcap&lt;/code&gt;选项把抓的包导出下来导入到 wireshark 里准备看看。&lt;/p&gt;
+&lt;h3 id=&#34;报文分析&#34;&gt;报文分析&lt;/h3&gt;
+&lt;p&gt;9153 的包 wireshark 里看 63 秒前面都是 TCP 的 SYN 重传，看到了 master 上向外发送的 VXLAN 报文的时候有了发现。&lt;/p&gt;
+&lt;p&gt;可以看到 UDP 的 checksum 是&lt;code&gt;0xffff&lt;/code&gt;，我对 UDP 报文不太熟悉， UDP 的 header 的 Checksum 没记错的话 &lt;code&gt;CRC32&lt;/code&gt; 校验的，不可能是这种两个字节都置 1 的 &lt;code&gt;0xffff&lt;/code&gt; ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-vxlan1&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;vxlan1&#34; srcset=&#34;
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum1_huaf1abb878251657be8ca6ddf7b5cba40_54149_84fd3ec0f4fac947880f6ae0336710c0.webp 400w,
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum1_huaf1abb878251657be8ca6ddf7b5cba40_54149_e7e7b98da259c2716ae5a7e365a5697f.webp 760w,
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum1_huaf1abb878251657be8ca6ddf7b5cba40_54149_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum1_huaf1abb878251657be8ca6ddf7b5cba40_54149_84fd3ec0f4fac947880f6ae0336710c0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;629&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      vxlan1
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;wireshark 的&lt;code&gt;编辑&lt;/code&gt;-&amp;gt;&lt;code&gt;首选项&lt;/code&gt;-&amp;gt;&lt;code&gt;Protocols&lt;/code&gt;-&amp;gt;&lt;code&gt;UDP&lt;/code&gt;-&amp;gt;&lt;code&gt;Validate the UDP checksum if possible&lt;/code&gt; 勾上更直观看。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-vxlan1&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;vxlan1&#34; srcset=&#34;
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum2_hu9f411cffa8f56693cee5b41730363e25_61230_62273d306a6a1120bcff637b3ae4a395.webp 400w,
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum2_hu9f411cffa8f56693cee5b41730363e25_61230_7244dc237643cddbb698eed17bc23e39.webp 760w,
+               /blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum2_hu9f411cffa8f56693cee5b41730363e25_61230_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kubernetes-1-17-vxlan-63s-delay/vxlan-udp-csum2_hu9f411cffa8f56693cee5b41730363e25_61230_62273d306a6a1120bcff637b3ae4a395.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;590&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      vxlan1
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;不是根本的解决方法&#34;&gt;不是根本的解决方法&lt;/h3&gt;
+&lt;p&gt;搜了下 &lt;code&gt;wireshark linux udp checksum incorrect&lt;/code&gt;，都是推荐把 &lt;code&gt;Checksum Offload&lt;/code&gt; disable 掉就行了，例如我这里是 flannel ，则是：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ /sbin/ethtool -K flannel.1 tx-checksum-ip-generic off
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Actual changes:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tx-checksumming: off
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	tx-checksum-ip-generic: off
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcp-segmentation-offload: off
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	tx-tcp-segmentation: off &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;requested on&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	tx-tcp-ecn-segmentation: off &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;requested on&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	tx-tcp6-segmentation: off &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;requested on&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	tx-tcp-mangleid-segmentation: off &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;requested on&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;udp-fragmentation-offload: off &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;requested on&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;再测下正常，而 WEAVE 他们也用的 VXLAN 模式，但是他们在创建网卡的时候把这个已经 off 掉了，所以 WEAVE 的 VXLAN 模式在 &lt;code&gt;v1.17+&lt;/code&gt; 集群没出现这个问题。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;time&lt;/span&gt; curl -I 10.96.0.10:9153
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;404&lt;/span&gt; Not Found
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;charset&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;utf-8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-Content-Type-Options: nosniff
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Wed, &lt;span class=&#34;m&#34;&gt;27&lt;/span&gt; May &lt;span class=&#34;m&#34;&gt;2020&lt;/span&gt; 02:14:04 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Length: &lt;span class=&#34;m&#34;&gt;19&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real	0m0.009s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user	0m0.005s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sys	0m0.003s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你以为这样就完了？其实并没有，因为我自己维护了一套 &lt;a href=&#34;https://github.com/zhangguanzhang/Kubernetes-ansible&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ansible 部署 kubernetes&lt;/a&gt; 的方案，每次新版本发布我都会实际测下。并且同事反映了他同样云主机开出来用我 ansible 部署 &lt;code&gt;v1.17.5&lt;/code&gt; 没有这个问题。这就很奇怪了，原因后面说，请接着继续看。&lt;/p&gt;
+&lt;h3 id=&#34;什么是-checksum-offload&#34;&gt;什么是 checksum offload&lt;/h3&gt;
+&lt;p&gt;Checksum Offload 是网卡的一个功能选项。如果该选项开启，则网卡层面会计算需要发送或者接收到的消息的校验和，从而节省 CPU 的计算开销。此时，在需要发送的消息到达网卡前，系统会在报头的校验和字段填充一个随机值。但是，尽管校验和卸载能够降低 CPU 的计算开销，但受到计算能力的限制，某些环境下的一些网络卡计算速度不如主频超过 400MHz 的 CPU 快。&lt;/p&gt;
+&lt;h2 id=&#34;正文&#34;&gt;正文&lt;/h2&gt;
+&lt;h3 id=&#34;对照组&#34;&gt;对照组&lt;/h3&gt;
+&lt;p&gt;很奇怪的就是为啥就是我的 ansible 部署的二进制就正常没这个问题，而 kubeadm 部署的就不正常，后面我花时间整了以下几个对照组(期间同事也帮我做了几个条件下的测试，但是不是系统用错了就是版本整错了。。。)，终于找到了问题的范围，下面是我自己统计的对照组信息， kubeadm 和 ansible 版本均为&lt;code&gt;1.17.5&lt;/code&gt;测试。os 不重要，因为最终排查出和 os 无关：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;os&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;type(kubeadm or ansible)&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;flannel version&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;flannel is running in pod?&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;will 63 sec delay?&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.11.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.12.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.11.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.12.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.11.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.12.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.11.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v0.12.0&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;这就看起来很迷了。但是排查出和 flannel 无关，感觉 kube-proxy 有关系，然后今天 &lt;code&gt;05/28&lt;/code&gt; 针对 kube-proxy 做了个对照组：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;os&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;type(kubeadm or ansible)&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;kube-proxy version&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;kube-proxy is running in pod?&lt;/th&gt;
+&lt;th style=&#34;text-align:center&#34;&gt;will 63 sec delay?&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.17.5&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.17.5&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.16.9&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;kubeadm&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.16.9&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.17.5&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;yes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7.6&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;ansible&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;v1.17.5&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;td style=&#34;text-align:center&#34;&gt;no&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;可以看出就是 1.17 以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会， 在 github 上 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;compare 了下 v1.17.0 和 v1.16.3 &lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;发现了 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile 的改动&lt;/a&gt;，&lt;code&gt;1.17.0&lt;/code&gt; 里的 Dockerfile 的 BASEIMAGE 是用  &lt;a href=&#34;https://github.com/coreos/flannel/pull/1282#issuecomment-635273081&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指定了一个源安装了最新的 iptables&lt;/a&gt;，然后利用 &lt;code&gt;update-alternatives&lt;/code&gt; 把脚本 &lt;code&gt;/usr/sbin/iptables-wrapper&lt;/code&gt; 去替代 &lt;code&gt;iptables&lt;/code&gt; 来检测应该使用 &lt;code&gt;nft&lt;/code&gt; 还是 &lt;code&gt;legacy&lt;/code&gt;， hack 下镜像回自带源里的 iptables 验证下。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-Dockerfile&#34; data-lang=&#34;Dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; registry.aliyuncs.com/google_containers/kube-proxy:v1.17.5&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; rm -f /usr/sbin/iptables &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;    clean-install iptables&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;构建的镜像推送到了 dockerhub 上 &lt;code&gt;zhangguanzhang/hack-kube-proxy:v1.17.5&lt;/code&gt;，更改下集群 kube-proxy ds 的镜像。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n kube-system get ds kube-proxy -o yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep image:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        image: zhangguanzhang/hack-kube-proxy:v1.17.5
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试访问成功。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;time&lt;/span&gt; curl -I 10.96.0.10:9153
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;404&lt;/span&gt; Not Found
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;charset&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;utf-8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-Content-Type-Options: nosniff
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Thu, &lt;span class=&#34;m&#34;&gt;28&lt;/span&gt; May &lt;span class=&#34;m&#34;&gt;2020&lt;/span&gt; 04:47:21 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Length: &lt;span class=&#34;m&#34;&gt;19&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real	0m0.008s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user	0m0.003s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sys	0m0.003s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;对于这个问题我在 &lt;a href=&#34;https://github.com/coreos/flannel/pull/1282&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;flannel 的 pr&lt;/a&gt; 下面也参与了回复，同时在官方 github 上提了一个 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/issues/91519&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;issue&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这个问题的触发是由于&lt;code&gt;v1.17+&lt;/code&gt;的 kube-proxy 的 docker 镜像里安装了最新的 iptables， &lt;code&gt;--random-fully&lt;/code&gt; 选项&lt;a href=&#34;https://github.com/kubernetes/kubernetes/issues/88986#issuecomment-635640143&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;会触发内核 vxlan 的 bug&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;目前解决问题三种办法：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;关闭 CNI 的 VXLAN 网卡的 &lt;code&gt;checksum offload&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;更改 Docker 镜像&lt;/li&gt;
+&lt;li&gt;升级到新内核，具体版本就不知道了，只要在这个 &lt;a href=&#34;https://github.com/torvalds/linux/commit/ea64d8d6c675c0bb712689b13810301de9d8f77a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;内核 pr&lt;/a&gt; 合并后出的内核版本都行，有人说这些可以 &lt;code&gt;Stable kernels 5.6.13, 5.4.41, 4.19.123, 4.14.181 and later have the checksum patch included.&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;参考链接&#34;&gt;参考链接&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://blog.csdn.net/u010039418/article/details/78234570&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCP 超时重传定时器梳理&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://wiki.wireshark.org/CaptureSetup/Offloading&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;wireshark 文档&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zh.wikipedia.org/wiki/TCP%E6%A0%A1%E9%AA%8C%E5%92%8C%E5%8D%B8%E8%BD%BD&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;offloading&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
       <title>kubernetes dashboard在ssl的各种场景下的手动部署</title>
       <link>https://cloudnative.to/blog/general-kubernetes-dashboard/</link>
       <pubDate>Wed, 17 Apr 2019 11:23:34 +0800</pubDate>
@@ -1304,6 +1684,270 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TLS termination - github.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/dnsapi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;acme.sh wiki - github.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/dashboard/wiki/Certificate-management#public-trusted-certificate-authority&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;certmanager trusted github.com&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Kubernetes Ingress Controller的使用介绍及高可用落地</title>
+      <link>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</link>
+      <pubDate>Wed, 17 Apr 2019 11:23:34 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</guid>
+      <description>&lt;blockquote&gt;
+&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang的博客&lt;/a&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;从之前对ingress controller到现在了解架构和一些经验总结下，顺带给人科普少走弯路
+需要看懂本文要具备一下知识点：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Service实现原理和会应用&lt;/li&gt;
+&lt;li&gt;知道反向代理原理，了解nginx和apache的vhost概念&lt;/li&gt;
+&lt;li&gt;了解service的几种类型（Nodeport、clusterip、LB）&lt;/li&gt;
+&lt;li&gt;四层和七层区别（不明白就这样去理解，七层最常见就是应用层的http，也就是url，四层是传输层，为tcp/udp端口）&lt;/li&gt;
+&lt;li&gt;域名解析，/etc/hosts等基础知识&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;ingress-controller介绍&#34;&gt;Ingress Controller介绍&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;Ingress Controller&lt;/code&gt;是一个统称，并不是只有一个，有如下这些：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress NGINX&lt;/a&gt;: Kubernetes 官方维护的方案，也是本次安装使用的 Controller。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://clouddocs.f5.com/products/connectors/k8s-bigip-ctlr/v1.5/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;F5 BIG-IP Controller&lt;/a&gt;: F5 所开发的 Controller，它能够让管理员通过 CLI 或 API 让 Kubernetes 与 OpenShift 管理 F5 BIG-IP 设备。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://konghq.com/blog/kubernetes-ingress-controller-for-kong/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress Kong&lt;/a&gt;: 著名的开源 API Gateway 方案所维护的 Kubernetes Ingress Controller。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/containous/traefik&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Traefik&lt;/a&gt;: 是一套开源的 HTTP 反向代理与负载均衡器，而它也支援了 Ingress。&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/appscode/voyager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Voyager&lt;/a&gt;: 一套以 HAProxy 为底的 Ingress Controller。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Ingress Controller 的实现不只上面这些方案，还有很多可以在网络上找到这里不一一列出来了。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;我们部署在集群里的服务的svc想暴露出来的时候，从长久眼光看和易于管理维护都是用的&lt;code&gt;Ingress Controller&lt;/code&gt;来处理，clusterip非集群主机无法访问，Nodeport不方便长久管理和效率，LB服务多了不方便因为需要花费额外的钱，externalIPS不好用（后面有空写文章会说它）。&lt;/p&gt;
+&lt;p&gt;我们跑的大多服务都是应用层http（s），Ingress Controller使用service或者pod的网络将它暴露在集群外，然后它反向代理集群内的七层服务，通过vhost子域名那样路由到后端的服务，&lt;code&gt;Ingress Controller&lt;/code&gt;工作架构如下，借用traefik官方的图。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-traefik&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;traefik&#34; srcset=&#34;
+               /blog/kubernetes-ingress-controller-deployment-and-ha/006tNbRwly1fyl4kdlseyj30mg0dc405_hue2b4ee6b44094aaeefe696060058f1f4_48308_a0cd6b20c09bcc64c6365cbc1b69a14b.webp 400w,
+               /blog/kubernetes-ingress-controller-deployment-and-ha/006tNbRwly1fyl4kdlseyj30mg0dc405_hue2b4ee6b44094aaeefe696060058f1f4_48308_6bd47264e33ae247fb0b60316cabdaf0.webp 760w,
+               /blog/kubernetes-ingress-controller-deployment-and-ha/006tNbRwly1fyl4kdlseyj30mg0dc405_hue2b4ee6b44094aaeefe696060058f1f4_48308_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/006tNbRwly1fyl4kdlseyj30mg0dc405_hue2b4ee6b44094aaeefe696060058f1f4_48308_a0cd6b20c09bcc64c6365cbc1b69a14b.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;451&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      traefik
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;你可以将&lt;code&gt;api.domain.com&lt;/code&gt;进来的流量路由到集群里api的pod，你可以将&lt;code&gt;backoffice.domain.com&lt;/code&gt;流量路由到backoffice的一组pod上，虽说我们可以自己搭建一个nginx来代替掉&lt;code&gt;Ingress Controller&lt;/code&gt;，但是要增加代理的service长期来看维护很不方便，在使用上&lt;code&gt;Ingress Controller&lt;/code&gt;后可以用一种抽象的对象告诉controller添加对应的代理，也就是&lt;code&gt;kind: Ingress&lt;/code&gt;。它里面描述了从Ingress Controller访问进来的ServerName和web的url要代理到集群里哪个service（以及service的port）等等具体信息。&lt;/p&gt;
+&lt;p&gt;而官方的&lt;code&gt;Ingress Nginx&lt;/code&gt;可以视为一个魔改的nginx，拥有集群赋予的RBAC权限后，能够有监听集群Ingress相关的变化能力，用户创建了&lt;code&gt;kind: Ingress&lt;/code&gt;，
+例如上面trafik图里的Ingress大致就是下面这样：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;my-ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nginx.ingress.kubernetes.io/use-regex&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;api.mydomain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;domain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/web/*&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;web&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;backoffice.domain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;backoffice&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要创建了上面的Ingress后，ingress controller里会监听到从而生成对应的配置段后动态reload配置文件。&lt;/p&gt;
+&lt;h2 id=&#34;ingress-controller部署&#34;&gt;Ingress Controller部署&lt;/h2&gt;
+&lt;p&gt;部署非常简单，一条命令创建即可，yml来源于 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&lt;/a&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/mandatory.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该yaml缺少向群外暴露的方式，我们先使用externalIPs方式创建svc来让它能从集群外面访问（此处先学工作原理，后面再讲高可用）。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;$INGRESS_VIP&lt;/code&gt;选取一个和宿主机同一个段没使用过的IP即可（实际上Ingress Nginx bind的端口不止80和443，这里不讨论，有兴趣的同学可以看容器里的默认配置文件）。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;LoadBalancer&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;externalIPs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;$INGRESS_VIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的yaml里后面详细解释我们需要关注的配置项，先来创建ingress对象试试。&lt;/p&gt;
+&lt;h3 id=&#34;测试http-7层负载&#34;&gt;测试http 7层负载&lt;/h3&gt;
+&lt;p&gt;部署了官方的ingress nginx后，我部署了一个nginx的pod，为它创建了一个名为nginx的service：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后创建对应的一个ingress对象来暴露集群里这个nginx的http服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx-ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx.testdomain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找到ingress nginx的pod名字后通过命令查看里面nginx配置文件能找到有对应的配置段生成：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;$ kubectl -n ingress-nginx exec nginx-ingress-controller-6cdcfd8ff9-t5sxl -- cat /etc/nginx/nginx.conf&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## start server nginx.testdomain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;server {&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;server_name nginx.testdomain.com ;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;listen 80;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $proxy_upstream_name &amp;#34;-&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;		&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;location / {&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $namespace      &amp;#34;default&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $ingress_name   &amp;#34;nginx-ingress&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $service_name   &amp;#34;nginx&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $service_port   &amp;#34;80&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;			&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;set $location_path  &amp;#34;/&amp;#34;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;........&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## end server nginx.testdomain.com      &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找一台非集群的Windows机器（也可以mac，主要是有图形界面且非集群内机器），设置hosts文件把域名&lt;code&gt;nginx.testdomain.com&lt;/code&gt;设置到对service的那个externalIPs的ip上，打开浏览器访问&lt;code&gt;nginx.testdomain.com&lt;/code&gt;即可发现集群内的nginx已经暴露在集群外。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：Ingress Controller虽然调用的是service，看起来按照nginx来理解转发是client–nginx–svc–pod; 实际上转发是client–nginx–pod，因为已经魔改了不能按照nginx的来理解，是直接负载到svc的endpoint上面的。&lt;/p&gt;
+&lt;p&gt;另外低版本的ingress nginx的args参数&lt;code&gt;--default-backend-service=$(POD_NAMESPACE)/default-http-backend&lt;/code&gt;，该参数指定ingress nginx的同namespace下名为&lt;code&gt;default-http-backend&lt;/code&gt;的service作为默认访问的时候页面，通常那个时候是创建一个404页面的的pod和对应service，如果ingress nginx启动的时候没找到这个service会无法启动，新版本不是必须了，好像也自带404页面了。&lt;/p&gt;
+&lt;p&gt;另外ingress也能多路径，如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xxxx.xxxx.xxx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;paths&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service-index&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service-test-api&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;如何来4层负载&#34;&gt;如何来4层负载&lt;/h3&gt;
+&lt;p&gt;我们可以看到ingress nginx的args里有这两行：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- --&lt;span class=&#34;l&#34;&gt;tcp-services-configmap=$(POD_NAMESPACE)/tcp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;udp-services-configmap=$(POD_NAMESPACE)/udp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从选项和值可以猜测出，要想代理四层（tcp/udp），得写同namespace里一个名为&lt;code&gt;tcp-service&lt;/code&gt;和&lt;code&gt;udp-service&lt;/code&gt;的两个configmap的数据
+四层的话这边我们创建一个mysql的pod，来代理3306端口到集群外面，则需要写tcp-services这个configmap：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;3306&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;default/mysql:3306&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;四层写这两个ConfigMap的data即可，按照这样去写即可&lt;code&gt;out_port: namespaces/svc_name:port&lt;/code&gt;，要给每个ingress加一些nginx里的配置可以查看官方的annotation字段以及值（traefik同理）。&lt;/p&gt;
+&lt;h3 id=&#34;ingress-controller高可用&#34;&gt;Ingress Controller高可用&lt;/h3&gt;
+&lt;p&gt;这里来讨论下&lt;code&gt;Ingress Controller&lt;/code&gt;的高可用。&lt;/p&gt;
+&lt;p&gt;Ingress Controller到集群内的路径这部分都有负载均衡了，我们比较关注部署了Ingress Controller后，外部到它这段路怎么高可用?&lt;/p&gt;
+&lt;p&gt;上面的例子里service我使用的externalIPs，但是代理四层的时候会新加端口，需要每次人为去介入增加暴露端口?&lt;/p&gt;
+&lt;p&gt;流量从入口到&lt;code&gt;Ingress Controller&lt;/code&gt;的pod有下面几种方式：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候手写&lt;code&gt;externalIPs&lt;/code&gt;很鸡肋，后面会再写文章去讲它&lt;/li&gt;
+&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候只有云厂商支持分配公网ip来负载均衡，LoadBalancer 公开的每项服务都将获得自己的 IP 地址，但是需要收费，且自己建立集群无法使用&lt;/li&gt;
+&lt;li&gt;不创建service，pod直接用hostport，效率等同于&lt;code&gt;hostNetwork&lt;/code&gt;，如果不代理四层端口还好，代理了需要修改pod的template来滚动更新来让nginx bind的四层端口能映射到宿主机上&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Nodeport&lt;/code&gt;，端口不是web端口（但是可以修改Nodeport的范围改成web端口），如果进来流量负载到Nodeport上可能某个流量路线到某个node上的时候因为&lt;code&gt;Ingress Controller&lt;/code&gt;的pod不在这个node上，会走这个node的kube-proxy转发到Ingress Controller的pod上，多走一趟路&lt;/li&gt;
+&lt;li&gt;不创建service，效率最高，也能四层负载的时候不修改pod的template，唯一要注意的是&lt;code&gt;hostNetwork&lt;/code&gt;下pod会继承宿主机的网络协议，也就是使用了主机的dns，会导致svc的请求直接走宿主机的上到公网的dns服务器而非集群里的dns server，需要设置pod的&lt;code&gt;dnsPolicy: ClusterFirstWithHostNet&lt;/code&gt;即可解决&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;写在最后&#34;&gt;写在最后&lt;/h2&gt;
+&lt;p&gt;部署方式没多大区别开心就好。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;DaemonSet + nodeSeletor&lt;/li&gt;
+&lt;li&gt;deploy设置replicas数量 + nodeSeletor + pod互斥&lt;/li&gt;
+&lt;li&gt;所以可以一个vip飘在拥有存活的controller的宿主机上，云上的话就用slb来负载代替vip&lt;/li&gt;
+&lt;li&gt;最后说说域名请求指向它，如果部署在内网或者办公室啥的，内网有dns server的话把ing的域名全部解析到ingress controller的宿主机ip上，否则要有人访问每个人设置/etc/hosts才能把域名解析来贼麻烦，如果没有dns server可以跑一个external-dns，它的上游dns是公网的dns服务器，办公网内机器的dns server指向它即可，云上的话把域名请求解析到对应ip即可&lt;/li&gt;
+&lt;li&gt;traefik和ingress nginx类似，不过它用go实现的&lt;/li&gt;
+&lt;li&gt;在一些老版本的ingress nginx的log里会一直刷找不到ingress-nginx的svc，不处理的话会狂刷log导致机器load过高,创建一个同名的svc即可解决,例如创建一个不带选择器clusterip为null的即可。非要创建port的svc的话参照下面:&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/part-of&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;metrics&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10254&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10254&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/part-of&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考:&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/blob/master/docs/deploy/index.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - github.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/deploy/baremetal/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - kubernetes.github.io&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 </description>
     </item>

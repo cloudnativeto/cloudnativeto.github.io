@@ -12,5 +12,363 @@
       <link>https://cloudnative.to/author/kgrygiel/</link>
     </image>
     
+    <item>
+      <title>Kubernetes 垂直自动伸缩走向何方?</title>
+      <link>https://cloudnative.to/blog/kubernetes-vertical-pod-autoscaler/</link>
+      <pubDate>Sun, 10 Nov 2019 15:15:43 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/kubernetes-vertical-pod-autoscaler/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://github.com/kubernetes/community/blob/master/contributors/design-proposals/autoscaling/vertical-pod-autoscaler.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;目前 Kubernetes 的 Pod 水平自动伸缩（HPA，Horizontal Pod Autoscaler）已在业界广泛应用。但对一些特殊的 Pod（如一些有状态的 Pod），HPA 并不能很好地解决资源不足的问题。 这就引出 Pod 垂直自动伸缩（VPA，Vertical Pod Autoscaler），本文主要介绍 Kubernetes 社区对 Pod 垂直自动伸缩组件的开发规划。&lt;/p&gt;
+&lt;h2 id=&#34;vpa定义&#34;&gt;VPA定义&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;垂直自动伸缩（VPA，Vertical Pod Autoscaler）&lt;/strong&gt; 是一个基于历史数据、集群可使用资源数量和实时的事件（如 OMM， 即 out of memory）来自动设置Pod所需资源并且能够在运行时自动调整资源基础服务。&lt;/p&gt;
+&lt;h2 id=&#34;介绍&#34;&gt;介绍&lt;/h2&gt;
+&lt;h3 id=&#34;背景&#34;&gt;背景&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;计算资源&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/community/blob/master/contributors/design-proposals/node/resource-qos.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;资源服务质量&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;准入控制器&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#external-admission-webhooks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;外部准入webhooks&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;目标&#34;&gt;目标&lt;/h3&gt;
+&lt;p&gt;VPA有两个目标：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;通过自动配置资源请求来减少运维成本。&lt;/li&gt;
+&lt;li&gt;在提高集群资源利用率的同时最小化容器出现内存溢出或 CPU 饥饿的风险。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;相关特性&#34;&gt;相关特性&lt;/h3&gt;
+&lt;h4 id=&#34;水平自动伸缩horizontal-pod-autoscalerhpa&#34;&gt;水平自动伸缩（Horizontal Pod Autoscaler，HPA）&lt;/h4&gt;
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HPA&lt;/a&gt; 是基于实时的CPU利用率或者其他的一些特定信号动态调整 Replication controller 中 Pod 数量的基础服务。&lt;/p&gt;
+&lt;p&gt;通常用户在无状态的工作负载时选用 HPA，在有状态的工作负载时选用 VPA。也有一些场景下会混合使用。&lt;/p&gt;
+&lt;h4 id=&#34;集群自动伸缩cluster-autoscaler&#34;&gt;集群自动伸缩（Cluster Autoscaler）&lt;/h4&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群自动伸缩&lt;/a&gt;基于集群整体的资源利用率动态调整 Kubernetes 集群的大小。&lt;/p&gt;
+&lt;p&gt;集群自动伸缩、HPA 和 VPA 提供了一个完整的自动伸缩解决方案。&lt;/p&gt;
+&lt;h4 id=&#34;初始资源initial-resources&#34;&gt;初始资源（Initial resources）&lt;/h4&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/kgrygiel/community/blob/master/contributors/design-proposals/initial-resources.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;初始资源&lt;/a&gt;基于历史资源利用率提供初始资源请求，它仅仅在Pod创建时触发，VPA打算继承使用这个特性。&lt;/p&gt;
+&lt;h4 id=&#34;原地升级in-place-updates&#34;&gt;原地升级（In-place updates）&lt;/h4&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/kubernetes/kubernetes/issues/5774&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;原地升级&lt;/a&gt;是一个计划中的功能,在节点上有足够资源的情况下，原地升级无需杀死容器就能够调整已存在容器的资源的请求和限制。&lt;/p&gt;
+&lt;p&gt;VPA将从这种能力中受益匪浅，但它不被视为最小可行产品 ( Minimum Viable Product, MVP) 的阻挡者。&lt;/p&gt;
+&lt;h4 id=&#34;资源估计resource-estimation&#34;&gt;资源估计（Resource estimation）&lt;/h4&gt;
+&lt;p&gt;资源估计是另外一个计划中的功能，它可以通过暂时回收运行中容器的暂未使用的资源来提高资源利用率。&lt;/p&gt;
+&lt;p&gt;资源估计与 VPA 的不同在于它基于的时间表比较短（仅基于本地的短期的历史数据），回收以后再提供的质量低，不提供初始资源预测。VPA 和资源估计是互补的。&lt;/p&gt;
+&lt;h2 id=&#34;需求&#34;&gt;需求&lt;/h2&gt;
+&lt;h3 id=&#34;功能&#34;&gt;功能&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;VPA 能够在 Pod 提交时设置容器的资源（CPU和内存的请求和限制）。&lt;/li&gt;
+&lt;li&gt;VPA能够调整已存在的 Pod 的容器资源，特别是能够对 CPU 饥饿和内存溢出等事件作出响应。&lt;/li&gt;
+&lt;li&gt;当 VPA 重启 Pod 时，它必须考虑中断服务的成本。&lt;/li&gt;
+&lt;li&gt;用户能够配置 VPA 的在资源上的固定限制,特别是最小和最大资源请求。&lt;/li&gt;
+&lt;li&gt;VPA 要与 Pod 控制器兼容，最起码要与 &lt;code&gt;Deployment&lt;/code&gt; 兼容。 特别地：
+&lt;ul&gt;
+&lt;li&gt;资源更新的时候不能干扰 &lt;code&gt;spec&lt;/code&gt; 更新或和 &lt;code&gt;spec&lt;/code&gt; 更新冲突。&lt;/li&gt;
+&lt;li&gt;在已有的部署中，能够滚动更新 VPA 的策略。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;在创建 Pod 时能够尽快开始遵循 VPA 策略,特别是对于一些只有VPA策略应用以后才能被调度的 Pod 。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;可用性&#34;&gt;可用性&lt;/h3&gt;
+&lt;p&gt;重量级的组件（数据库或推荐器）出故障不会阻塞重新创建已存在的 Pod 。Pod 创建路径非常关键的组件必须设计成高可用。&lt;/p&gt;
+&lt;h3 id=&#34;可扩展性&#34;&gt;可扩展性&lt;/h3&gt;
+&lt;p&gt;在原地升级组件开发好后, VPA 能够使用它。&lt;/p&gt;
+&lt;h2 id=&#34;设计&#34;&gt;设计&lt;/h2&gt;
+&lt;h3 id=&#34;综述&#34;&gt;综述&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;提出新的API资源: &lt;code&gt;VerticalPodAutoscaler&lt;/code&gt; 。它包括一个标签识别器 &lt;code&gt;label selector&lt;/code&gt;（匹配Pod）、资源策略 &lt;code&gt;resources policy&lt;/code&gt;（控制VPA如何计算资源）、更新策略 &lt;code&gt;update policy&lt;/code&gt;（控制资源变化应用到Pod）和推荐资源信息。&lt;/li&gt;
+&lt;li&gt;VPA &lt;code&gt;Recommender&lt;/code&gt; 是一个新的组件，它考虑集群中来自 &lt;code&gt;Metrics Server&lt;/code&gt; 的所有 Pod 的资源利用率信号和内存溢出事件。&lt;/li&gt;
+&lt;li&gt;VPA &lt;code&gt;Recommender&lt;/code&gt; 会监控所有 Pod，为每个 Pod 持续计算新的推荐资源，并将它们存储到 VPA Object 中。&lt;/li&gt;
+&lt;li&gt;VPA &lt;code&gt;Recommender&lt;/code&gt; 会暴露一个同步 API 获取 Pod 详细信息并返回推荐信息。&lt;/li&gt;
+&lt;li&gt;所有的 Pod 创建请求都会通过 &lt;code&gt;VPA Admission Controller&lt;/code&gt;。 如果 Pod 与任何一个 VPA 对象匹配，那么 &lt;code&gt;Admission controller&lt;/code&gt; 会依据 VPA &lt;code&gt;Recommender&lt;/code&gt; 推荐的值重写容器的资源。 如果 &lt;code&gt;Recommender&lt;/code&gt; 连接不上，它将会返回 VPA Object 中缓存的推荐信息。&lt;/li&gt;
+&lt;li&gt;VPA &lt;code&gt;Updater&lt;/code&gt; 是负责实时更新 Pod 的组件。如果一个 Pod 使用 VPA 的自动模式，那么 &lt;code&gt;Updater&lt;/code&gt; 会依据推荐资源来决定如何更新。在 MVP 模式中，这需要通过删除 Pod 然后依据新的资源重建 Pod 来实现，这种方法需要 Pod 属于一个 &lt;code&gt;Replica Set&lt;/code&gt;（或者其他能够重新创建它的组件）。在未来，&lt;code&gt;Updater&lt;/code&gt; 会利用原地升级，因为重新创建或者重新分配Pod对服务是很有破坏性的，必须尽量减少这种操作。&lt;/li&gt;
+&lt;li&gt;VPA 仅仅控制容器的资源请求,它把资源限制设置为无限,资源请求的计算基于对当前和过去运行状况的分析。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;History Storage&lt;/code&gt; 是从 &lt;code&gt;API Server&lt;/code&gt; 中获取资源利用率信号和内存溢出并将它们永久保存的组件。&lt;code&gt;Recommender&lt;/code&gt; 在一开始用这些历史数据来初始化状态。&lt;code&gt;History Storage&lt;/code&gt; 基础的实现是使用 Prometheus。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;体系架构&#34;&gt;体系架构&lt;/h3&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-vpa-architecture-diagram&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;images/vpa-architecture.png&#34; alt=&#34;VPA Architecture Diagram&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      VPA Architecture Diagram
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;api&#34;&gt;API&lt;/h3&gt;
+&lt;p&gt;我们提出了一个新的类型的API对象 &lt;code&gt;VertialPodAutoscaler&lt;/code&gt;，它包含了扩容的目标，也就是用于匹配 Pod 的 &lt;code&gt;label seletctor&lt;/code&gt; 和两个策略模块：更新策略 &lt;code&gt;update policy&lt;/code&gt; 和资源策略 &lt;code&gt;resources policy&lt;/code&gt;。此外他还持有 VPA 计算的最新的推荐信息。&lt;/p&gt;
+&lt;h4 id=&#34;vpa-api-对象综述&#34;&gt;VPA API 对象综述&lt;/h4&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// VerticalPodAutoscaler is the configuration for a vertical pod
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// autoscaler, which automatically manages pod resources based on historical and
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// real time resource utilization.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscaler&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;TypeMeta&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Standard object metadata.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ObjectMeta&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Specification of the behavior of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Spec&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscalerSpec&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Current information about the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscalerStatus&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// VerticalPodAutoscalerSpec is the specification of the behavior of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscalerSpec&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// A label query that determines the set of pods controlled by the Autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Selector&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;LabelSelector&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Describes the rules on how changes are applied to the pods.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;UpdatePolicy&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;PodUpdatePolicy&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Controls how the autoscaler computes recommended resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;ResourcePolicy&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;PodResourcePolicy&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// VerticalPodAutoscalerStatus describes the runtime state of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscalerStatus&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// The time when the status was last refreshed.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;LastUpdateTime&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Time&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// The most recently computed amount of resources recommended by the
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// autoscaler for the controlled pods.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Recommendation&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendedPodResources&lt;/span&gt;	
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// A free-form human readable message describing the status of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;StatusMessage&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;标签选择-label-selector&#34;&gt;标签选择 （Label Selector）&lt;/h4&gt;
+&lt;p&gt;&lt;code&gt;Label Selector&lt;/code&gt; 依据给定的VPA策略决定哪些Pod需要伸缩。&lt;code&gt;Recommender&lt;/code&gt; 会汇聚匹配给定 VPA 的所有信号，因此用户设置标签来将行为类似的 pod 分组到一个 VPA 下是非常重要的。&lt;/p&gt;
+&lt;p&gt;现在还没有决定如何处理冲突，例如一个 pod 同时被多个 VPA 策略匹配。&lt;/p&gt;
+&lt;h4 id=&#34;更新策略update-policy&#34;&gt;更新策略（Update Policy）&lt;/h4&gt;
+&lt;p&gt;更新策略控制了VPA如何应用更改。 在 MVP 中,它只包含一个单个字段: &lt;code&gt;mode&lt;/code&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;updatePolicy&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nt&#34;&gt;&amp;#34;mode&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;mode&lt;/code&gt; 可以设置为三种：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;Intitial&lt;/code&gt;: VPA 只在创建 Pod 时分配资源，在 Pod 的其他生命周期不改变Pod的资源。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Auto&lt;/code&gt;(默认)：VPA 在 Pod 创建时分配资源，并且能够在 Pod 的其他生命周期更新它们，包括淘汰和重新调度 Pod。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Off&lt;/code&gt;：VPA 从不改变Pod资源。&lt;code&gt;Recommender&lt;/code&gt; 而依旧会在VPA对象中生成推荐信息，他们可以被用在演习中。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以下任意一个操作都可以关掉 VPA ：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;把更新策略改为 &lt;code&gt;Off&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;删除 VPA 组件。&lt;/li&gt;
+&lt;li&gt;改变 Pod 的标签让它不在于 VPA &lt;code&gt;Label Selector&lt;/code&gt; 匹配。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;注意：关闭 VPA 会让 Pod 不再进行进一步的改变，但它不会恢复到正在Pod的最初资源状态，直到用户手动对它进行更新。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// VerticalPodAutoscalerStatus describes the runtime state of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;VerticalPodAutoscalerStatus&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// The time when the status was last refreshed.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;LastUpdateTime&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Time&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// The most recently computed amount of resources recommended by the
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// autoscaler for the controlled pods.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Recommendation&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendedPodResources&lt;/span&gt;	
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// A free-form human readable message describing the status of the autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;StatusMessage&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// UpdateMode controls when autoscaler applies changes to the pod resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// UpdateModeOff means that autoscaler never changes Pod resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// The recommender still sets the recommended resources in the
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// VerticalPodAutoscaler object. This can be used for a &amp;#34;dry run&amp;#34;.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;UpdateModeOff&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;Off&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// UpdateModeInitial means that autoscaler only assigns resources on pod
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// creation and does not change them during the lifetime of the pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;UpdateModeInitial&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;Initial&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// UpdateModeAuto means that autoscaler assigns resources on pod creation
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// and additionally can update them during the lifetime of the pod,
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// including evicting / rescheduling the pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;UpdateModeAuto&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;Auto&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// PodUpdatePolicy describes the rules on how changes are applied to the pods.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;PodUpdatePolicy&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Controls when autoscaler applies changes to the pod resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;UpdateMode&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;资源策略resource-policy-&#34;&gt;资源策略（Resource Policy ）&lt;/h4&gt;
+&lt;p&gt;资源策略控制 VPA 如何计算推荐资源。在 MVP 中，它包含每个容器请求中可选的上限和下限。资源策略在后面可以被扩展为额外的开关可以让用户根据他们特定的场景调整推荐算法。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// DefaultContainerResourcePolicy can be passed as
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// ContainerResourcePolicy.Name to specify the default policy.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;DefaultContainerResourcePolicy&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// ContainerResourcePolicy controls how autoscaler computes the recommended
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// resources for a specific container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ContainerResourcePolicy&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Name of the container or DefaultContainerResourcePolicy, in which
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// case the policy is used by the containers that don&amp;#39;t have their own
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// policy specified.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Name&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Whether autoscaler is enabled for the container. Defaults to &amp;#34;On&amp;#34;.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Mode&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ContainerScalingMode&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Specifies the minimal amount of resources that will be recommended
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// for the container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;MinAllowed&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ResourceRequirements&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Specifies the maximum amount of resources that will be recommended
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// for the container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;MaxAllowed&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ResourceRequirements&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// PodResourcePolicy controls how autoscaler computes the recommended resources
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// for containers belonging to the pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;PodResourcePolicy&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Per-container resource policies.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;ContainerPolicies&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ContainerResourcePolicy&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// ContainerScalingMode controls whether autoscaler is enabled for a speciifc
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ContainerScalingMode&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;const&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// ContainerScalingModeOn means autoscaling is enabled for a container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;ContainerScalingModeOn&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ContainerScalingMode&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;On&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// ContainerScalingModeOff means autoscaling is disabled for a container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;ContainerScalingModeOff&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ContainerScalingMode&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;Off&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;推荐recommendation&#34;&gt;推荐（Recommendation）&lt;/h4&gt;
+&lt;p&gt;VPA 资源有一个仅输出的字段用来保存一个由 &lt;code&gt;Recommender&lt;/code&gt; 生成的最近的一次推荐。这个字段可以在 &lt;code&gt;Recommender&lt;/code&gt; 暂时无法访问时被用来获取最近的一次推荐。这个推荐包含推荐目标资源数量以及范围(最大,最小),可以被 &lt;code&gt;Updater&lt;/code&gt; 用来决定在何时更新 Pod。在资源紧缺的情况下, &lt;code&gt;Updater&lt;/code&gt; 可能决定将 Pod 资源压缩到推荐的最小值。范围的宽度同样也影响了推荐的置信区间。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// RecommendedPodResources is the recommendation of resources computed by
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// autoscaler.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendedPodResources&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Resources recommended by the autoscaler for each container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;ContainerRecommendations&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;RecommendedContainerResources&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// RecommendedContainerResources is the recommendation of resources computed by
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// autoscaler for a specific container. Respects the container resource policy
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// if present in the spec.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendedContainerResources&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Name of the container.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Name&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Recommended amount of resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Target&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ResourceRequirements&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Minimum recommended amount of resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// Running the application with less resources is likely to have
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// significant impact on performance/availability.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;MinRecommended&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ResourceRequirements&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Maximum recommended amount of resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// Any resources allocated beyond this value are likely wasted.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;MaxRecommended&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;api&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ResourceRequirements&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;准入控制器admission-controller&#34;&gt;准入控制器（Admission Controller）&lt;/h3&gt;
+&lt;p&gt;VPA Admission Controller 拦截 Pod 创建请求。如果 Pod 与 VPA 配置匹配且模式未设置为 &lt;code&gt;off&lt;/code&gt;，则控制器通过将建议的资源应用于 Pod &lt;code&gt;spec&lt;/code&gt; 来重写资源请求。否则它会使 Pod &lt;code&gt;spec&lt;/code&gt; 保持不变。&lt;/p&gt;
+&lt;p&gt;控制器通过从 &lt;code&gt;Recommender&lt;/code&gt; 中的 &lt;code&gt;/recommendedPodResources&lt;/code&gt; 来获取推荐的资源。如果呼叫超时或失败，控制器将回退到 VPA object 中缓存的建议。如果这也不可用，则控制器允许资源请求传递最初指定的资源。&lt;/p&gt;
+&lt;p&gt;注意：将来可以通过将 Pod 标记为 &lt;code&gt;requiring VPA&lt;/code&gt; 来（可选）强制使用 VPA 。这将禁止在创建相应的 VPA 配置之前调度 Pod 。如果找不到匹配的 VPA 配置，则准入控制器将拒绝此类 Pod 。对于想要创建 VPA 配置并提交 Pod 的用户来说，此功能将非常方便。&lt;/p&gt;
+&lt;p&gt;VPA 准入控制器将作为外部入场钩子（&lt;a href=&#34;https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#external-admission-webhooks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;External Admission Hook&lt;/a&gt;）实施。但请注意，这取决于变异webhook 准入控制器（&lt;a href=&#34;https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/admission_control_extension.md#future-work&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Mutating Webhook Admission Controllers&lt;/a&gt;）。&lt;/p&gt;
+&lt;h3 id=&#34;推荐器recommender&#34;&gt;推荐器（Recommender）&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;Recommender&lt;/code&gt; 是 VPA 的主要组成部分。它负责计算推荐的资源。在启动时，&lt;code&gt;Recommender&lt;/code&gt; 获取所有 Pod 的历史资源利用率（无论它们是否使用 VPA ）以及历史存储中的 Pod OOM 事件的历史记录。它聚合这些数据并将其保存在内存中。&lt;/p&gt;
+&lt;p&gt;在正常操作期间，&lt;code&gt;Recommender&lt;/code&gt; 通过 &lt;code&gt;Metrics API&lt;/code&gt; 从 &lt;code&gt;Metrics Server&lt;/code&gt; 获取资源利用率和新事件的实时更新。此外，它还可以监视群集中的所有 Pod 和所有 &lt;code&gt;VPA object&lt;/code&gt; 。对于由某个VPA选择器匹配的每个 Pod，&lt;code&gt;Recommender&lt;/code&gt; 计算推荐的资源并在 &lt;code&gt;VPA object&lt;/code&gt; 上设置推荐。&lt;/p&gt;
+&lt;p&gt;意识到每个 VPA object 有一个推荐是非常重要的。用户应使用一个 VPA 来控制具有类似资源使用模式的 Pod ，通常是一组副本或单个工作负载的分片。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;Recommender&lt;/code&gt; 充当了一个 &lt;code&gt;extension-apiserver&lt;/code&gt;，暴露了一个同步方法，该方法获取 Pod &lt;code&gt;spec&lt;/code&gt; 和 Pod 元数据并返回推荐的资源。&lt;/p&gt;
+&lt;h4 id=&#34;recommender-api&#34;&gt;Recommender API&lt;/h4&gt;
+&lt;p&gt;&lt;code&gt;POST /recommendationQuery&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;请求体：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// RecommendationQuery obtains resource recommendation for a pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendationQuery&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;TypeMeta&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;metav1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ObjectMeta&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Spec is filled in by the caller to request a recommendation.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Spec&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendationQuerySpec&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Status is filled in by the server with the recommended pod resources.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Status&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendationQueryStatus&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// RecommendationQuerySpec is a request of recommendation for a pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendationQuerySpec&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Pod for which to compute the recommendation. Does not need to exist.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Pod&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;core&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Pod&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// RecommendationQueryStatus is a response to the recommendation request.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;RecommendationQueryStatus&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Recommendation holds recommended resources for the pod.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Recommendation&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;autoscaler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;RecommendedPodResources&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// Error indicates that the recommendation was not available. Either
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// Recommendation or Error must be present.
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;c1&#34;&gt;// +optional
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;Error&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意，现有 Pod 以及尚未创建的 Pod 都可以调用此 API。&lt;/p&gt;
+&lt;h3 id=&#34;更新器updater&#34;&gt;更新器（Updater）&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;VPA Updater&lt;/code&gt; 是一个负责将推荐资源应用于现有 Pod 的组件。它监视集群中的所有 VPA object 和 Pod ，通过调用 &lt;code&gt;Recommender API&lt;/code&gt; 定期获取由 VPA 控制的 Pod 的建议。当推荐的资源与实际配置的资源明显不同时，&lt;code&gt;Updater&lt;/code&gt; 可能会决定更新 Pod。在 MVP 中（直到 Pod 资源的原地升级可用），这意味着需要驱逐现有的 Pod 然后使用推荐的资源重新创建它们。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;Updater&lt;/code&gt; 依赖于其他机制（例如副本集）来重新创建已删除的 Pod 。但是，它不验证是否实际为 Pod 配置了此类机制。这样的检查可以在 CLI 中实现，并在 VPA 匹配 Pod 时警告用户，但 Pod 不会自动重启。&lt;/p&gt;
+&lt;p&gt;虽然终止Pod是破坏性的并且通常是不期望的，但有时也是合理的：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;避免 CPU 饥饿.&lt;/li&gt;
+&lt;li&gt;随机降低跨多个 Pod 的相关 OOM 的风险.&lt;/li&gt;
+&lt;li&gt;在长时间内节省资源.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;code&gt;Updater&lt;/code&gt; 仅在 &lt;code&gt;updatePolicy.mod&lt;/code&gt; 设置为 &lt;code&gt;Auto&lt;/code&gt; 时才会配置 Pod 。&lt;/p&gt;
+&lt;p&gt;根据群集的当前状态（例如，配额，节点上可用的空间或其他调度约束），&lt;strong&gt;&lt;code&gt;Updater&lt;/code&gt; 还需要了解如何在将推荐应用于Pod之前调整推荐&lt;/strong&gt;。否则它可能会永久性地取消一个 Pod 。这种机制尚未设计。&lt;/p&gt;
+&lt;h3 id=&#34;推荐计算模型recommendation-model&#34;&gt;推荐计算模型（Recommendation model）&lt;/h3&gt;
+&lt;p&gt;VPA控制容器的资源请求（内存和 CPU）。在 MVP 中，它总是将资源限制设置为无穷大。目前尚不清楚是否存在 VPA 设定资源限制的用例。&lt;/p&gt;
+&lt;p&gt;资源请求是基于对容器的当前和先前运行以及具有类似属性的其他容器（名称，图像，命令，args）的分析来计算的。推荐的模型（MVP）假设内存和CPU消耗是独立的随机变量，其分布等于在过去 N 天中观察到的分布（&lt;strong&gt;推荐 N 值取为 N =8 以捕获每周峰值&lt;/strong&gt;）。未来更先进的模型可能会尝试检测趋势，周期性和其他与时间相关的模式。&lt;/p&gt;
+&lt;p&gt;对于CPU， 目标是保证容器使用的CPU超过容器请求的 CPU 资源的高百分比（如95%）时间低于某个特定的阈值（如保证只有1%的时间内容器的CPU使用高于请求的 CPU 资源的95%）在此模型中，“CPU 使用”定义为在短时间间隔内测量的平均值。测量间隔越短，对尖峰，延迟敏感的工作负载的建议质量越好。最低合理间隔为 1/min，建议为 1/sec。&lt;/p&gt;
+&lt;p&gt;对于内存，目标是保证在特定时间窗口内容器使用的内存超过容器请求的内存资源的概率低于某个阈值（例如，在 24 小时内低于 1％）。窗口必须很长（ ≥24h ），以确保 OOM 引起的驱逐不会明显影响服务应用程序的可用性和批量计算的进度（更高级的模型可以允许用户指定 SLO 来控制它）。&lt;/p&gt;
+&lt;h4 id=&#34;内存溢出处理handling-ooms&#34;&gt;内存溢出处理（Handling OOMs）&lt;/h4&gt;
+&lt;p&gt;当容器由于超出可用内存而被逐出时，其实际内存要求是未知的（消耗的量显然给出了下限）。这是通过将 OOM 事件转换为人工内存使用样本来建模的，方法是将“安全边际”乘数 (&amp;ldquo;safety margin&amp;rdquo; multiplier ) 应用于最后一次观察到的使用情况。&lt;/p&gt;
+&lt;h3 id=&#34;历史存储history-storage-&#34;&gt;历史存储（History Storage ）&lt;/h3&gt;
+&lt;p&gt;VPA 为历史事件和资源利用的提供者定义数据访问 API 。一开始，至少在资源利用部分，我们将使用 Prometheus 作为此 API 的参考实现，历史事件可以由另一个解决方案支持，例如，Infrastore。用户将能够插入自己的实现。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;History Storage&lt;/code&gt; 被不断填充实时更新的资源利用率和事件，类似于 &lt;code&gt;Recommender&lt;/code&gt;。它至少保留8天的数据。此数据仅用于在启动时初始化 &lt;code&gt;Recommender&lt;/code&gt; 。&lt;/p&gt;
+&lt;h3 id=&#34;开放问题&#34;&gt;开放问题&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;如果多个 VPA 对象与一个 Pod 匹配，如何解决冲突。&lt;/li&gt;
+&lt;li&gt;如何在将推荐应用于特定容器之前根据集群的当前状态调整推荐（例如，配额，节点上可用的空间或其他调度约束）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;未来的工作&#34;&gt;未来的工作&lt;/h2&gt;
+&lt;h3 id=&#34;pod启动时融入-vpa&#34;&gt;Pod启动时融入 VPA&lt;/h3&gt;
+&lt;p&gt;在当前提案中，如果在 Pod 接纳时间 (Admission Time) 内 Pod 没有匹配的 VPA 配置，则将使用最初配置的资源调度 Pod。这可能并不是用户希望的行为。特别地，用户可能想要创建 VPA 配置同时提交到 Pod，这会导致竞争条件：结果取决于首先处理哪个资源（VPA 或 Pod）。&lt;/p&gt;
+&lt;p&gt;为了解决这个问题，我们建议允许使用特殊注释（&lt;code&gt;requires VPA&lt;/code&gt;）标记 Pod，如果相应的 VPA 不可用，则阻止接纳控制器 (Admission Controlle) 接纳Pod。&lt;/p&gt;
+&lt;p&gt;另一种方法是引入用于相同目的的VPA初始化器。&lt;/p&gt;
+&lt;h3 id=&#34;结合垂直和水平缩放&#34;&gt;结合垂直和水平缩放&lt;/h3&gt;
+&lt;p&gt;原则上，只要两个机制在不同的资源上运行，就可以对单个工作负载（Pod 组）使用垂直和水平缩放。正确的方法是让 HPA 基于瓶颈资源扩展组。VPA 可以控制其他资源。例子：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;CPU绑定的工作负载可以根据 CPU 利用率水平伸缩，同时使用垂直伸缩来调整内存。&lt;/li&gt;
+&lt;li&gt;IO绑定工作负载可以基于 IO 吞吐量水平伸缩，同时使用垂直伸缩来调整内存和 CPU。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;然而，这是一种更高级的自动缩放形式，并且 MVP 版本的 Vertical Pod Autoscaler 不能很好地支持它。实现的难度在于改变实例数不仅会影响瓶颈资源的利用率（这是水平扩展的原则），而且可能也会影响由 VPA 控制的非瓶颈资源。在汇总历史资源利用率和生成建议时，必须扩展 VPA 模型从而能够将组的大小考虑在内，以便将其与HPA相结合。&lt;/p&gt;
+&lt;h3 id=&#34;批量工作负载&#34;&gt;批量工作负载&lt;/h3&gt;
+&lt;p&gt;批处理工作负载具有与延迟敏感工作负载有不同的 CPU 要求。他们关心吞吐量而不是请求延迟，这意味着 VPA 应该将 CPU 需求基于平均 CPU 消耗而不是高百分位的 CPU 分布。&lt;/p&gt;
+&lt;p&gt;TODO：描述批处理工作负载的推荐模型以及VPA如何区分批处理和服务。一种可能的方法是查看 &lt;code&gt;PodSpec.restartPolicy&lt;/code&gt;。另一种方法是让用户在 &lt;code&gt;PodResourcePolicy&lt;/code&gt; 中指定工作负载的延迟要求。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;转载自：https://github.com/kubernetes/community/blob/master/contributors/design-proposals/autoscaling/vertical-pod-autoscaler.md&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>
