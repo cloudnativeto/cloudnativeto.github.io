@@ -1001,6 +1001,623 @@
     </item>
     
     <item>
+      <title>运行在Istio之上的Apache Kafka——基准测试</title>
+      <link>https://cloudnative.to/blog/running-apache-kafka-over-istio-benchmark/</link>
+      <pubDate>Sun, 04 Aug 2019 10:42:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/running-apache-kafka-over-istio-benchmark/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://banzaicloud.com/blog/kafka-on-istio-performance&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;blockquote&gt;
+&lt;p&gt;本文是一篇Kafka的基准测试分析报告，作者详细介绍了测试的环境和配置选择，并在单集群、多集群、多云、混合云等各种场景下进行了A/B测试和性能分析，评估了Istio的引入对性能的影响情况。最后对作者所在公司Banzai Cloud的云产品进行了介绍。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;我们的容器管理平台&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;以及CNCF认证的Kubernetes发行版&lt;a href=&#34;https://github.com/banzaicloud/pke&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PKE&lt;/a&gt;的一个关键特性是，它们能够在多云和混合云环境中无缝地构建并运行。虽然&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;用户的需求因他们采用的是单云方法还是多云方法而有所不同，但通常基于这些关键特性中的一个或多个：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://banzaicloud.com/blog/multi-cloud-apps/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多云应用管理&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://banzaicloud.com/blog/istio-multicluster-the-easy-way/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个基于Istio的自动化服务网格，用于多云和混合云部署&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://banzaicloud.com/blog/multi-cloud-fedv2/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于Kubernetes federation v2（集群联邦）的联合资源和应用部署&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;随着采用基于&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;的多集群和多混合云的增加，对运行接入到服务网格中的分布式或去中心化的应用的能力的需求也增加了。我们的客户在Kubernetes上大规模运行的托管应用之一是&lt;strong&gt;Apache Kafka&lt;/strong&gt;。我们认为，&lt;strong&gt;在Kubernetes上运行Apache Kafka最简单的方法&lt;/strong&gt;是使用Banzai Cloud的&lt;a href=&#34;https://banzaicloud.com/tags/kafka&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka spotguide&lt;/a&gt;来构建我们的&lt;a href=&#34;https://banzaicloud.com/blog/kafka-operator/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka operator&lt;/a&gt;。然而，到目前为止，我们的重点一直是自动化和操作单个集群Kafka部署。&lt;/p&gt;
+&lt;h2 id=&#34;tldr&#34;&gt;TLDR&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;我们已经添加了在Istio上运行Kafka所需的支持 (使用&lt;a href=&#34;https://github.com/banzaicloud/kafka-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;，并通过 &lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;编排）.&lt;/li&gt;
+&lt;li&gt;在Istio上运行Kafka不会增加性能开销 (不同于典型的mTLS，在SSL/TLS上运行Kafka是一样的)。&lt;/li&gt;
+&lt;li&gt;使用 &lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;，你可以创建跨多云和混合云环境的Kafka集群。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;带有生产者ACK设置为all的3个broker、3个partition和3个replication因子场景的指标预览：&lt;/strong&gt;&lt;/p&gt;
+&lt;h3 id=&#34;单集群结果&#34;&gt;单集群结果&lt;/h3&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Kafka cluster&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Google GKE  平均磁盘 IO / broker&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Amazon EKS  平均磁盘 IO / broker&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Kafka&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;417MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;439MB/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Kafka 启用 SSL/TLS&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;274MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;306MB/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Kafka 基于 Istio&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;417MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;439MB/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Kafka 基于 Istio 并开启mTLS&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;323MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;340MB/s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;多集群结果&#34;&gt;多集群结果&lt;/h3&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Kafka 集群基于 Istio 并开启 mTLS&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;平均磁盘 IO / broker&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;集群间平均延迟&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;GKE eu-west1 &amp;lt;-&amp;gt; GKE eu-west4&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;211MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;7 ms&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;EKS eu-north1 &amp;lt;-&amp;gt; EKS eu-west1&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;85MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;24 ms&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;EKS eu-central1 &amp;lt;-&amp;gt; GKE eu-west3&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;115MB/s&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;2 ms&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;如果您想深入研究相关的统计数据，可以在 &lt;a href=&#34;https://github.com/banzaicloud/kafka-operator/tree/master/docs/benchmarks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到所有数据。&lt;/p&gt;
+&lt;h2 id=&#34;在istio服务网格上运行kafka&#34;&gt;在Istio服务网格上运行Kafka&lt;/h2&gt;
+&lt;p&gt;Kafka社区对如何利用更多的Istio功能非常感兴趣，例如开箱即用的Tracing，穿过协议过滤器的mTLS等。尽管这些功能有不同的需求，如Envoy、Istio和其他各种GitHub repos和讨论板上所反映的那样。大部分的这些特性已经在我们的&lt;a href=&#34;https://beta.banzaicloud.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline platform&lt;/a&gt;的&lt;a href=&#34;https://banzaicloud.com/tags/kafka/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka spotguide&lt;/a&gt;中，包括监控、仪表板、安全通信、集中式的日志收集、自动伸缩，Prometheus警报，自动故障恢复等等。我们和客户错过了一个重要的功能：网络故障和多网络拓扑结构的支持。我们之前已经利用&lt;a href=&#34;https://banzaicloud.com/blog/istio-the-simple-way/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Backyards&lt;/a&gt;和&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;解决过此问题。现在，探索在Istio上运行Kafka的时机已经到来，并在单云多区、多云，特别是混合云环境中自动创建Kafka集群。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-setup&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-multi-perf.png&#34; alt=&#34;setup&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      setup
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;让Kafka在Istio上运行并不容易，需要时间以及在Kafka和Istio方面的大量专业知识。经过一番努力和决心，我们完成了要做的事情。然后我们以迭代的方式自动化了整个过程，使其在&lt;a href=&#34;https://beta.banzaicloud.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline platform&lt;/a&gt;上运行的尽可能顺利。对于那些想要通读这篇文章并了解问题所在的人——具体的来龙去脉——我们很快将在另一篇文章中进行深入的技术探讨。同时，请随时查看相关的GitHub代码库。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;认知偏差&#34;&gt;认知偏差&lt;/h3&gt;
+&lt;p&gt;&lt;em&gt;认知偏差是一个概括性术语，指的是信息的上下文和结构影响个人判断和决策的系统方式。影响个体的认知偏差有很多种，但它们的共同特征是，与人类的个性相一致，它们会导致判断和决策偏离理性的客观。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;自从&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;发布以来，我们发现自己陷入了一场关于Istio的激烈辩论中。我们已经在Helm（和Helm 3）中目睹了类似的过程，并且很快意识到关于这个主题的许多最激进的观点并不是基于第一手的经验。当我们与对Istio的复杂性有一些疑问的人产生共鸣的时候——这正是我们开源了&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;和发布&lt;a href=&#34;https://banzaicloud.com/blog/istio-multicluster-the-easy-way/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Backyards&lt;/a&gt;产品背后的根本原因——我们真的不同意大多数性能相关的争论。是的，Istio有很多“方便”的特性你可能需要也可能不需要，其中一些特性可能会带来额外的延迟，但是问题是和往常一样，这样做是否值得?&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意：是的，在运行一个包含大量微服务、策略实施和原始遥测数据过程的大型Istio集群时，我们已经看到了Mixer性能下降和其他的问题，对此表示关注；Istio社区正在开发一个&lt;code&gt;mixerless&lt;/code&gt;版本——其大部分功能会叠加到Envoy上。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;做到客观测量先行&#34;&gt;做到客观，测量先行&lt;/h3&gt;
+&lt;p&gt;在我们就是否向客户发布这些特性达成一致之前，我们决定进行一个性能测试。我们使用了几个在基于Istio服务网格上运行Kafka的测试场景来实现这点。你可能注意到，Kafka是一个数据密集型的应用，因此我们希望通过在依赖和不依赖Istio的两种情况下进行测试，以测量其增加的开销。此外，我们对Istio如何处理数据密集型应用很感兴趣，在这些应用程序中保持I/O吞吐量恒定，让所有组件负荷都达到了最大值。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;我们使用了新版本的 &lt;a href=&#34;https://github.com/banzaicloud/kafka-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka operator&lt;/a&gt;，它提供了Istio服务网格的原生支持（版本 &amp;gt;=0.5.0）。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;基准测试安装设置&#34;&gt;基准测试安装设置&lt;/h2&gt;
+&lt;p&gt;为了验证我们的多云设置，我们决定先用各种Kubernetes集群场景测试Kafka：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;单机群，3个broker，3个topic分3个partition，复制因子设置为3，&lt;strong&gt;关闭TLS&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;单机群，3个broker，3个topic分3个partition，复制因子设置为3，&lt;strong&gt;启用TLS&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这些设置对于检查Kafka在选定环境中的实际性能是非常必要的，且没有潜在的Istio开销。&lt;/p&gt;
+&lt;p&gt;为了对Kafka进行基准测试，我们决定使用两个最流行的云提供商下的Kubernetes解决方案，Amazon EKS和Google GKE。我们希望最小化配置和避免任何潜在的CNI配置不匹配问题，因此决定使用云提供商管理的K8s发行版。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;在另一篇文章中，我们将发布混合云Kafka集群的基准测试，其中会使用自己的Kubernetes发行版&lt;a href=&#34;https://github.com/banzaicloud/pke&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PKE&lt;/a&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;我们想要模拟经常在&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;平台上的一个用例，因此部署了跨可用区的节点，Zookeeper和客户端也位于不同的节点中。&lt;/p&gt;
+&lt;p&gt;下面是使用到的实例类型：&lt;/p&gt;
+&lt;h3 id=&#34;amazon-eks&#34;&gt;AMAZON EKS&lt;/h3&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Broker&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Zookeeper&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Client&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;3x r5.4xlarge&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;3x c5.xlarge&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;3x c5.2xlarge&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;blockquote&gt;
+&lt;p&gt;仅供参考，Amazon在一天剩下的时间里会在30分钟后对小型实例类型磁盘IO进行节流。你可以从 &lt;a href=&#34;https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSOptimized.html#ebs-optimization-support&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;读到更多信息。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;对于存储，我们请求了Amazon提供的&lt;code&gt;IOPS SSD（io1）&lt;/code&gt;，在上面列出的实例中，它可以持续的达到437MB/s吞吐量。&lt;/p&gt;
+&lt;h3 id=&#34;google-gke&#34;&gt;GOOGLE GKE&lt;/h3&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Broker&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Zookeeper&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;Client&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;3x n1-standard-16&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;3x n1-standard-2&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;4x n1-standard-8&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;存储方面，我们设置了Google的&lt;code&gt;pd-ssd&lt;/code&gt;，根据文档，它可以达到&lt;code&gt;400MB/s&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;kafka和加载工具&#34;&gt;KAFKA和加载工具&lt;/h3&gt;
+&lt;p&gt;Kafka方面，我们使用了3个topic，partition 数量和 replication 因子都设置为 3。 基于测试的目的我们使用了默认的配置值，除了 &lt;code&gt;broker.rack,min.insync.replicas&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;在基准测试中，我们使用自定义构建的Kafka Docker映像&lt;code&gt;banzaicloud/ Kafka:2.12-2.1.1&lt;/code&gt;。它使用Java 11、Debian并包含2.1.1版本的Kafka。Kafka容器配置为使用4个CPU内核和12GB内存， Java的堆大小为10GB。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;banzaicloud/kafka:2.12-2.1.1 镜像是基于 wurstmeister/kafka:2.12-2.1.1 镜像的， 但为了SSL库的性能提升，我们想用 Java 11 代替 Java 8。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;加载工具使用 &lt;a href=&#34;https://github.com/jamiealquiza/sangrenel&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sangrenel&lt;/a&gt;生成，它是一个基于Go语言实现的Kafka性能工具，配置如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;512 字节的消息尺寸&lt;/li&gt;
+&lt;li&gt;不压缩&lt;/li&gt;
+&lt;li&gt;required-acks 设置为 all&lt;/li&gt;
+&lt;li&gt;worker设置为20个&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;为了得到准确的结果，我们使用Grafana 仪表板&lt;a href=&#34;https://grafana.com/dashboards/1860&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1860&lt;/a&gt;的可视化NodeExporter指标监控整个架构。我们不断增加生产者的数量，直到达到架构或Kafka的极限。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;为基准测试创建的架构已经超出了这篇文章的范围，但是如果你对重现它感兴趣，我们建议使用&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline管道&lt;/a&gt;和访问&lt;a href=&#34;https://github.com/banzaicloud/kafka-operator/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kafka-operator&lt;/a&gt; 的GitHub获取更多细节。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;基准测试环境&#34;&gt;基准测试环境&lt;/h2&gt;
+&lt;p&gt;在讨论Kafka的基准测试结果之前，我们还对环境进行了测试。由于Kafka是一个极端数据密集型的应用，我们特别关注在测试磁盘速度和网络性能；根据经验，这是对Kafka影响最大的指标。网络性能方面，我们使用了一个名为&lt;code&gt;iperf&lt;/code&gt;的工具。创建了两个相同的基于Ubuntu的Pod：一个是服务端，另一个是客户端。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在 Amazon EKS 上我们测量到了 &lt;code&gt;3.01 Gbits/sec&lt;/code&gt; 的吞吐量。&lt;/li&gt;
+&lt;li&gt;在 Google GKE 上我们测量到了 &lt;code&gt;7.60 Gbits/sec&lt;/code&gt; 的吞吐量。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;为了确定磁盘速度，我们在基于容器的Ubuntu系统下使用了一个叫 &lt;code&gt;dd&lt;/code&gt;的工具。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在Amazon EKS上我们测量的结果是 &lt;code&gt;437MB/s&lt;/code&gt;（这与Amazon为该实例和ssd类型提供的内容完全一致）。&lt;/li&gt;
+&lt;li&gt;在Google GKE上我们测量的结果是 &lt;code&gt;400MB/s&lt;/code&gt;（这也与谷歌为其实例和ssd类型提供的内容一致）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;现在我们对环境有了更好的理解，让我们继续讨论部署到Kubernetes的Kafka集群。&lt;/p&gt;
+&lt;h2 id=&#34;单集群&#34;&gt;单集群&lt;/h2&gt;
+&lt;h3 id=&#34;google-gke-1&#34;&gt;Google GKE&lt;/h3&gt;
+&lt;h4 id=&#34;kafka部署在kubernetes---没有istio&#34;&gt;Kafka部署在Kubernetes - 没有Istio&lt;/h4&gt;
+&lt;p&gt;在我们得到关于EKS的结果之后，我们对Kafka在GKE上达到 &lt;code&gt;417MB/s&lt;/code&gt; 的磁盘吞吐量并不感到惊讶。该性能受到实例的磁盘IO限制。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-notls-gke.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes-开启tls---没有istio&#34;&gt;Kafka基于Kubernetes 开启TLS - 没有Istio&lt;/h4&gt;
+&lt;p&gt;一旦我们为Kafka打开SSL/TLS，和预期的一样并且已经多次&lt;a href=&#34;https://blog.mimacom.com/apache-kafka-with-ssltls-performance/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基准测试&lt;/a&gt;过，就会出现性能损失。众所周知，Java的SSL/TLS（插件化的）实现性能很差，而且它在Kafka中导致了&lt;a href=&#34;https://issues.apache.org/jira/browse/KAFKA-2561&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;性能问题&lt;/a&gt;。不过在最近的实现版本（9+）中有一些改进，因此我们升级到了Java 11。结果如下:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;274MB/s&lt;/code&gt; ，大约30% 吞吐量损失&lt;/li&gt;
+&lt;li&gt;和没有TLS比较，包速率有大约两倍的提升&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-tls-gke.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes---且有istio&#34;&gt;Kafka基于Kubernetes - 且有Istio&lt;/h4&gt;
+&lt;p&gt;我们急切地想知道在Istio中部署和使用Kafka时是否会增加开销和有性能损失。结果很有希望:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;没有性能损失&lt;/li&gt;
+&lt;li&gt;CPU方面略有增加&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-notls-gke-istio.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes---有istio并开启mtls&#34;&gt;Kafka基于Kubernetes - 有Istio并开启mTLS&lt;/h4&gt;
+&lt;p&gt;接下来，我们在Istio上启用了mTLS，并重用了相同的Kafka部署。结果比基于Kubernetes的Kafka并开启了SSL/TLS的要好。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;323MB/s&lt;/code&gt; ，大约20% 吞吐量损失&lt;/li&gt;
+&lt;li&gt;和没有TLS比较大约有2倍的包速率提升&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-tls-gke-istio.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;amazon-eks-1&#34;&gt;Amazon EKS&lt;/h3&gt;
+&lt;h4 id=&#34;kafka基于kubernetes---没有istio&#34;&gt;Kafka基于Kubernetes - 没有Istio&lt;/h4&gt;
+&lt;p&gt;在这个配置下我们得到了一个相当可观的写入速度&lt;code&gt;439MB/s&lt;/code&gt;，如果消息的尺寸是512字节，那么它就是&lt;code&gt;892928消息/秒&lt;/code&gt;。事实上，我们压榨出了AWS &lt;code&gt;r5.4xlarge&lt;/code&gt;这种实例的磁盘吞吐量最大的负荷能力。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-notls-eks.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes并开启tls---没有istio&#34;&gt;Kafka基于Kubernetes并开启TLS - 没有Istio&lt;/h4&gt;
+&lt;p&gt;一旦我们再次为Kafka打开SSL/TLS，并进行了多次&lt;a href=&#34;https://blog.mimacom.com/apache-kafka-with-ssltls-performance/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基准测试&lt;/a&gt;，就像预期的那样会出现性能损失。Java的SSL/TLS实现性能问题在EKS上和GKE一样存在。不过正如我们之前所说，最近的版本已经有了改进。因此我们将其升级到Java 11，结果如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;306MB/s&lt;/code&gt; ，大约30% 吞吐量损失&lt;/li&gt;
+&lt;li&gt;和没有TLS比较，大约2倍包速率提升&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kakfa-tls-eks.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes---有istio&#34;&gt;Kafka基于Kubernetes - 有Istio&lt;/h4&gt;
+&lt;p&gt;和以前一样，结果也很好：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;没有性能损失&lt;/li&gt;
+&lt;li&gt;CPU使用方面有轻微增加&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-notls-eks-istio.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;kafka基于kubernetes---有istio且开启mtls&#34;&gt;Kafka基于Kubernetes - 有Istio且开启mTLS&lt;/h4&gt;
+&lt;p&gt;接下来，我们在Istio上启用了mTLS，并重用了相同的Kafka部署。同样的，结果比Kafka在Kubernetes上直接使用SSL/TLS要好。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;340MB/s&lt;/code&gt; ，大约20%吞吐量损耗&lt;/li&gt;
+&lt;li&gt;包速率增加了，但低于两倍&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-tls-eks-istio.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;额外的尝试---kafka基于linkerd关闭mtls&#34;&gt;额外的尝试 - Kafka基于Linkerd（关闭mTLS）&lt;/h4&gt;
+&lt;p&gt;我们测试了所有可用的情况，所以想用Linkerd再尝试一下。为什么？因为我们可以做到。虽然我们知道Linkerd在可用的功能方面不能满足客户期望，但我们仍然想尝试一下。我们的期望值很高，但得出的数字给了我们一个沉重的教训，也提醒了我们什么是&lt;code&gt;认知偏见&lt;/code&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;246MB/s&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-linkerd.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;单集群结论&#34;&gt;单集群结论&lt;/h3&gt;
+&lt;p&gt;在继续多集群基准测试之前，让我们评估一下已有的数据。可以看出，在这些环境和场景中，使用没有mTLS的服务网格不会影响Kafka的性能。在到达网络、内存或CPU瓶颈前，底层磁盘的吞吐量限制了Kafka的性能。&lt;/p&gt;
+&lt;p&gt;无论是使用Istio还是Kafka自己的SSL/TLS库，都会使Kafka的性能降低约20%。它也增加了一点CPU负载，并使通过网络传输的数据包数量增加了一倍。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意，在使用&lt;code&gt;iperf&lt;/code&gt;进行架构测试期间，仅在网络上启用mTLS就会导致大约20%的性能损耗。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;跨racks云区域topic复制的多集群场景&#34;&gt;跨“racks”（云区域）topic复制的多集群场景&lt;/h2&gt;
+&lt;p&gt;在这个设置中，我们模拟的内容更接近于生产环境，为了重用测试环境，我们坚持使用相同配置的AWS或Google实例，但是在不同的区域上设置了多个集群（跨云区域的topic复制）。请注意，无论我们跨单个云提供商使用这些集群，还是跨多个云或混合云来使用这些集群，流程都应该是相同的。从&lt;a href=&#34;https://banzaicloud.com/blog/istio-multicluster-theeasy-way/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Backyards&lt;/a&gt;和&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;的角度来看没有区别，我们支持3种不同的网络拓扑。&lt;/p&gt;
+&lt;p&gt;其中一个集群比另一个集群更大，它包含两个broker和两个Zookeeper节点。而另一个集群则各有一个节点。注意，在支持mTLS的&lt;strong&gt;单网格多集群环境&lt;/strong&gt;中是绝对必要的。此外我们还设置&lt;code&gt;min.insync.replicas&lt;/code&gt;为3，让生产者应答所有耐用性相关的请求。&lt;/p&gt;
+&lt;p&gt;网格是全自动的由 &lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;提供。&lt;/p&gt;
+&lt;h3 id=&#34;google-gke---gke&#34;&gt;Google GKE &amp;lt;-&amp;gt; GKE&lt;/h3&gt;
+&lt;p&gt;在这个场景中，我们创建了一个单网格/单Kakfa集群，它跨越两个Google云区域：eu-west1和eu-west4&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;211MB/s&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-multi-gke.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;amazon-eks---eks&#34;&gt;Amazon EKS &amp;lt;-&amp;gt; EKS&lt;/h3&gt;
+&lt;p&gt;在这个场景中，我们创建了一个单网格/单Kakfa集群，它横跨两个AWS区域：eu-north1和eu-west1&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;85MB/s&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-multi-eks.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;google-gke---eks&#34;&gt;Google GKE &amp;lt;-&amp;gt; EKS&lt;/h3&gt;
+&lt;p&gt;在这个场景中，我们创建了一个单一的Istio网格，它跨越多个集群和多个云，形成了一个单一的Kafka集群（Google云区域是europe-west-3， AWS的区域是eu-central-1）。正如预期的那样，结果要差得多。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;吞吐量&lt;code&gt;115MB/s&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-img&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img src=&#34;https://banzaicloud.com/img/blog/kafka-perf/kafka-multi-eks-gke.png&#34; alt=&#34;img&#34; loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      img
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;多集群结论&#34;&gt;多集群结论&lt;/h3&gt;
+&lt;p&gt;从基准测试来看，我们可以放心地说，在多云单网格环境中使用Kafka是值得的。人们选择在Istio上部署Kafka这种环境的原因各不相同，但像&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;这样易于安装，有额外的安全收益，具有可伸缩性和耐用性，&lt;a href=&#34;https://banzaicloud.com/blog/istio-operator-1.2/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于本地负载均衡&lt;/a&gt;和更多特性的工具是一个完美的选择。&lt;/p&gt;
+&lt;p&gt;正如前面提到的，本系列后续的文章之一是关于基准测试/运维一个自动伸缩的混云Kafka集群，警报和缩放事件基于Prometheus的指标（我们对基于Istio指标的多个应用进行类似的自动伸缩，并通过网格部署和观察它们——阅读这篇之前的文章了解详情：&lt;a href=&#34;https://banzaicloud.com/blog/k8s-hpa-prom-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于自定义Istio指标的Pod水平自动伸缩&lt;/a&gt;。）&lt;/p&gt;
+&lt;h2 id=&#34;关于-backyardshttpsbanzaicloudcomblogistio-the-easy-way&#34;&gt;关于 &lt;a href=&#34;https://banzaicloud.com/blog/istio-the-easy-way/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Backyards&lt;/a&gt;&lt;/h2&gt;
+&lt;p&gt;Banzai Cloud的Backyards是一个支持多云和混合云的服务网格平台，用于构建现代应用程序。基于Kubernetes，我们的&lt;a href=&#34;https://github.com/banzaicloud/istio-operator&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio operator&lt;/a&gt;和&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;平台支持跨实体数据中心和&lt;strong&gt;5&lt;/strong&gt;个云环境的灵活性、可移植性和一致性。使用简单但功能极其强大的UI和CLI，自己体验自动金丝雀发布、流量转移、路由、安全服务通信、深度的可观察性等特性。&lt;/p&gt;
+&lt;h2 id=&#34;关于-pipelinehttpsgithubcombanzaicloudpipeline&#34;&gt;关于 &lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;&lt;/h2&gt;
+&lt;p&gt;Banzai Cloud的 &lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;提供了一个平台，允许企业开发、部署和扩展基于容器的应用程序。它利用了最好的云组件比如Kubernetes，为开发人员和运营团队创建了一个高效、灵活的环境。强大的安全评估——多认证后端，细粒度的授权、动态安全管理、使用TLS，漏洞扫描，静态代码分析，CI/CD等特性的组件之间的自动化安全通信，&lt;a href=&#34;https://github.com/banzaicloud/pipeline&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Pipeline&lt;/a&gt;是一个**0层（tier zero）**特性的平台，努力使所有企业实现自动化。&lt;/p&gt;
+&lt;h2 id=&#34;关于-banzai-cloudhttpsbanzaicloudcom&#34;&gt;关于 &lt;a href=&#34;https://banzaicloud.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Banzai Cloud&lt;/a&gt;&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://banzaicloud.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Banzai Cloud&lt;/a&gt; 正在改变私有云的构建方式：简化复杂应用程序的开发、部署和扩展，并将Kubernetes和云原生技术的强大功能交到各地的开发人员和企业手中。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>服务网格的三个技术优势及其运维局限-第2部分</title>
+      <link>https://cloudnative.to/blog/service-mesh-istio-limits-and-benefits-part-2/</link>
+      <pubDate>Thu, 01 Aug 2019 10:42:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/service-mesh-istio-limits-and-benefits-part-2/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://glasnostic.com/blog/service-mesh-istio-limits-and-benefits-part-2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;本文作者洞察全局，高屋建瓴，结合当前服务网格的形势，分析了服务网格普遍的局限性，以及从开发者角度讲述服务网格带来的三个有价值的好处：可观测性、流量控制和安全。本文的观点阐述详细而深刻，涵盖了服务网格的关键性技术与架构，以及许多备受瞩目与广泛探讨的话题。&lt;/p&gt;
+&lt;h2 id=&#34;正文&#34;&gt;正文&lt;/h2&gt;
+&lt;p&gt;欢迎来到关于服务网格的优势和运维局限的系列文章的第2部分。在&lt;a href=&#34;https://glasnostic.com/blog/service-mesh-istio-limits-and-benefits-part-1&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;第1部分&lt;/a&gt;中，我们了解了开发人员如何从服务网格为微服务架构提供附加的可观察性、流量控制和安全功能的能力中获益。在这篇文章中，我们将关注同样的三个维度，但不同于开发人员关心的问题，我们会从运维团队的角度深入研究服务网格的局限性。&lt;/p&gt;
+&lt;h2 id=&#34;可观测性的限制&#34;&gt;可观测性的限制&lt;/h2&gt;
+&lt;p&gt;可观察性始终是分布式系统工程师的首选。因此，服务网格尽其所能来满足这种需求就不足为奇了。然而，工程师期望的以及服务网格提供的可观察性并没有针对传统的运维行为，比如容量规划：它关注的是&lt;strong&gt;运行时调试&lt;/strong&gt;的开发活动。&lt;/p&gt;
+&lt;p&gt;当然，运行时调试要求指标在请求的执行线程上下文中是“可解释的”。这与当今联合的，&lt;a href=&#34;https://glasnostic.com/blog/microservices-architecture-patterns-service-mesh-glossary#Organic-Architecture&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;有组织发展的服务架构（Organic Architecture）&lt;/a&gt;是不一致的，它的度量标准是不可预测和不确定的。&lt;/p&gt;
+&lt;p&gt;如果一个分布式系统的服务构建了一个应用，并且其设计在很长一段时间内保持静态，那么观测这个分布式系统是有意义的。这样的系统可以被基线化和合理化，收集到的结果指标是可以解释的——特别是当架构主要是同步模式的时候。&lt;/p&gt;
+&lt;p&gt;但是，随着今天现代企业运行的那种联合的、有组织的架构的消失，可解释性也消失了。首先，基线——以及实践人员的“基线理解”——在一个有组织的架构世界中已经过时了。如果没有基线，对度量的最终解释可能会很有挑战。此外，服务的组合减少了单个开发团队的职责范围。联合的、有组织的服务环境是由并行的、在快速决策和学习周期中发展的自我管理团队创建的。换句话说，开发团队只负责少量的服务：他们的控制范围有限。因为没有必要跟踪到不属于团队的依赖，所以可观察性只在开发团队的控制范围内才有意义。在联合的、有组织的架构中，惟一的全局控制视野是负责“整个”服务场景的运维团队，而不仅仅是一组相关服务或应用——换句话说，是“任务控制”的运维团队。&lt;/p&gt;
+&lt;p&gt;可观测性在尺度上也会变成数据密集型。随着联合的、有组织架构的增长，在遥测和追踪中收集的数据量呈指数级增长，而单个服务实例的重要性下降。换句话说，以运行时调试为目标的可观察性导致从业者收集的数据越来越多，而这些数据却越来越不重要。因此，收集到的指标几乎没有可用的。&lt;/p&gt;
+&lt;p&gt;随着这些架构的发展，可观察性需要“在技术栈中向上移动”。与收集开发人员能够理解的指标不同，运维人员需要关注更高级别的KPI，让他们能够实时检测和反应。这些KPI需要具有全局的意义。这也是服务网格提供的可观察性不足的地方。由于其固执己见的特性，服务网格往往在企业中被孤立地部署，特别是运行在Kubernetes上的环境中。另一方面，可操作的观察性需要高级的“黄金信号”指标，它可以跨裸机、虚拟机和容器部署以及跨多个区域和云工作。&lt;/p&gt;
+&lt;p&gt;总之，服务网格为运行时调试提供了可观察性。这在开发人员的控制范围内是有价值的，但是指标需要是可以在请求执行的线程上下文中可解释的。然而，在当今联合的、有组织的服务环境中，缺乏基准指标和缩小的控制范围破坏了这种可解释性。&lt;/p&gt;
+&lt;p&gt;运行时调试的可观察性也是数据密集型的，这导致以更高的成本收集更多的数据，但价值却更低。为了避免价值的螺旋下降，可观测性需要“向上移动栈”，收集更高级别的全局的&lt;strong&gt;黄金信号&lt;/strong&gt;，以使&lt;strong&gt;任务控制&lt;/strong&gt;运维团队能够实时检测并做出反应。服务网格提供的可观察性不符合这个目标，这不仅是因为它的目标是支持运行时调试，还因为黄金信号需要是全局的，而且服务网格过于武断和具有侵入性，不适合部署在每个地方。&lt;/p&gt;
+&lt;h2 id=&#34;流量控制的限制&#34;&gt;流量控制的限制&lt;/h2&gt;
+&lt;p&gt;服务网格的发展是为了解决如何将对服务的调用路由到最佳目标实例，例如可以最快地为请求提供服务的实例。这就是为什么服务网格是面向开发人员或“面向路由”的：它们服务于开发人员的视角，开发人员希望调用服务而不必处理复杂的远程服务调用。因此，服务网格被证明是不适合管理这样架构下的工作负载——涉及了数十个或上百个微服务之间的跨越开发团队、业务部门甚至是公司防火墙的交互，例如随着时间的推移，具有不断变化的服务到服务交互和依赖关系的组合服务架构会有机地发展。&lt;/p&gt;
+&lt;p&gt;例如，在服务网格下要表达&lt;a href=&#34;https://glasnostic.com/blog/how-canary-deployments-work-1-kubernetes-istio-linkerd#figure-3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;em&gt;向前&lt;/em&gt;路由策略&lt;/a&gt;和向后的流量控制是比较简单的，而下游客户端如&lt;a href=&#34;https://glasnostic.com/blog/preventing-systemic-failure-backpressure&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;施加backpressure&lt;/a&gt;或&lt;a href=&#34;https://glasnostic.com/blog/preventing-systemic-failure-bulkheads&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;实现bulkhead&lt;/a&gt;就要更加困难，即使也有可能实现。服务网格的数据平面基于源和目标规则去构建流量决策从理论上讲是可能的，开发人员定位像&lt;a href=&#34;https://glasnostic.com/blog/kubernetes-service-mesh-what-is-istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;这样的控制平面，让他们提供对任意的服务交互集的流量控制。&lt;/p&gt;
+&lt;p&gt;这种将策略应用于任意服务交互集的能力的缺乏也使得策略的分层变得极其困难。例如，当一个&lt;a href=&#34;https://glasnostic.com/blog/preventing-systemic-failure-bulkheads&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bulkhead&lt;/a&gt;在两个可用性区域之间，但一个关键服务需要能够在需要是故障转移，这几乎不可能找到正确的服务网格规则的阈值，特别是自动扩展部署的情况下。&lt;/p&gt;
+&lt;p&gt;然而，对于运维人员来说，最重要的问题是服务网格在kubernetes之外的有限的可部署性——这是他们“固执己见”的直接结果。修改部署和部署过程以正确的包括一个数据平面的sidecar通常是不可能的，将虚拟机添加到服务网格是&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/additional-setup/mesh-expansion/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最令人费解的&lt;/a&gt;，但仍然不允许运维人员捕捉内部虚拟机的流量。更糟的是，要将现有的非Kubernetes工作负载集成到基于Kubernetes的服务网格中，运维人员不仅需要调整应用程序代码，还需要根据Kubernetes网络进行部署。&lt;/p&gt;
+&lt;p&gt;最后，通过YAML部署描述配置了当前服务网格实现的流量控制。部署描述是在版本控制中存储配置的一种很好的方法，因此可以用来重建定义良好的初始状态，但是它们不太适合运维团队在遇到困难时需要进行持续、实时的更改。&lt;/p&gt;
+&lt;p&gt;总之，虽然服务网格提供的流量控制支持许多面向开发人员的控制机制，如目标规则和虚拟服务定义，它不支持面向无路由的操作模式如&lt;a href=&#34;https://glasnostic.com/blog/preventing-systemic-failure-backpressure&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;backpressure&lt;/a&gt;或bulkhead。面对架构更改，服务网格策略不可能预先分层，而且很难部署到Kubernetes之外。服务网格配置通常基于部署描述，当需要进行补救时，这些描述必然会妨碍到运维团队。&lt;/p&gt;
+&lt;h2 id=&#34;安全限制&#34;&gt;安全限制&lt;/h2&gt;
+&lt;p&gt;通过代理服务间调用，服务网格可以很好地提供面向开发人员的应用安全特性的核心集，比如身份验证、授权、账号、安全传输和服务标识。虽然为应用开发人员提供这些开箱即用的特性可以节省时间，但是使用YAML部署描述来配置这些特性往往比较困难且容易出错，这显然会降低他们的目标。&lt;/p&gt;
+&lt;p&gt;从操作的角度来看，这些&lt;strong&gt;基于服务间调用&lt;/strong&gt;的安全特性最多只能提供有限的安全，对于运维团队所关心的系统安全问题（如影响可用性、拒绝服务攻击、入侵或分割违规）毫无帮助。&lt;/p&gt;
+&lt;p&gt;由于服务网格的固执和侵入性，它们的应用安全特性在异构环境中会发生故障，除了Kubernetes之外，异构环境还包括裸机、虚拟机、PaaS、容器或serverless部署。类似的，当不是所有的服务都有sidecar时服务网格安全特性在Kubernetes环境中也会发生故障，在“服务器sidecar”这个例子中，&lt;a href=&#34;https://istio.io/docs/concepts/performance-and-scalability/#latency-for-istio-hahahugoshortcode-s2-hbhb&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;由于性能的原因&lt;/a&gt;只有目标服务有sidecar注入。&lt;/p&gt;
+&lt;p&gt;面向平台、固执己见的服务网格与应用安全性相结合也有一个影响，那就是大多数的网格与其他安全解决方案不能很好地集成——这是运维团队非常关心的问题。Istio能够使用替代的CA插件，外部工具可以使用YAML部署描述调用&lt;code&gt;kubectl&lt;/code&gt;来实现与安全性相关的策略，但是由于服务网格不支持策略分层，外部工具不可能正确和安全地实现这些策略。&lt;/p&gt;
+&lt;p&gt;总之，服务网格提供了许多应用程序的安全特性，这些特性对开发人员很有价值，但对更具挑战性的运维安全问题贡献甚微。由于服务网格是自定义的平台，而不是与外部安全解决方案协作的开放工具，因此即使是由它们提供的应用程序安全性在异构环境中也会很快出现故障。&lt;/p&gt;
+&lt;h2 id=&#34;操作需要&#34;&gt;操作需要&lt;/h2&gt;
+&lt;p&gt;对于构建微服务应用的开发团队，服务网格提供了许多好处，可以抽象出分布式服务带来的复杂性。其中的一些好处如加密、“智能”路由和运行时可观察性帮助运维这样的应，但很快被证明太有限，随着应用程序的增长，服务会变得更加关联且业务采用联合的，有机发展的&lt;a href=&#34;https://glasnostic.com/blog/microservices-architecture-patterns-service-mesh-glossary&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务场景&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;运维团队需要控制的不仅仅是服务间调用。他们需要能够将&lt;a href=&#34;https://glasnostic.com/blog/microservices-architecture-patterns-service-mesh-glossary/#Operational-Patterns-and-Techniques&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运维模式&lt;/a&gt;应用到任意一组交互中。它们还需要能够&lt;strong&gt;分层&lt;/strong&gt;的策略，以便能够在不影响彼此的情况下实现。运维团队需要能够实时控制服务环境，而不需要管理数百个YAML描述。要做到这一切，他们不需要武断的平台，而是需要与现有工具集成的、应用于整个服务场景的工具，而不影响任何部署。&lt;/p&gt;
+&lt;p&gt;因此，如果服务网格技术，其核心是用于开发人员在Kubernetes之上创建复杂度有限的独立应用程序，而不是用于让运维团队确保整个异构和动态服务环境的正确运维，那么我们如何解决必要的运维问题呢?&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;**解决方案1：继续等待，直到服务网格解决运维关注的这些问题。**对于我们这些将服务网格（特别是Istio）视为每个分布式问题的一体化解决方案的人来说，最简单的解决方案就是等待服务网格支持这些问题。当然，这不大可能发生。服务网格是围绕开发人员的关注点(如服务链接和更智能的实例路由)而设计的，必须进行很大的更改才能支持运维模式，而这通常无法通过管理点对点连接来解决。&lt;/li&gt;
+&lt;li&gt;**解决方案2：在这个问题上投入更多的工程。**工程师的答案是，在这个问题上投入更多的工程。开发人员可以编写策略引擎、粘接代码来集成服务网格安全性和其他安全工具、数据聚合器来收集运维人员需要的高级指标等等。显然，这将耗费更多成本，而且不太可能在短期内令人满意。&lt;/li&gt;
+&lt;li&gt;**解决方案3：采用云流量控制器。**最好的选择是将服务网格留给开发团队，让运维团队采用云流量控制器。这样，运维团队可以检测到&lt;a href=&#34;https://glasnostic.com/blog/microservices-architecture-patterns-service-mesh-glossary/#Emergent-Behaviors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;复杂紧急的行为&lt;/a&gt;，并实时纠正，创造他们所需要的自动化来有效的实现需要的运维模式，保证架构的可控。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Glasnostic就是这样一个云流量控制器。&lt;/p&gt;
+&lt;div class=&#34;video-wrapper&#34; style=&#34;position: relative;padding-bottom: 56.25%;padding-top: 25px;height: 0;&#34;&gt;
+&lt;iframe src=&#34;https://player.vimeo.com/video/343154979?title=0&amp;amp;profile=0&amp;amp;byline=0&amp;amp;dnt=1&amp;amp;autoplay=1&amp;amp;muted=1&amp;amp;loop=1&#34; allow=&#34;autoplay; fullscreen&#34; allowfullscreen=&#34;&#34; style=&#34;position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;&#34;&gt;&lt;/iframe&gt;
+&lt;/div&gt;
+&lt;p&gt;**图 1:**是一个云流量控制器，允许运维和安全团队控制微服务应用之间的复杂交互和行为。&lt;/p&gt;
+&lt;p&gt;Glasnostic是一个用于服务环境的控制平面，它帮助运维和安全团队大规模地控制关联的微服务应用之间的复杂交互和行为。这与服务网格相反，服务网格管理应用程序中的服务到服务连接。Glasnostic是一个独立的解决方案，而不是另一个平台。它不需要sidecar或代理，并且能干净地集成到任何现有环境中。&lt;/p&gt;
+&lt;p&gt;通过获得对服务交互的控制，团队可以控制紧急行为、防止级联故障和避免安全漏洞。&lt;/p&gt;
+&lt;p&gt;Glasnostic是借鉴了成功的可以有机发展的架构之后才被构建的，它反对预先进行严格的设计。它使用一种独特的基于网络的方法来为运维人员提供他们需要的可观察性和控制能力，以检测和纠正服务场景中的紧急行为。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>基于Go、gRPC和Protobuf的微服务的Istio可观察性</title>
       <link>https://cloudnative.to/blog/istio-observability-with-go-gprc-and-protocol-buffers-based-microservices/</link>
       <pubDate>Mon, 27 May 2019 11:55:44 +0800</pubDate>
@@ -3519,6 +4136,663 @@ Memcached是一种流行的基于内存的分布式缓存，通常用于缓存�
 &lt;li&gt;发布记录和二进制文件 &lt;a href=&#34;https://github.com/cilium/cilium/releases/tag/1.3.0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1.3.0&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;容器镜像： &lt;code&gt;docker.io/cilium/cilium:v1.3.0&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio1.1.0下的TCP流量控制</title>
+      <link>https://cloudnative.to/blog/raw-tcp-traffic-shaping-with-istio/</link>
+      <pubDate>Wed, 24 Oct 2018 11:45:02 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/raw-tcp-traffic-shaping-with-istio/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://venilnoronha.io/raw-tcp-traffic-shaping-with-istio-1.1.0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;通过&lt;a href=&#34;https://istio.io/docs/reference/config/istio.networking.v1alpha3/#VirtualService&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;虚拟服务&lt;/a&gt;, &lt;a href=&#34;https://istio.io/docs/reference/config/istio.networking.v1alpha3/#DestinationRule&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;目标规则&lt;/a&gt;, &lt;a href=&#34;https://istio.io/docs/reference/config/istio.networking.v1alpha3/#Gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gateway&lt;/a&gt;等概念提供了复杂的路由机制。Istio 1.0通过&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/traffic-shifting/#apply-weight-based-routing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;加权路由定义&lt;/a&gt;启用了HTTP流量转移。我提交的&lt;a href=&#34;https://github.com/envoyproxy/envoy/pull/4430&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 和&lt;a href=&#34;https://github.com/istio/istio/pull/9112&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;的pull request为TCP/TLS服务提供了类似的特性。这一特性已经在Envoy &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/version_history#oct-4-2018&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1.8.0&lt;/a&gt;中发布了。Istio中的这一特性也会在即将发布的&lt;a href=&#34;https://github.com/istio/istio/releases/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;1.1.0&lt;/a&gt;版本中提供使用。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio&#34; srcset=&#34;
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_02bb25da2cdc0ff613a0b307fde4171d.webp 400w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_3b388bdf543526e6d1bb3791c2425d35.webp 760w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_02bb25da2cdc0ff613a0b307fde4171d.webp&#34;
+               width=&#34;168&#34;
+               height=&#34;238&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在本文中，我们将用&lt;a href=&#34;https://golang.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;编写的一个简单的TCP Echo服务，用&lt;a href=&#34;https://www.docker.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker&lt;/a&gt;将其容器化并部署到&lt;a href=&#34;https://kubernetes.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;上，并通过练习Istio的加权TCP路由特性来理解其在生产服务中的行为。&lt;/p&gt;
+&lt;h2 id=&#34;tcp-echo服务&#34;&gt;TCP Echo服务&lt;/h2&gt;
+&lt;p&gt;在本文中，我们将创建一个简单的监听连接的TCP服务，并在客户端的请求数据加上一个简单的前缀，将其作为响应返回。图示如下：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-tcp-client---server-architecture&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;TCP Client - Server Architecture&#34; srcset=&#34;
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwgz3b6bpoj30r607qgm6_hucb98fe14bbf32ae75f22a29bddd65dbb_54021_75f080eda24d59f4079954039a6f35c3.webp 400w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwgz3b6bpoj30r607qgm6_hucb98fe14bbf32ae75f22a29bddd65dbb_54021_f82774ff774607864ee58fdb378aee68.webp 760w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwgz3b6bpoj30r607qgm6_hucb98fe14bbf32ae75f22a29bddd65dbb_54021_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwgz3b6bpoj30r607qgm6_hucb98fe14bbf32ae75f22a29bddd65dbb_54021_75f080eda24d59f4079954039a6f35c3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;216&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      TCP Client - Server Architecture
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;让我们看一下TCP Echo服务端的Go代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;package&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;main&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;bufio&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;fmt&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;io&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;net&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;s&#34;&gt;&amp;#34;os&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// main作为程序入口点
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;main&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// 通过程序入参获得端口和前缀
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;port&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprintf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;:%s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;os&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;prefix&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;os&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;2&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// 在给定端口上创建tcp监听
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;nx&#34;&gt;listener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;net&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Listen&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;tcp&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Println&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;failed to create listener, err:&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;os&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Exit&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Printf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;listening on %s, prefix: %s\n&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;listener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Addr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(),&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;c1&#34;&gt;// 监听新的连接
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;	&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;listener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Accept&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Println&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;failed to accept connection, err:&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;k&#34;&gt;continue&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;c1&#34;&gt;// 启用goroutine处理连接
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;		&lt;span class=&#34;k&#34;&gt;go&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;handleConnection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// handleConnection 处理连接的生命周期
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;func&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;handleConnection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;net&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefix&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;defer&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Close&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;reader&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;bufio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewReader&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;c1&#34;&gt;// 读取客户端请求数据
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;		&lt;span class=&#34;nx&#34;&gt;bytes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;reader&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;ReadBytes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;byte&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sc&#34;&gt;&amp;#39;\n&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;io&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;EOF&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;				&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Println&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;failed to read data, err:&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;			&lt;span class=&#34;k&#34;&gt;return&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Printf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;request: %s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;bytes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;c1&#34;&gt;// 添加前缀作为response返回
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;		&lt;span class=&#34;nx&#34;&gt;line&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprintf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;%s %s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;bytes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Printf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;response: %s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;line&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Write&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;([]&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;byte&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;line&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;要测试这个程序，复制上面代码并命名为&lt;code&gt;main.go&lt;/code&gt;，执行命令如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ go run -v main.go &lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt; hello
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;::&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;:9000, prefix: hello
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们可以通过 &lt;code&gt;nc&lt;/code&gt; (&lt;a href=&#34;https://en.wikipedia.org/wiki/Netcat&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Netcat&lt;/a&gt;)在TCP层面上和这段程序交互。要发送请求，可以使用BusyBox容器，如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker run -it --rm busybox sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;echo world | nc docker.for.mac.localhost 9000&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;hello world
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;就像你看到的，在请求“world”前面加上了“hello”，“hello world”作为响应。注意，正在执行的BusyBox容器基于 &lt;a href=&#34;https://docs.docker.com/docker-for-mac/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker for Mac&lt;/a&gt;，这就是为什么我访问Echo服务端时用&lt;code&gt;docker.for.mac.localhost&lt;/code&gt;代替了&lt;code&gt;localhost&lt;/code&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;容器化tcp-echo服务&#34;&gt;容器化TCP Echo服务&lt;/h2&gt;
+&lt;p&gt;因为我们最终想要在Kubernetes集群上运行TCP Echo服务，现在让我们将它容器化并发布镜像到 &lt;a href=&#34;https://hub.docker.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker Hub&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;首先，用下面的内容创建&lt;code&gt;Dockerfile&lt;/code&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-dockerfile&#34; data-lang=&#34;dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 使用golang容器构建可执行文件&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; golang:1.11 as builder&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /go/src/github.com/venilnoronha/tcp-echo-server/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; main.go .&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;CGO_ENABLED&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GOOS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;linux go build -a -installsuffix cgo -o main main.go&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 负责bin文件到基于alpine的分离容器&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; alpine:3.8&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; apk --no-cache add ca-certificates&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /bin/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; --from&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;builder /go/src/github.com/venilnoronha/tcp-echo-server/main .&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/bin/main&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;CMD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;9000&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;hello&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;EXPOSE&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; 9000&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;构建容器并发布镜像到Docker Hub：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker build -t vnoronha/tcp-echo-server:latest .
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Sending build context to Docker daemon  60.93kB
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Successfully built d172af115e18
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Successfully tagged vnoronha/tcp-echo-server:latest
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker push vnoronha/tcp-echo-server:latest
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;The push refers to repository &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;docker.io/vnoronha/tcp-echo-server&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;b4cc76510de6: Pushed
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;latest: digest: sha256:0a45b5a0d362db6aa9154717ee3f2b... size: &lt;span class=&#34;m&#34;&gt;949&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;部署tcp-echo服务到kubernetes&#34;&gt;部署TCP Echo服务到Kubernetes&lt;/h2&gt;
+&lt;h3 id=&#34;服务配置&#34;&gt;服务配置&lt;/h3&gt;
+&lt;p&gt;我们需要部署2个版本的TCP ECHO服务，用不同的前缀展示路由行为。创建&lt;code&gt;service.yaml&lt;/code&gt;，用Kubernetes &lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service&lt;/a&gt; 和2个 &lt;a href=&#34;https://kubernetes.io/docs/concepts/workloads/controllers/deployment/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Deployments&lt;/a&gt; 构建2个版本的TCP ECHO服务。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# use istio default controller&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server-v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replicas&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;vnoronha/tcp-echo-server:latest&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;9000&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;one&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;] # prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;one&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;imagePullPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;IfNotPresent&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server-v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replicas&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;vnoronha/tcp-echo-server:latest&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;9000&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;two&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;] # prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;two&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;imagePullPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;IfNotPresent&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署minikube&#34;&gt;部署Minikube&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://kubernetes.io/docs/setup/minikube/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Minikube&lt;/a&gt;是Kubernetes本地开发的最佳工具。用下面的命令启动Minikube实例：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ minikube start --bootstrapper kubeadm       &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;                 --memory&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8192&lt;/span&gt;                &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;                 --cpus&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;4&lt;/span&gt;                     &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;                 --kubernetes-version&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;v1.10.0 &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;                 --vm-driver&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;virtualbox
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Starting &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; Kubernetes v1.10.0 cluster...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Kubectl is now configured to use the cluster.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Loading cached images from config file.
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;安装-istio&#34;&gt;安装 Istio&lt;/h3&gt;
+&lt;p&gt;在撰写本文时，Istio 1.1.0还没有发布。因此我使用了Istio的 &lt;a href=&#34;https://gcsweb.istio.io/gcs/istio-prerelease/daily-build/master-20181017-09-15/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Daily Pre-Release&lt;/a&gt;来演示这个新特性。请参考&lt;a href=&#34;https://istio.io/docs/setup/kubernetes/download-release/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio文档&lt;/a&gt;学习下载和配置Istio。&lt;/p&gt;
+&lt;p&gt;一旦配置完成，这里有一个完全部署Istio组件的简单方法：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f install/kubernetes/helm/istio/templates/crds.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/virtualservices.networking.istio.io created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/templates.config.istio.io created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/handlers.config.istio.io created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f install/kubernetes/istio-demo.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;namespace/istio-system created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;destinationrule.networking.istio.io/istio-policy created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;destinationrule.networking.istio.io/istio-telemetry created 
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;使用istio代理部署tcp-echo服务&#34;&gt;使用Istio代理部署TCP Echo服务&lt;/h3&gt;
+&lt;p&gt;为了演示Istio的路由机制，我们以sidecar模式部署&lt;code&gt;tcp-echo-server&lt;/code&gt; ：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f &amp;lt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;istioctl kube-inject -f service.yaml&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;service/tcp-echo-server created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.extensions/tcp-echo-server-v1 created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.extensions/tcp-echo-server-v2 created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过下面的命令来验证服务运行：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pods
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                                  READY     STATUS    RESTARTS   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcp-echo-server-v1-78684f5697-sv5r5   2/2       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          56s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcp-echo-server-v2-74bf9999c8-hhhf9   2/2       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          56s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl logs tcp-echo-server-v1-78684f5697-sv5r5 tcp-echo-server
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;::&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;:9000, prefix: one
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl logs tcp-echo-server-v2-74bf9999c8-hhhf9 tcp-echo-server
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;::&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;:9000, prefix: two
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;istio加权tcp路由&#34;&gt;Istio加权TCP路由&lt;/h2&gt;
+&lt;p&gt;这是本练习的最后一部分，定义&lt;code&gt;VirtualService&lt;/code&gt;，&lt;code&gt;DestinationRule&lt;/code&gt;和带有权重路由的 &lt;code&gt;Gateway&lt;/code&gt;，并验证系统行为。&lt;/p&gt;
+&lt;h3 id=&#34;路由配置&#34;&gt;路由配置&lt;/h3&gt;
+&lt;p&gt;创建带有两个&lt;code&gt;subset&lt;/code&gt;的&lt;code&gt;DestinationRule&lt;/code&gt;来代表两个版本的 TCP Echo服务。&lt;code&gt;Gateway&lt;/code&gt; 容许流量通过端口&lt;code&gt;31400&lt;/code&gt;访问服务。最后，&lt;code&gt;VirtualService&lt;/code&gt;限定了80%的流量必须被路由到TCP Echo服务的v1版本，20%被路由到v2版本。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DestinationRule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;destination&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subsets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;31400&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;*&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;gateways&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tcp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;31400&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;destination&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;destination&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tcp-echo-server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;weight&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;20&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署路由配置&#34;&gt;部署路由配置&lt;/h3&gt;
+&lt;p&gt;为了让配置生效，复制上面的配置内容并创建文件&lt;code&gt;route-config.yaml&lt;/code&gt;，用下面的命令进行安装：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f route-config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;destinationrule.networking.istio.io/destination created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;gateway.networking.istio.io/gateway created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;virtualservice.networking.istio.io/route created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;验证istio的tcp路由行为&#34;&gt;验证Istio的TCP路由行为&lt;/h3&gt;
+&lt;p&gt;先来确定一下&lt;a href=&#34;https://istio.io/docs/tasks/traffic-management/ingress/#determining-the-ingress-ip-and-ports&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress的IP&lt;/a&gt;：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ minikube ip
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.99.100
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在可以通过Ingress发送一些请求到加权负载均衡的TCP Echo服务：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; i in &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;1..10&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;do&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt;&amp;gt; docker run -it --rm busybox sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;(date; sleep 1) | nc 192.168.99.100 31400&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt;&amp;gt; &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:05 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;two Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:07 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;two Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:09 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:12 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:14 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:17 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:19 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:22 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;one Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:24 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;two Sat Oct &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; 04:38:27 UTC &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如你所见，大约80%的请求带有“one”前缀，剩下20%带有“two”前缀。这证明了加权TCP路由器确实生效了。&lt;/p&gt;
+&lt;p&gt;下图能让你很好地了解这个示范的情景：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-architecture&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Architecture&#34; srcset=&#34;
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwhdkuu6sgj30zg0ikmze_hu404a1f87471217463f2a5c58c667e603_134325_687ee563da844c234b7b1f98e7d189a0.webp 400w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwhdkuu6sgj30zg0ikmze_hu404a1f87471217463f2a5c58c667e603_134325_980f5e8e402aca6befc95b3ba0aea090.webp 760w,
+               /blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwhdkuu6sgj30zg0ikmze_hu404a1f87471217463f2a5c58c667e603_134325_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/raw-tcp-traffic-shaping-with-istio/006tNbRwly1fwhdkuu6sgj30zg0ikmze_hu404a1f87471217463f2a5c58c667e603_134325_687ee563da844c234b7b1f98e7d189a0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;398&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Architecture
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;清理&#34;&gt;清理&lt;/h2&gt;
+&lt;p&gt;只需要像下面一样删除Minikube的部署：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ minikube stop &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; minikube delete
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Stopping &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; Kubernetes cluster...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Machine stopped.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Deleting &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; Kubernetes cluster...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Machine deleted.
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;如本文所示，即将发布的Istio 1.1.0版本配置加权TCP路由非常容易。本文提供了构建一个加权TCP路由的思路，让你学会如何从头开始控制TCP流量。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>教程|构建生产就绪的Istio Adapter</title>
+      <link>https://cloudnative.to/blog/set-sail-a-production-ready-istio-adapter/</link>
+      <pubDate>Wed, 17 Oct 2018 19:13:18 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/set-sail-a-production-ready-istio-adapter/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://venilnoronha.io/set-sail-a-production-ready-istio-adapter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;你已经浏览了Istio Mixer Adapter的&lt;a href=&#34;https://github.com/istio/istio/wiki/Mixer-Out-Of-Process-Adapter-Dev-Guide&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指南&lt;/a&gt; ，现在想要发布自己的Adapter？这篇文章将教你创建自己的Adapter，在生产环境的海洋中扬帆起航。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio&#34; srcset=&#34;
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_02bb25da2cdc0ff613a0b307fde4171d.webp 400w,
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_3b388bdf543526e6d1bb3791c2425d35.webp 760w,
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fw3hlzj8krj304o06m3ya_hud944193e99a4450a0234ef24b31140cc_8650_02bb25da2cdc0ff613a0b307fde4171d.webp&#34;
+               width=&#34;168&#34;
+               height=&#34;238&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;介绍&#34;&gt;介绍&lt;/h2&gt;
+&lt;p&gt;根据你对&lt;a href=&#34;https://golang.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;、&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Protobufs&lt;/a&gt;、&lt;a href=&#34;https://grpc.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;、&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;、&lt;a href=&#34;https://www.docker.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker&lt;/a&gt;和&lt;a href=&#34;https://kubernetes.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes&lt;/a&gt;知识有所了解，你可能会发现发布Istio Mixer Adapter的过程很容易。本文假设你对这些技术有一些经验，并且根据Istio的Wiki已经能够完成至少一个演练。&lt;/p&gt;
+&lt;p&gt;就本文的目的而言，我将讨论如何构建一个消费&lt;a href=&#34;https://preliminary.istio.io/docs/reference/config/policy-and-telemetry/templates/metric/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Metrics&lt;/a&gt;的Istio Mixer Adapter。下面是简要步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Istio Mixer - Adapter接口架构&lt;/li&gt;
+&lt;li&gt;创建一个简单的Mixer Adapter&lt;/li&gt;
+&lt;li&gt;将Adapter发布到Docker Hub&lt;/li&gt;
+&lt;li&gt;为Adapter编写Kubernetes Config&lt;/li&gt;
+&lt;li&gt;在Istio上部署和测试Adapter&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;再次强调，我将尽最大努力在这篇文章里呈现所有重要的细节，让你的Adapter运行起来。&lt;/p&gt;
+&lt;h2 id=&#34;istio-mixer---adapter接口架构&#34;&gt;Istio Mixer - Adapter接口架构&lt;/h2&gt;
+&lt;p&gt;让我们首先看看Adapter如何与Istio Mixer结合。Kubernetes在一定程度上抽象了接口；了解这一点对我们来说很重要。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-adapter架构&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio adapter架构&#34; srcset=&#34;
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fwbaovn3jgj31j00je0u9_hu81ef1c5b78874c3371823015a192288b_87173_f3d61a17612b024043da3d6912dfacc5.webp 400w,
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fwbaovn3jgj31j00je0u9_hu81ef1c5b78874c3371823015a192288b_87173_88ca1d9f90663642becfce3996bab11f.webp 760w,
+               /blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fwbaovn3jgj31j00je0u9_hu81ef1c5b78874c3371823015a192288b_87173_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/set-sail-a-production-ready-istio-adapter/006tNbRwly1fwbaovn3jgj31j00je0u9_hu81ef1c5b78874c3371823015a192288b_87173_f3d61a17612b024043da3d6912dfacc5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;268&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio adapter架构
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下面是对上述架构中的每个元素的简要描述。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Microservice&lt;/strong&gt;是在Istio上部署的用户应用程序&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Proxy&lt;/strong&gt;是Istio组件，例如&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy Proxy&lt;/a&gt;，控制&lt;a href=&#34;https://en.wikipedia.org/wiki/Microservices#Service_Mesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Service Mesh&lt;/a&gt;中的网络通信&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Mixer&lt;/strong&gt;是Istio组件，它从Proxy接收指标(和其他)数据，并转发给其他组件(在本例中是Adapter)&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Adapter&lt;/strong&gt;是我们正在构建的应用程序，通过gRPC消费来自Mixer的Metrics&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Operator&lt;/strong&gt;扮演负责配置和部署的角色，在本例中是Istio和Adapter&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;需要注意的一点，每个组件都作为独立的进程运行，并且可能分布在网络上。此外，Mixer还与Adapter建立了一个gRPC通道，以便为其提供用户的配置和Metrics。&lt;/p&gt;
+&lt;h2 id=&#34;创建一个简单的mixer-adapter&#34;&gt;创建一个简单的Mixer Adapter&lt;/h2&gt;
+&lt;p&gt;简单起见，我将按照 &lt;a href=&#34;https://github.com/istio/istio/wiki/Mixer-Out-of-Tree-Adapter-Walkthrough&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Mixer Out of Tree Adapter Walkthrough&lt;/a&gt; 这篇文章建立一个简单的Mixer Adapter。下面是概要，列出了创建消费Metrics的Istio Mixer Adapter的步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建Adapter的配置文件&lt;code&gt;config.proto&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;创建&lt;code&gt;mygrpcadapter.go&lt;/code&gt;文件，实现&lt;code&gt;HandleMetric(context.Context, *metric.HandleMetricRequest) (*v1beta11.ReportResult, error)&lt;/code&gt;这个gRPC API的调用&lt;/li&gt;
+&lt;li&gt;通过 &lt;code&gt;go generate ./...&lt;/code&gt;生成配置文件&lt;/li&gt;
+&lt;li&gt;创建&lt;code&gt;main.go&lt;/code&gt;文件作为gRPC的服务端，并监听API调用&lt;/li&gt;
+&lt;li&gt;为Adapter编写配置文件 &lt;code&gt;sample_operator_config.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;启动本地Mixer进程来测试和验证Adapter&lt;/li&gt;
+&lt;li&gt;配置项目&lt;/li&gt;
+&lt;li&gt;添加必要的依赖包(使用&lt;a href=&#34;https://github.com/golang/go/wiki/Modules&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go Modules&lt;/a&gt;、 &lt;a href=&#34;https://glide.sh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Glide&lt;/a&gt;、&lt;a href=&#34;https://golang.github.io/dep/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dep&lt;/a&gt;等)&lt;/li&gt;
+&lt;li&gt;通过启动本地Mixer进程来构建和测试Adapter&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;发布adapter到docker-hub&#34;&gt;发布Adapter到Docker Hub&lt;/h2&gt;
+&lt;p&gt;在本地安装和测试了&lt;code&gt;myootadapter&lt;/code&gt;项目后，就可以构建并发布Adapter到&lt;a href=&#34;https://hub.docker.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker Hub&lt;/a&gt;库了。在继续前请执行以下步骤：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;移动&lt;code&gt;mygrpcadapter/testdata/&lt;/code&gt;目录下的内容到&lt;code&gt;operatorconfig&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;创建&lt;code&gt;Dockerfile&lt;/code&gt;文件来保存创建Docker镜像的步骤&lt;/li&gt;
+&lt;li&gt;最后，在&lt;code&gt;operatorconfig/&lt;/code&gt;目录下创建一个名为&lt;code&gt;mygrpcadapter-k8s&lt;/code&gt;的文件，稍后将使用它部署到Kubernetes&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;完成了这些步骤后，你的项目结构会如下所示。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;── myootadapter
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   ├── Dockerfile
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   ├── glide.lock &lt;span class=&#34;c1&#34;&gt;# 是否出现此类文件取决于你使用的依赖包管理工具&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   ├── glide.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   ├── mygrpcadapter
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   ├── cmd
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   └── main.go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   ├── config
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   ├── config.pb.go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   ├── config.proto
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   ├── config.proto_descriptor
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   ├── mygrpcadapter.config.pb.html
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   │   └── mygrpcadapter.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   │   └── mygrpcadapter.go
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   └── operatorconfig
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       ├── attributes.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       ├── metrictemplate.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       ├── sample_operator_config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       ├── mygrpcadapter-k8s.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;       └── mygrpcadapter.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在来构建Docker镜像并发布到Docker Hub。&lt;/p&gt;
+&lt;h3 id=&#34;构建docker镜像&#34;&gt;构建Docker镜像&lt;/h3&gt;
+&lt;p&gt;&lt;a href=&#34;https://docs.docker.com/develop/develop-images/multistage-build/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多阶段构建（multi-stage builds）&lt;/a&gt;模式可以被用来构建Docker镜像。将以下内容复制到&lt;code&gt;Dockerfile&lt;/code&gt;中：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-dockerfile&#34; data-lang=&#34;dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; golang:1.11 as builder&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /go/src/github.com/username/myootadapter/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; ./ .&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;CGO_ENABLED&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GOOS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;linux &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;    go build -a -installsuffix cgo -v -o bin/mygrpcadapter ./mygrpcadapter/cmd/&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; alpine:3.8&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; apk --no-cache add ca-certificates&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;WORKDIR&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; /bin/&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; --from&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;builder /go/src/github.com/username/myootadapter/bin/mygrpcadapter .&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;ENTRYPOINT&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;/bin/mygrpcadapter&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;CMD&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;8000&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;EXPOSE&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; 8000&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;CMD [ &amp;quot;8000&amp;quot; ]&lt;/code&gt; 告诉Docker，将&lt;code&gt;8000&lt;/code&gt;作为参数，传递给定义在行&lt;code&gt;ENTRYPOINT [ &amp;quot;/bin/mygrpcadapter&amp;quot; ]&lt;/code&gt;的入口。 因为我们在这里把gRPC的监听端口改为了 &lt;code&gt;8000&lt;/code&gt;，所以必须更新文件&lt;code&gt;sample_operator_config.yaml&lt;/code&gt; 使其一致。把原来的配置 &lt;code&gt;address: &amp;quot;{ADDRESS}&amp;quot;&lt;/code&gt; 用 &lt;code&gt;address: mygrpcadapter:8000&lt;/code&gt;替换。&lt;/p&gt;
+&lt;p&gt;还需要更新&lt;code&gt;file_path&lt;/code&gt;，在稍后创建的Volume中去存储输出数据。更新&lt;code&gt;file_path: &amp;quot;out.txt&amp;quot;&lt;/code&gt;为&lt;code&gt;file_path: &amp;quot;/volume/out.txt&amp;quot;&lt;/code&gt; 。然后将得到如下所示的配置：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;config.istio.io/v1alpha2&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;h1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;adapter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;mygrpcadapter:8000&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;params&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;   &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;file_path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/volume/out.txt&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在，在 &lt;code&gt;myootadapter&lt;/code&gt; 目录下运行命令来构建和标记Docker镜像：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker build -t dockerhub-username/mygrpcadapter:latest .
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;发布镜像到docker-hub&#34;&gt;发布镜像到Docker Hub&lt;/h3&gt;
+&lt;p&gt;首先，通过终端登录到Docker Hub：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker login
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;接下来，使用下面的命令发布镜像：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;docker push dockerhub-username/mygrpcadapter:latest
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;为adapter编写kubernetes配置&#34;&gt;为Adapter编写Kubernetes配置&lt;/h2&gt;
+&lt;p&gt;现在让我们填写部署到Kubernetes的Adapter配置。将以下配置复制到我们之前创建的yaml文件&lt;code&gt;mygrpcadapter-k8s&lt;/code&gt;中：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;grpc&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;replicas&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecar.istio.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;false&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scheduler.alpha.kubernetes.io/critical-pod&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;mygrpcadapter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dockerhub-username/mygrpcadapter:latest&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;imagePullPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Always&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumeMounts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;transient-storage&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/volume&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;transient-storage&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;emptyDir&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的配置定义了一个简单的服务，只有一个从&lt;code&gt;dockerhub-username/mygrpcadapter:latest&lt;/code&gt;的镜像创建的副本。该服务可以被命名为&lt;code&gt;mygrpcadapter&lt;/code&gt;，并通过端口&lt;code&gt;8000&lt;/code&gt;访问。这就是如何让配置在&lt;code&gt;sample_operator_config.yaml&lt;/code&gt; 文件的 &lt;code&gt;address: &amp;quot;mygrpcadapter:8000&amp;quot;&lt;/code&gt; 指向这个特殊的deployment的方法。&lt;/p&gt;
+&lt;p&gt;同时，注意这些特殊的标记：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecar.istio.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;false&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scheduler.alpha.kubernetes.io/critical-pod&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;它告诉Kubernetes调度器，不要自动注入Istio的sidecar。这是因为我们并不需要在Adapter前面挂一个Proxy。另外，第二个标注将这个pod标记为系统critical级别。&lt;/p&gt;
+&lt;p&gt;我们还创建了一个名为&lt;code&gt;transient-storage&lt;/code&gt;的临时volume，用于存储Adapter的输出，例如&lt;code&gt;out.txt&lt;/code&gt;文件。配置如下所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumeMounts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;transient-storage&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/volume&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;transient-storage&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;emptyDir&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;{}&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;通过istio部署和测试adapter&#34;&gt;通过Istio部署和测试Adapter&lt;/h2&gt;
+&lt;p&gt;为了简洁起见，我将依赖于项目文档 &lt;a href=&#34;https://istio.io/zh/docs/setup/kubernetes/quick-start/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;部署 Istio&lt;/a&gt;， &lt;a href=&#34;https://istio.io/zh/docs/examples/bookinfo/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Bookinfo 应用&lt;/a&gt; 和 &lt;a href=&#34;https://istio.io/zh/docs/tasks/traffic-management/ingress/#%E7%A1%AE%E5%AE%9A%E5%85%A5%E5%8F%A3-ip-%E5%92%8C%E7%AB%AF%E5%8F%A3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;确定 ingress IP 和端口&lt;/a&gt;进行演示。&lt;/p&gt;
+&lt;h3 id=&#34;部署adapter&#34;&gt;部署Adapter&lt;/h3&gt;
+&lt;p&gt;现在可以通过Kubernetes部署Adapter：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f operatorconfig/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;mygrpcadapter&lt;/code&gt;服务会部署在&lt;code&gt;istio-system&lt;/code&gt;的命名空间下。你可以执行下面的命令验证：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get pods -n istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打印的日志如下：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;NAME                                       READY     STATUS        RESTARTS   AGE
+istio-citadel-75c88f897f-zfw8b             1/1       Running       0          1m
+istio-egressgateway-7d8479c7-khjvk         1/1       Running       0          1m
+.
+.
+mygrpcadapter-86cb6dd77c-hwvqd             1/1       Running       0          1m
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;也可以执行下面的命令查看Adapter的日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl logs mygrpcadapter-86cb6dd77c-hwvqd -n istio-system
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;它应该打印下面的日志：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;listening on &amp;#34;[::]:8000&amp;#34;
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;测试adapter&#34;&gt;测试Adapter&lt;/h3&gt;
+&lt;p&gt;在终端执行下面的命令，或者在浏览器输入URL &lt;code&gt;http://${GATEWAY_URL}/productpage&lt;/code&gt; 发送请求到部署的Bookinfo应用：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -o /dev/null -s -w &lt;span class=&#34;s2&#34;&gt;&amp;#34;%{http_code}\n&amp;#34;&lt;/span&gt; http://&lt;span class=&#34;si&#34;&gt;${&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;GATEWAY_URL&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;/productpage
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过访问Adapter容器验证在&lt;code&gt;/volume/out.txt&lt;/code&gt;文件中的输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; mygrpcadapter-86cb6dd77c-hwvqd cat /volume/out.txt
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;你会看到如下的输出：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HandleMetric invoked with:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Adapter config: &lt;span class=&#34;p&#34;&gt;&amp;amp;&lt;/span&gt;Params&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;FilePath:/volume/out.txt,&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Instances: &lt;span class=&#34;s1&#34;&gt;&amp;#39;i1metric.instance.istio-system&amp;#39;&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nv&#34;&gt;Value&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;1235&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;nv&#34;&gt;Dimensions&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; map&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;response_code:200&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;Istio提供了一种标准机制来管理和观测云环境下的微服务。Mixer让开发人员能够轻松地将Istio扩展到自定义平台。我希望这篇指南让你对Istio Mixer - Adapter结合有一个初步了解，以及如何自己构建一个生产就绪的Adapter！&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;去发布你自己的Istio Mixer Adapter! 可以用&lt;a href=&#34;https://github.com/vmware/wavefront-adapter-for-istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Wavefront by VMware Adapter for Istio&lt;/a&gt; 这篇文章做参考。&lt;/p&gt;
+&lt;p&gt;如果你希望在&lt;a href=&#34;https://istio.io/zh/docs/reference/config/policy-and-telemetry/adapters/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 适配器&lt;/a&gt;页面上发布你的Adapter，请参考这个&lt;a href=&#34;https://github.com/istio/istio/wiki/Publishing-Adapters-and-Templates-to-istio.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Wiki&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;免责声明&lt;/strong&gt;：本文仅属于作者本人，并不代表VMware的立场、策略或观点。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Venil Noronha&lt;/strong&gt; 开源软件爱好者&lt;/p&gt;
 </description>
     </item>
     

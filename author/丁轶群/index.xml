@@ -1,0 +1,696 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>丁轶群 | 云原生社区</title>
+    <link>https://cloudnative.to/author/%E4%B8%81%E8%BD%B6%E7%BE%A4/</link>
+      <atom:link href="https://cloudnative.to/author/%E4%B8%81%E8%BD%B6%E7%BE%A4/index.xml" rel="self" type="application/rss+xml" />
+    <description>丁轶群</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Sat, 28 Jul 2018 17:49:21 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/author/%E4%B8%81%E8%BD%B6%E7%BE%A4/avatar_hue38add62c87b7486d80c9f3fda25dfc1_12220_270x270_fill_q75_lanczos_center.jpg</url>
+      <title>丁轶群</title>
+      <link>https://cloudnative.to/author/%E4%B8%81%E8%BD%B6%E7%BE%A4/</link>
+    </image>
+    
+    <item>
+      <title>Service Mesh深度学习系列part3—istio源码分析之pilot-discovery模块分析（续）</title>
+      <link>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/</link>
+      <pubDate>Sat, 28 Jul 2018 17:49:21 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/</guid>
+      <description>&lt;p&gt;本文为&lt;code&gt;Service Mesh深度学习系列&lt;/code&gt;之一：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin&#34;&gt;Service Mesh深度学习系列part1—istio源码分析之pilot-agent模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin&#34;&gt;Service Mesh深度学习系列part2—istio源码分析之pilot-discovery模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2&#34;&gt;Service Mesh深度学习系列part3—istio源码分析之pilot-discovery模块分析（续）&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;本文分析的istio代码版本为0.8.0，commit为0cd8d67，commit时间为2018年6月18日。&lt;/p&gt;
+&lt;h2 id=&#34;pilot总体架构&#34;&gt;pilot总体架构&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppxdcmwvj31kw0vvtdl_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_224920_6955465e6493d00e1335baaa12fa7595.webp 400w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppxdcmwvj31kw0vvtdl_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_224920_8621644ed7ad65230d5a3a96baee8a16.webp 760w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppxdcmwvj31kw0vvtdl_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_224920_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppxdcmwvj31kw0vvtdl_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_224920_6955465e6493d00e1335baaa12fa7595.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;426&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先我们回顾一下pilot总体架构，上面是&lt;a href=&#34;https://github.com/istio/old_pilot_repo/blob/master/doc/design.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方关于pilot的架构图&lt;/a&gt;，因为是old_pilot_repo目录下，可能与最新架构有出入，仅供参考。所谓的pilot包含两个组件：pilot-agent和pilot-discovery。图里的agent对应pilot-agent二进制，proxy对应Envoy二进制，它们两个在同一个容器中，discovery service对应pilot-discovery二进制，在另外一个跟应用分开部署的单独的deployment中。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;discovery service&lt;/strong&gt;：从Kubernetes API Server list/watch &lt;code&gt;service&lt;/code&gt;、&lt;code&gt;endpoint&lt;/code&gt;、&lt;code&gt;pod&lt;/code&gt;、&lt;code&gt;node&lt;/code&gt;等资源信息，监听istio控制平面配置信息（如VirtualService、DestinationRule等）， 翻译为Envoy可以直接理解的配置格式。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;proxy&lt;/strong&gt;：也就是Envoy，直接连接discovery service，间接地从Kubernetes等服务注册中心获取集群中微服务的注册情况&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;agent&lt;/strong&gt;：生成Envoy配置文件，管理Envoy生命周期&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;service A/B&lt;/strong&gt;：使用了istio的应用，如Service A/B，的进出网络流量会被proxy接管&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;对于模块的命名方法，本文采用模块对应源码main.go所在包名称命名法。其他istio分析文章有其他命名方法。比如pilot-agent也被称为istio pilot，因为它在Kubernetes上的部署形式为一个叫istio-pilot的deployment。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-discovery的统一存储模型abstract-model&#34;&gt;pilot-discovery的统一存储模型（Abstract Model）&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppyenvgyj30la0fudhb_hua6a9b8d85a2f0eade4f0e472f8516b33_54713_fe0d9b000cc0432f26443ec8b17c015c.webp 400w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppyenvgyj30la0fudhb_hua6a9b8d85a2f0eade4f0e472f8516b33_54713_ad2e38929d71539fa6af59a109820acc.webp 760w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppyenvgyj30la0fudhb_hua6a9b8d85a2f0eade4f0e472f8516b33_54713_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2/006tKfTcgy1ftppyenvgyj30la0fudhb_hua6a9b8d85a2f0eade4f0e472f8516b33_54713_fe0d9b000cc0432f26443ec8b17c015c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;566&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;根据上面官方的pilot-discovery架构图，pilot-discovery有两个输入信息（黄色部分）&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;来自istioctl的控制面信息，也就是图中的Rules API，如route rule、virtual service等，这些信息以Kubernetes CRD资源形式保存&lt;/li&gt;
+&lt;li&gt;来自服务注册中心的服务注册信息，也就是图上的Kubernetes、Mesos、Cloud Foundry等。在Kubernetes环境下包括&lt;code&gt;pod&lt;/code&gt; 、&lt;code&gt;service&lt;/code&gt;、&lt;code&gt;node&lt;/code&gt;、&lt;code&gt;endpoint&lt;/code&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;为了实现istio对不同服务注册中心的支持，如Kubernetes、consul、Cloud Foundry等，pilot-discovery需要对以上两个输入来源的数据有一个统一的存储格式，也就是图中的Abstract Model，这种格式就定义在pilot/pkg/model包下。&lt;/p&gt;
+&lt;p&gt;举例，下面列表罗列了istio Abstract Model中service的一些成员如何跟根据Kubernetes服务注册信息中的service对象转化得到：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;HostName&lt;/code&gt;：&lt;code&gt;&amp;lt;name&amp;gt;.&amp;lt;namespace&amp;gt;.svc.cluster.local&lt;/code&gt;
+其中&lt;code&gt;name&lt;/code&gt;和&lt;code&gt;namespace&lt;/code&gt;分别为Kubernetes service对象的name和所属的namespace。cluster.local为默认domain suffix，可以通过proxy-discovery &lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;domain&lt;/code&gt; flag提供自定义值。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Ports&lt;/code&gt;： 对应Kubernetes service的spec.ports。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Address&lt;/code&gt;: 对应Kubernetes service的spec.ClusterIP。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ExternalName&lt;/code&gt;: 对应Kubernetes service的spec.ExternalName。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ServiceAccounts&lt;/code&gt;: 对应Kubernetes service的annotation中key值为alpha.istio.io/kubernetes-serviceaccounts和alpha.istio.io/canonical-serviceaccounts的annotation信息。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Resolution&lt;/code&gt;: 根据情况可以设置为client side LB、DNS Lb和Passthrough。比如对于ClusterIP类型的Kubernetes service，Resolution设置为client side LB，表示应用发出的请求由sidecar（也就是Envoy）负责做负载均衡，而对于Kubernetes中的headless service则设置为Passthrough。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;上面pilot-discovery架构图中的Platform Adaptor负责实现服务注册中心数据到Abstract Model之间的数据转换，在代码里，Platform Adaptor包含两部分：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;pilot/pkg/serviceregistry/kube/conversion.go里包括一系列将Kubernetes服务注册中心中的&lt;code&gt;label&lt;/code&gt;、&lt;code&gt;pod&lt;/code&gt;、&lt;code&gt;service&lt;/code&gt;、&lt;code&gt;service port&lt;/code&gt;等Kubernetes资源对象转换为Abstract Model中的对应资源对象的函数&lt;/li&gt;
+&lt;li&gt;pilot/pkg/config/kube/crd/conversion.go里包括将&lt;code&gt;DestinationRule&lt;/code&gt;等CRD转换为Abstract Model中的&lt;code&gt;Config&lt;/code&gt;对象的函数&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;在&lt;code&gt;pilot/pkg/bootstrap&lt;/code&gt;包下的&lt;code&gt;Server&lt;/code&gt;结构体代表pilot-discovery，其中包含3个重要成员负责这两类信息的获取、格式转换、以及构建数据变更事件的处理框架：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;ConfigStoreCache&lt;/code&gt; &lt;code&gt;ConfigStoreCache&lt;/code&gt;对象中embed了&lt;code&gt;ConfigStore&lt;/code&gt;对象。&lt;code&gt;ConfigStore&lt;/code&gt;对象利用client-go库从Kubernetes获取route rule、virtual service等CRD形式存在控制面信息，转换为model包下的&lt;code&gt;Config&lt;/code&gt;对象，对外提供&lt;code&gt;Get&lt;/code&gt;、&lt;code&gt;List&lt;/code&gt;、&lt;code&gt;Create&lt;/code&gt;、&lt;code&gt;Update、Delete&lt;/code&gt;等CRUD服务。而&lt;code&gt;ConfigStoreCache&lt;/code&gt;在此基础之上还允许注册控制面信息变更处理函数。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;IstioConfigStore&lt;/code&gt;
+IstioConfigStore封装了embed在ConfigStoreCache中的同一个ConfigStore对象。其主要目的是为访问route rule、virtual service等数据提供更加方便的接口。相对于ConfigStore提供的&lt;code&gt;Get&lt;/code&gt;、&lt;code&gt;List&lt;/code&gt;、&lt;code&gt;Create&lt;/code&gt;、&lt;code&gt;Update、Delete&lt;/code&gt;接口，IstioConfigStore直接提供更为方便的RouteRules、VirtualServices接口。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ServiceController&lt;/code&gt;
+利用client-go库从Kubernetes获取&lt;code&gt;pod&lt;/code&gt; 、&lt;code&gt;service&lt;/code&gt;、&lt;code&gt;node&lt;/code&gt;、&lt;code&gt;endpoint&lt;/code&gt;，并将这些CRD转换为model包下的Service、ServiceInstance对象。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;在istio中，使用istioctl配置的VirtualService、DestinationRule等被称为configuration，而从Kubernetes等服务注册中心获取的信息被称为service信息。所以从名称看&lt;code&gt;ConfigStoreCache&lt;/code&gt;、&lt;code&gt;IstioConfigStore&lt;/code&gt;负责处理第一类信息，&lt;code&gt;ServiceController&lt;/code&gt;负责第二类。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-discovery为envoy提供的xds服务&#34;&gt;pilot-discovery为Envoy提供的&lt;code&gt;xds&lt;/code&gt;服务&lt;/h2&gt;
+&lt;h3 id=&#34;所谓xds&#34;&gt;所谓&lt;code&gt;xds&lt;/code&gt;&lt;/h3&gt;
+&lt;p&gt;基于上面介绍的统一数据存储格式Abstract Model，pilot-discovery为数据面（运行在sidecar中的Envoy等proxy组件）提供控制信息服务，也就是所谓的discovery service或者&lt;code&gt;xds&lt;/code&gt;服务。这里的x是一个代词，类似云计算里的XaaS可以指代IaaS、PaaS、SaaS等。在istio中，&lt;code&gt;xds&lt;/code&gt;包括&lt;code&gt;cds&lt;/code&gt;(cluster discovery service)、&lt;code&gt;lds&lt;/code&gt;(listener discovery service)、&lt;code&gt;rds&lt;/code&gt;(route discovery service)、&lt;code&gt;eds&lt;/code&gt;(endpoint discovery service)，而&lt;code&gt;ads&lt;/code&gt;(aggregated discovery service)是对这些服务的一个统一封装。&lt;/p&gt;
+&lt;p&gt;以上cluster、endpoint、route等概念的详细介绍和实现细节可以参考Envoy在社区推广的data plane api（&lt;a href=&#34;https://github.com/envoyproxy/data-plane-api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/envoyproxy/data-plane-api&lt;/a&gt;），这里只做简单介绍：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;endpoint：一个具体的“应用实例”，对应ip和端口号，类似Kubernetes中的一个pod。&lt;/li&gt;
+&lt;li&gt;cluster：一个cluster是一个“应用集群”，它对应提供相同服务的一个或多个endpoint。cluster类似Kubernetes中service的概念，即一个Kubernetes service对应一个或多个用同一镜像启动，提供相同服务的pod。&lt;/li&gt;
+&lt;li&gt;route：当我们做灰度发布、金丝雀发布时，同一个服务会同时运行多个版本，每个版本对应一个cluster。这时需要通过route规则规定请求如何路由到其中的某个版本的cluster上。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;以上这些内容实际上都是对Envoy等proxy的配置信息，而所谓的cluster discovery service、route discovery service等xxx discovery service就是Envoy等从pilot-discovery动态获取endpoint、cluster等配置信息的协议和实现。为什么要做动态配置加载，自然是为了使用&lt;code&gt;istioctl&lt;/code&gt;等工具统一、灵活地配置service mesh。&lt;/p&gt;
+&lt;p&gt;而为什么要用&lt;code&gt;ads&lt;/code&gt;来“聚合”一系列&lt;code&gt;xds&lt;/code&gt;，并非仅为了在同一个gRPC连接上实现多种&lt;code&gt;xds&lt;/code&gt;来省下几个网络连接，&lt;code&gt;ads&lt;/code&gt;还有一个非常重要的作用是解决&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;rds&lt;/code&gt;信息更新顺序依赖的问题，从而保证以一定的顺序同步各类配置信息，这方面的讨论可以详见&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#aggregated-discovery-service&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy官网&lt;/a&gt;。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Envoy有篇博客叫The universal data plane API。按照Envoy的设想，社区中无论是是实现控制面的团队（比如istio自己），还是实现数据面的团队（比如Envoy、nginx等），大家都能参与并采用github.com/envoyproxy/data-plane-api上规定的这套控制面与数据面之间的data plane api接口。所以虽然repo叫data plane api，但博客的名字加上了universal这个形容词。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;xds在pilot-discovery中的实现框架&#34;&gt;&lt;code&gt;xds&lt;/code&gt;在pilot-discovery中的实现框架&lt;/h3&gt;
+&lt;p&gt;pilot-discovery在初始化discovery service（&lt;code&gt;xds&lt;/code&gt;服务）的过程中（&lt;code&gt;initDiscoveryService&lt;/code&gt;方法），创建了discovery server对象，由它负责启动了两个gRPC服务：&lt;code&gt;eds&lt;/code&gt;（endpoint discovery service）和&lt;code&gt;ads&lt;/code&gt;（aggregated discovery service）。其中单独存在的&lt;code&gt;eds&lt;/code&gt; gRPC服务仅仅是为了向后兼容老版本istio而存在，0.8版本的istio主要对外的discovery service就是指&lt;code&gt;ads&lt;/code&gt;，而其中已经整合了&lt;code&gt;eds&lt;/code&gt;。本文主要的分析的&lt;code&gt;xds&lt;/code&gt;就是指&lt;code&gt;ads&lt;/code&gt;。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;本系列文章的上一篇中说明，pilot-discovery在初始化discovery service的过程中创建了两个服务对象，其中第一个discovery server对象负责为Envoy提供gRPC协议的discovery service，而第二个discovery service对象则负责为Envoy提供REST协议的discovery service。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;根据Envoy的data plane api定义，&lt;code&gt;ads&lt;/code&gt;需要对外提供的gRPC接口&lt;code&gt;AggregatedDiscoveryServiceServer&lt;/code&gt;只有&lt;code&gt;StreamAggregatedResources&lt;/code&gt;一个方法。在discovery service初始化过程中创建的pilot/pkg/proxy/envoy/v2包下的&lt;code&gt;DiscoveryServer&lt;/code&gt;对象实现了gRPC server端接口。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;envoy为方便第三方开发者开发控制面，提供了go-control-plane库。基于go-control-plane库，开发者可以方便地实现基于gRPC协议的discovery service。istio 0.8版使用的go-control-plane版本commit号为&lt;code&gt;bc01fbf&lt;/code&gt;，在这个版本中&lt;code&gt;AggregatedDiscoveryServiceServer&lt;/code&gt;接口就只有&lt;code&gt;StreamAggregatedResources&lt;/code&gt;一个方法。但是在go-control-plane 2018年7月的一次commit中又为&lt;code&gt;AggregatedDiscoveryServiceServer&lt;/code&gt;接口增加了&lt;code&gt;IncrementalAggregatedResources&lt;/code&gt;方法，支持更为灵活的discovery service和Envoy之间的交互。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;discovery server的主要逻辑，就是在与每一个Envoy建立一个双向streaming的gRPC连接（Bidirectional streaming RPC）之后：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;启动一个协程从gRPC连接中读取来自Envoy的请求&lt;/li&gt;
+&lt;li&gt;在原来的协程中处理来自各gRPC连接的请求。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;discovery server从Envoy收到的请求类型为go-control-plane库下的&lt;code&gt;DiscoveryRequest&lt;/code&gt;。&lt;code&gt;DiscoveryRequest&lt;/code&gt;几个相对重要的成员如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;VersionInfo&lt;/code&gt;
+Envoy在收到一个&lt;code&gt;DiscoveryResponse&lt;/code&gt;之后会马上再发送一个&lt;code&gt;DiscoveryRequest&lt;/code&gt;作为ACK/NACK，从而告诉discovery service消息是否成功处理。&lt;code&gt;VersionInfo&lt;/code&gt;用来表示Envoy端到目前为止成功处理的最新的消息版本。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Node.Id&lt;/code&gt;
+连上discovery service的Envoy的唯一标识。标识符当istio部署在不同的服务注册中心（service registry）时会有不同的形式。在Kubernetes作为服务注册中心时，一个可能的Id值为&lt;code&gt;sidecar~172.00.00.000~sleep-55b5877479-rwcct.default~default.svc.cluster.local&lt;/code&gt;。以“~”为分割符，可以将&lt;code&gt;Node.Id&lt;/code&gt;解析为4部分：
+&lt;ol&gt;
+&lt;li&gt;Type：表示Envoy sidecar扮演的角色，如Sidecar，Ingress，Router等&lt;/li&gt;
+&lt;li&gt;IPAddress：Envoy sidecar所在pod的IP地址&lt;/li&gt;
+&lt;li&gt;ID：Envoy sidecar所在pod的name和namespace，中间用&amp;quot;.&amp;ldquo;连接，也就是上面例子中的sleep-55b5877479-rwcct.default&lt;/li&gt;
+&lt;li&gt;Domain：Envoy sidecar所在pod的namespace加svc.cluster.local，中间用“.”连接，也就是上面例子中的&lt;code&gt;default.svc.cluster.local&lt;/code&gt;
+关于这四个域的说明的更多信息，详见本系列文章第一篇中关于pilot-agent中role的说明。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ResourceName&lt;/code&gt;
+Envoy sidecar关注的资源列表，对于&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;lds&lt;/code&gt;来说，&lt;code&gt;ResourceName&lt;/code&gt;通常是空的，因为Envoy总是需要知道所有的相关数据。而对于&lt;code&gt;eds&lt;/code&gt;，&lt;code&gt;rds&lt;/code&gt;来讲，Envoy则可以选择性的指明需要监控的资源对象列表。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;TypeUrl&lt;/code&gt;
+&lt;code&gt;ads&lt;/code&gt;服务将原来分开的单独&lt;code&gt;xds&lt;/code&gt;服务，如&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;lds&lt;/code&gt;等，合并在同一个双向streaming的gRPC连接上。所以当Envoy向discovery server发送&lt;code&gt;DiscoveryRequest&lt;/code&gt;时，需要使用&lt;code&gt;TypeUrl&lt;/code&gt;来指明当前请求的服务类型。&lt;code&gt;TypeUrl&lt;/code&gt;值可以是&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;lds&lt;/code&gt;等。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ReponseNonce&lt;/code&gt;
+discovery service的&lt;code&gt;StreamAggregatedResources&lt;/code&gt;方法提供的双向streaming &lt;code&gt;ads&lt;/code&gt;服务中，discovery service可以连续向Envoy发送多个&lt;code&gt;DiscoveryResponse&lt;/code&gt;。当Envoy收到&lt;code&gt;DiscoveryResponse&lt;/code&gt;后，会发送&lt;code&gt;DiscoveryRequest&lt;/code&gt;来ACK之前的&lt;code&gt;DiscoveryResponse&lt;/code&gt;。为了减少歧义，Envoy使用&lt;code&gt;ReponseNonce&lt;/code&gt;指定当前&lt;code&gt;DiscoveryRequest&lt;/code&gt;ACK的是之前的哪个&lt;code&gt;DiscoveryResponse&lt;/code&gt;。具体设置方式就是把&lt;code&gt;ReponseNonce&lt;/code&gt;指定为需要ACK的&lt;code&gt;DiscoveryResponse&lt;/code&gt;中的&lt;code&gt;Nonce&lt;/code&gt;值，关于discovery server如何在&lt;code&gt;DiscoveryResponse&lt;/code&gt;中设置&lt;code&gt;Nonce&lt;/code&gt;，详见下文的分析。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ErrorDetail&lt;/code&gt;
+当Envoy处理来自discovery server的&lt;code&gt;DiscoveryResponse&lt;/code&gt;的过程中发生错误时，会在ACK/NACK的&lt;code&gt;DiscoveryRequest&lt;/code&gt;中带上具体错误信息&lt;code&gt;ErrorDetail&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;根据discovery server收到的&lt;code&gt;DiscoveryRequest&lt;/code&gt;中指定的请求服务类型（&lt;code&gt;TypeUrl&lt;/code&gt;），istio的&lt;code&gt;ads&lt;/code&gt;服务统一封装了&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;lds&lt;/code&gt;、&lt;code&gt;rds&lt;/code&gt;和&lt;code&gt;eds&lt;/code&gt;4种服务，即在同一个双向streaming的gRPC连接上提供这4种服务。&lt;/p&gt;
+&lt;p&gt;接下来本文按照&lt;code&gt;ads&lt;/code&gt;在配置发生变更时对外的push &lt;code&gt;xds&lt;/code&gt;信息的顺序，分别描述&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;eds&lt;/code&gt;。由于篇幅限制，&lt;code&gt;rds&lt;/code&gt;和&lt;code&gt;lds&lt;/code&gt;且听下回分解。&lt;/p&gt;
+&lt;h3 id=&#34;cds服务&#34;&gt;&lt;code&gt;cds&lt;/code&gt;服务&lt;/h3&gt;
+&lt;p&gt;如本文前面介绍，&lt;code&gt;cds&lt;/code&gt;，即cluster discovery service，是pilot-discovery为Envoy动态提供cluster相关信息的协议。Envoy可以向pilot-discovery的gRPC server发送一个&lt;code&gt;DiscoveryRequest&lt;/code&gt;，并将需要获取的配置信息类型（&lt;code&gt;TypeUrl&lt;/code&gt;）设置为&lt;code&gt;cds&lt;/code&gt;。discovery server，即&lt;code&gt;ads&lt;/code&gt;服务的实现类，在收到&lt;code&gt;DiscoveryRequest&lt;/code&gt;后，将Abstract Model中保存的相关信息组装成cluster，然后封装在&lt;code&gt;DiscoveryResponse&lt;/code&gt;返回给Envoy。&lt;/p&gt;
+&lt;p&gt;discovery server为了组装出cluster信息，需要从Abstract Model中提取以下两类信息类型；&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;服务注册信息：如从Kubernetes中的服务注册信息转化而来的service&lt;/li&gt;
+&lt;li&gt;通过istioctl提供的配置信息，如&lt;code&gt;DestinationRule&lt;/code&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;discovery server将这两类信息组装成cluster信息的流程大致如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;获取abstract model中保存的service信息，为每个service创建一个“空白”的cluster对象
+以Kubernetes作为服务注册中心的情况为例，abstract model中的service信息主要有两个来源：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在Kubernetes中定义的service资源对象&lt;/li&gt;
+&lt;li&gt;通过istioctl配置的&lt;code&gt;ServiceEntry&lt;/code&gt; 资源对象，用来代表那些没有注册在服务注册中心的服务，比如运行在Kubernetes之外的一个数据库。这些资源对象也保存在Kubernetes中，以CRD的形式存在。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;设置cluster名称，形式为：&lt;code&gt;outbound|service端口号||Hostname&lt;/code&gt;
+其中的service端口号对应Kubernetes中service对象的端口号，而Hostname就是service mesh中客户端方用来访问服务方的地址，形式为&lt;code&gt;&amp;lt;name&amp;gt;.&amp;lt;namespace&amp;gt;.svc.cluster.local&lt;/code&gt;。其中&lt;code&gt;name&lt;/code&gt;和&lt;code&gt;namespace&lt;/code&gt;分别为Kubernetes service对象的name和所属的namespace，&lt;code&gt;cluster.local&lt;/code&gt;为默认domain suffix。其中第三项对cluster来说是空白信息，只对subcluster有效，详见下面的分析。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;设置cluster的默认流量控制策略，如：默认的负载均衡策略为round robin，默认的timeout时间等。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;配置与该cluster相关的&lt;code&gt;eds&lt;/code&gt;更新方式。istio中每个cluster都可以&lt;a href=&#34;https://groups.google.com/forum/#!topic/envoy-users/DDn_R6Tfiks&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;单独配置相关&lt;code&gt;eds&lt;/code&gt;的更新方式&lt;/a&gt;，即告诉Envoy下次请求&lt;code&gt;eds&lt;/code&gt;信息时，应该采用何种方式。从istio 2018年4月的一个commit（67be0412）开始统一使用&lt;code&gt;ads&lt;/code&gt;作为&lt;code&gt;eds&lt;/code&gt;更新方法，而不是单独与discovery server建立gRPC连接来更新&lt;code&gt;eds&lt;/code&gt;信息。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;根据service的&lt;code&gt;HostName&lt;/code&gt;属性查找对应的&lt;code&gt;DestinationRule&lt;/code&gt;。根据&lt;code&gt;DestinationRule&lt;/code&gt;中定义的&lt;code&gt;subset&lt;/code&gt;创建subcluster。
+使用istioctl创建的&lt;code&gt;DestinationRule&lt;/code&gt;资源可以用来表达同一个服务的多个版本。比如下面的DestinationRule定义了&lt;code&gt;reviews&lt;/code&gt;服务的3个&lt;code&gt;subset&lt;/code&gt;，每个&lt;code&gt;subset&lt;/code&gt;对应&lt;code&gt;reviews&lt;/code&gt;服务的一个版本：v1、v2和v3。在Kubernetes环境下翻译过来就是具有label version=v1的service是v1版本的reviews服务，具有label version=v2的service是v2版本的reviews服务，以此类推。
+针对这里的每个版本（subset），需要创建一个单独的subcluster（其实就是一个独立的cluster），subcluster具有跟前面创建的cluster有类似的名称，形式为&lt;code&gt;outbound|service端口号|subset名称|Hostname&lt;/code&gt;，注意这里的第三项不再是空白。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;DestinationRule&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;reviews&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;trafficPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;loadBalancer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;simple&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;RANDOM&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subsets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v2&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;trafficPolicy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;loadBalancer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;simple&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ROUND_ROBIN&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;em&gt;6&lt;/em&gt;.   根据DestinationRule里定义的traffic policy，为cluster、subcluster配置流量控制策略,包括connection pool、outlier detection、负载均衡策略， upstream tls设置等。
+仔细看上面定义的叫&lt;code&gt;reviews&lt;/code&gt;的&lt;code&gt;DestinationRule&lt;/code&gt;，我们可以看到里面定义了2个traffic policy，第一个traffic policy定义了整体负载均衡策略为&lt;code&gt;RANDOM&lt;/code&gt;，第二个traffic policy专门针对subset v2，设置负载均衡为ROUND_ROBIN。定义在顶层的&lt;code&gt;RANDOM&lt;/code&gt;整体负载均衡策略会影响到每个subcluster。&lt;/p&gt;
+&lt;p&gt;discovery server在组装完成上述cluster对象之后，将得到的所有cluster封装在一个&lt;code&gt;DiscoveryResponse&lt;/code&gt;中，将&lt;code&gt;DiscoveryResponse&lt;/code&gt;的类型（即&lt;code&gt;TypeUrl&lt;/code&gt;）设置为&lt;code&gt;type.googleapis.com/envoy.api.v2.Cluster&lt;/code&gt;， &lt;code&gt;Nonce&lt;/code&gt;设置为当前时间（nonce的解释见本文前面部分）, 启动单独的协程通过与Envoy建立的双向stream gRPC连接发送给Envoy，发送超时为5秒。&lt;/p&gt;
+&lt;h3 id=&#34;eds服务&#34;&gt;&lt;code&gt;eds&lt;/code&gt;服务&lt;/h3&gt;
+&lt;p&gt;Envoy通过&lt;code&gt;cds&lt;/code&gt;服务获取service mesh中的cluster（应用集群）信息之后，还需要知道每个cluster所代表的应用集群中的成员信息，即endpoint。因此，Envoy可以在向discovery server调用&lt;code&gt;cds&lt;/code&gt;服务之后，继续向discovery server发送&lt;code&gt;TypeUrl&lt;/code&gt;为&lt;code&gt;eds&lt;/code&gt;的&lt;code&gt;DiscoveryRequest&lt;/code&gt;，从而请求endpoint信息。&lt;/p&gt;
+&lt;p&gt;Envoy发给discovery server的&lt;code&gt;DiscoveryRequest&lt;/code&gt;中会在&lt;code&gt;ResourceNames&lt;/code&gt;成员中包含它所关注的cluster的名称列表，当前istio支持两种cluster命名方法：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;outbound|&amp;lt;port&amp;gt;|&amp;lt;subset name&amp;gt;|&amp;lt;name&amp;gt;.&amp;lt;namespace&amp;gt;&lt;/code&gt;
+其中&lt;code&gt;port&lt;/code&gt;为int型的服务端口号，subset name来自对应的DestinationRule中定义的subset的名称，&lt;code&gt;name&lt;/code&gt;和&lt;code&gt;namespace&lt;/code&gt;分别为service的名称和所属的namespace。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;&amp;lt;name&amp;gt;.&amp;lt;namespace&amp;gt;.svc.cluster.local|&amp;lt;port name&amp;gt;|&amp;lt;label&amp;gt;&lt;/code&gt;
+这是被deprecated的cluster命名方法，在代码中被戏称为是来自古希腊时代的命名方式。其中&lt;code&gt;name&lt;/code&gt;和&lt;code&gt;namespace&lt;/code&gt;是对应service的name和所属的namespace，&lt;code&gt;cluster.local&lt;/code&gt;是domain suffix，&lt;code&gt;port name&lt;/code&gt;是用“,”分隔的一个或多个端口名称，&lt;code&gt;label&lt;/code&gt;是用“;”分隔的&lt;code&gt;key=value&lt;/code&gt;形式的一个或多个键值对。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Discovery server处理&lt;code&gt;eds&lt;/code&gt;类型的&lt;code&gt;DiscoveryRequest&lt;/code&gt;的逻辑相对简单，流程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;根据cluster的名称，把对应Kubernetes中service对象的name和所属的namespace解析出来。使用Kubernetes的client-go库中的&lt;code&gt;SharedIndexInformer&lt;/code&gt;获取Kubernetes中的service对象。&lt;/li&gt;
+&lt;li&gt;使用&lt;code&gt;SharedIndexInformer&lt;/code&gt;获取Kubernetes中的endpoint所有对象（&lt;code&gt;SharedIndexInformer&lt;/code&gt;包含了本地缓机制，所以并非每次处理&lt;code&gt;eds&lt;/code&gt;类型的&lt;code&gt;DiscoveryRequest&lt;/code&gt;都需要从Kubernetes同步大量数据），选择其中name和namespace匹配的endpoint。&lt;/li&gt;
+&lt;li&gt;使用subset中的label（不知道subset中的label代表什么意思的同学，请回忆前面分析&lt;code&gt;cds&lt;/code&gt;中关于subcluster构建过程），比如&lt;code&gt;version=v1&lt;/code&gt;，再次过滤上步被筛选过的endpoint。&lt;/li&gt;
+&lt;li&gt;获取endpoint的ip、端口和可用域（availability zone）等信息。其中的可用域由endpoint对应的pod所运行的node上的两个“著名”label的value构成（中间用&amp;rdquo;/&amp;ldquo;分隔），label的key分别为：&lt;code&gt;&amp;quot;failure-domain.beta.kubernetes.io/region&amp;quot;&lt;/code&gt;和&lt;code&gt;&amp;quot;failure-domain.beta.kubernetes.io/zone&amp;quot;&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;根据可用域信息（locality）将endpoint分组，每个locality对应一个&lt;code&gt;LocalityLbEndpoints&lt;/code&gt;对象&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Discovery server在获取endpoint之后，将他们封装在&lt;code&gt;DiscoveryResponse&lt;/code&gt;中，将&lt;code&gt;DiscoveryResponse&lt;/code&gt;的类型（即&lt;code&gt;TypeUrl&lt;/code&gt;）设置为&lt;code&gt;type.googleapis.com/envoy.api.v2.ClusterLoadAssignment&lt;/code&gt;，&lt;code&gt;Nonce&lt;/code&gt;设置为当前时间（nonce的解释见本文前面部分）, 启动单独的协程通过与Envoy建立的双向stream gRPC连接发送给Envoy，发送超时为5秒。&lt;/p&gt;
+&lt;h2 id=&#34;本文作者&#34;&gt;本文作者&lt;/h2&gt;
+&lt;p&gt;丁轶群博士&lt;/p&gt;
+&lt;p&gt;谐云科技CTO&lt;/p&gt;
+&lt;p&gt;2004年作为高级技术顾问加入美国道富银行(浙江)技术中心，负责分布式大型金融系统的设计与研发。2011年开始领导浙江大学开源云计算平台的研发工作，是浙江大学SEL实验室负责人，2013年获得浙江省第一批青年科学家称号，CNCF会员，多次受邀在Cloud Foundry, Docker大会上发表演讲，《Docker：容器与容器云》主要作者之一。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;原创文章，未经允许，不得转载！&lt;/strong&gt;&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Service Mesh深度学习系列part2—istio源码分析之pilot-discovery模块分析</title>
+      <link>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/</link>
+      <pubDate>Tue, 17 Jul 2018 17:32:31 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/</guid>
+      <description>&lt;p&gt;本文分析的istio代码版本为0.8.0，commit为0cd8d67，commit时间为2018年6月18日。&lt;/p&gt;
+&lt;p&gt;本文为&lt;code&gt;Service Mesh深度学习系列&lt;/code&gt;之一：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin&#34;&gt;Service Mesh深度学习系列part1—istio源码分析之pilot-agent模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin&#34;&gt;Service Mesh深度学习系列part2—istio源码分析之pilot-discovery模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2&#34;&gt;Service Mesh深度学习系列part3—istio源码分析之pilot-discovery模块分析（续）&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;pilot总体架构&#34;&gt;pilot总体架构&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-pilot-总体架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio pilot 总体架构图&#34; srcset=&#34;
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/006tKfTcgy1ftczrqzgw5j31kw0t1q7o_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_221212_1db48527ab0916989b98a26a98b70e04.webp 400w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/006tKfTcgy1ftczrqzgw5j31kw0t1q7o_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_221212_844fbd1f82a6fe0989a25aae4deb73a8.webp 760w,
+               /blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/006tKfTcgy1ftczrqzgw5j31kw0t1q7o_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_221212_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin/006tKfTcgy1ftczrqzgw5j31kw0t1q7o_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_221212_1db48527ab0916989b98a26a98b70e04.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;388&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio pilot 总体架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先我们回顾一下pilot总体架构，上面是&lt;a href=&#34;https://github.com/istio/old_pilot_repo/blob/master/doc/design.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方关于pilot的架构图&lt;/a&gt;，因为是old_pilot_repo目录下，可能与最新架构有出入，仅供参考。所谓的pilot包含两个组件：pilot-agent和pilot-discovery。图里的agent对应pilot-agent二进制，proxy对应Envoy二进制，它们两个在同一个容器中，discovery service对应pilot-discovery二进制，在另外一个跟应用分开部署的单独的deployment中。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;discovery service&lt;/strong&gt;：从Kubernetes apiserver list/watch &lt;code&gt;service&lt;/code&gt;、&lt;code&gt;endpoint&lt;/code&gt;、&lt;code&gt;pod&lt;/code&gt;、&lt;code&gt;node&lt;/code&gt;等资源信息，监听istio控制平面配置信息（Kubernetes CRD）， 翻译为Envoy可以直接理解的配置格式。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;proxy&lt;/strong&gt;：也就是Envoy，直接连接discovery service，间接地从Kubernetes apiserver等服务注册中心获取集群中微服务的注册情况&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;agent&lt;/strong&gt;：本文分析对象pilot-agent，生成Envoy配置文件，管理Envoy生命周期&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;service A/B&lt;/strong&gt;：使用了istio的应用，如Service A/B的进出网络流量会被proxy接管&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;对于模块的命名方法，本文采用模块对应源码main.go所在包名称命名法。其他istio分析文章有其他命名方法。比如pilot-agent也被称为istio pilot，因为它在Kubernetes上的部署形式为一个叫istio-pilot的deployment。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-discovery的部署存在形式&#34;&gt;pilot-discovery的部署存在形式&lt;/h2&gt;
+&lt;p&gt;pilot-discovery是单独二进制，被封装在&lt;code&gt;Dockerfile.pilot&lt;/code&gt;里，在&lt;code&gt;istio-docker.mk&lt;/code&gt;里被build成&lt;code&gt;$(HUB)/pilot:$(TAG)&lt;/code&gt;镜像。&lt;/p&gt;
+&lt;p&gt;根据&lt;code&gt;istio-pilot.yaml.tmpl&lt;/code&gt;，在Kubernetes环境下，pilot镜像并非sidecar的一部分，也不是daemonset在每个机器上都有，而是单独部署成一个replica=1的deployment。&lt;/p&gt;
+&lt;h2 id=&#34;pilot-discovery的功能简述&#34;&gt;pilot-discovery的功能简述&lt;/h2&gt;
+&lt;p&gt;pilot-discovery扮演服务注册中心、istio控制平面到Envoy之间的桥梁作用。pilot-discovery的主要功能包括：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;监控服务注册中心（如Kubernetes）的服务注册情况。在Kubernetes环境下，会监控&lt;code&gt;service&lt;/code&gt;、&lt;code&gt;endpoint&lt;/code&gt;、&lt;code&gt;pod&lt;/code&gt;、&lt;code&gt;node&lt;/code&gt;等资源信息。监控istio控制面信息变化，在Kubernetes环境下，会监控包括&lt;code&gt;RouteRule&lt;/code&gt;、&lt;code&gt;VirtualService&lt;/code&gt;、&lt;code&gt;Gateway&lt;/code&gt;、&lt;code&gt;EgressRule&lt;/code&gt;、&lt;code&gt;ServiceEntry&lt;/code&gt;等以Kubernetes CRD形式存在的istio控制面配置信息。&lt;/li&gt;
+&lt;li&gt;将上述两类信息合并组合为Envoy可以理解的（即遵循Envoy data plane api的）配置信息，并将这些信息以gRPC协议提供给Envoy&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;pilot-discovery主要功能分析之一初始化&#34;&gt;pilot-discovery主要功能分析之一：初始化&lt;/h2&gt;
+&lt;p&gt;pilot-discovery的初始化主要在pilot-discovery的&lt;code&gt;init&lt;/code&gt;方法和在&lt;code&gt;discovery&lt;/code&gt;命令处理流程中调用的&lt;code&gt;bootstrap.NewServer&lt;/code&gt;完成：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;pilot-discovery的&lt;code&gt;init&lt;/code&gt;方法为pilot-discovery的&lt;code&gt;discovery&lt;/code&gt;命令配置一系列flag及其默认值。flag值被保存在bootstrap包的&lt;code&gt;PilotArgs&lt;/code&gt;对象中&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;bootstrap.NewServer&lt;/code&gt;利用&lt;code&gt;PilotArgs&lt;/code&gt;构建bootstrap包下的&lt;code&gt;server&lt;/code&gt;对象&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;code&gt;bootstrap.NewServer&lt;/code&gt;工作流程如下。&lt;/p&gt;
+&lt;h3 id=&#34;1-创建kubernetes-apiserver-clientinitkubeclient方法&#34;&gt;1. 创建Kubernetes apiserver client（initKubeClient方法）&lt;/h3&gt;
+&lt;p&gt;根据服务注册中心配置是否包含Kubernetes（一个istio service mesh可以连接多个服务注册中心）创建&lt;code&gt;kubeClient&lt;/code&gt;，保存在&lt;code&gt;Server.kubeClient&lt;/code&gt;成员中。&lt;code&gt;kubeClient&lt;/code&gt;有两种创建方式：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;用户提供kubeConfig文件，可以在pilot-discovery的&lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;kubeconfig&lt;/code&gt; flag中提供文件路径，默认为空。&lt;/li&gt;
+&lt;li&gt;当用户没有提供kubeConfig配置文件时，使用in cluster config配置方式，也就是让pilot-discovery通过所在的运行环境，也就是运行着的Kubernetes pod环境，感知集群上下文，自动完成配置。client-go库的注释说这种方式可能有问题：Using the inClusterConfig.  This might not work&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;2-多集群kubernetes配置initclusterregistryies方法&#34;&gt;2. 多集群Kubernetes配置（initClusterRegistryies方法）&lt;/h3&gt;
+&lt;p&gt;istio支持使用一个istio control plane来管理跨多个Kubernetes集群上的service mesh。这个叫“multicluster”功能的具体描述参考&lt;a href=&#34;https://istio.io/docs/setup/Kubernetes/multicluster-install/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;，当前此特性成熟度仅是&lt;a href=&#34;https://istio.io/about/feature-stages/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;alpha水平&lt;/a&gt;。Istio的控制平面组件（如pilot-discovery）运行所在的Kubernetes集群叫本地集群，通过这个istio控制面板连接的其他Kubernetes集群叫远程集群（remote cluster）。remote cluster信息被保存在&lt;code&gt;Server.clusterStore&lt;/code&gt;成员中，里面包含一个map，将&lt;code&gt;Metadata&lt;/code&gt;映射成&lt;code&gt;RemoteCluster&lt;/code&gt;对象。&lt;code&gt;clusterStore&lt;/code&gt;的具体创建流程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;检测上一步骤是否创建好&lt;code&gt;kubeClient&lt;/code&gt;。否，则直接报错返回&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;检测服务注册中心中是否包含Mock类型，是的话直接返回&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;如果pilot-discovery &lt;code&gt;discovery&lt;/code&gt;命令的flag &lt;code&gt;clusterRegistriesConfigMap&lt;/code&gt;不为空，则从本地Kubernetes集群中读取一个包含远程Kubernetes集群访问信息的configmap（configmap所在的默认命名空间为&lt;code&gt;“istio-system”&lt;/code&gt;，名字通过discovery命令flag &lt;code&gt;clusterRegistriesConfigMap&lt;/code&gt;设定）。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这个configmap包含Kubernetes远程集群的访问信息，其形式为键值对。其key为cluster唯一标识符，value为一个使用yaml或json编码的&lt;code&gt;Cluster&lt;/code&gt;对象。  &lt;code&gt;Cluster&lt;/code&gt;对象的Annotations指定一个本地Kubernetes集群中的secret（secret所在命名空间对应的annotation key为&lt;code&gt;config.istio.io/accessConfigSecret&lt;/code&gt;，默认为&lt;code&gt;istio-system&lt;/code&gt;，secret名称对应annotation key为&lt;code&gt;config.istio.io/accessConfigSecretNamespace&lt;/code&gt;）。
+到本地Kubernetes集群中读取secret内容，根据这个内容构建保存在&lt;code&gt;clusterStore&lt;/code&gt;中的RemoteCluster对象，对应一个远程Kubernetes集群。&lt;/p&gt;
+&lt;h3 id=&#34;3-读取mesh配置initmesh方法&#34;&gt;3. 读取mesh配置（initMesh方法）&lt;/h3&gt;
+&lt;p&gt;mesh配置由&lt;code&gt;MeshConfig&lt;/code&gt;结构体定义，包含&lt;code&gt;MixerCheckServer&lt;/code&gt;、&lt;code&gt;MixerReportServer&lt;/code&gt;、&lt;code&gt;ProxyListenPort&lt;/code&gt;、&lt;code&gt;RdsRefreshDelay&lt;/code&gt;、&lt;code&gt;MixerAddress&lt;/code&gt;等一些列配置。这里读取默认mesh配置文件&amp;quot;/etc/istio/config/mesh&amp;quot;（用户可以通过discovery命令的flag &lt;code&gt;meshConfig&lt;/code&gt;提供自定义值）。如果配置文件读取失败，也可以从Kubernetes集群中读取configmap获得默认的配置。作为测试，这里也读取flag来覆盖mesh配置的&lt;code&gt;MixerCheckServer&lt;/code&gt;和&lt;code&gt;MixerReportServer&lt;/code&gt;（但是这两个flag在pilot-discovery的init方法中并没有配置）&lt;/p&gt;
+&lt;h3 id=&#34;4-配置mixersaninitmixersan方法&#34;&gt;4. 配置MixerSan（initMixerSan方法）&lt;/h3&gt;
+&lt;p&gt;如果mesh配置中的控制平面认证策略为mutual TLS(默认为none)，则配置mixerSan&lt;/p&gt;
+&lt;h3 id=&#34;5-初始化与配置存储中心的连接initconfigcontroller方法&#34;&gt;5. 初始化与配置存储中心的连接（initConfigController方法）&lt;/h3&gt;
+&lt;p&gt;对istio做出的各种配置，比如route rule、virtualservice等，需要保存在配置存储中心（config store）内，istio当前支持2种形式的config store:&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;i) 文件存储&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;通过pilot-discovery &lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;configDir&lt;/code&gt; flag来设置配置文件的文件系统路径，默认为&lt;code&gt;“configDir”&lt;/code&gt;。后续使用pilot/pkg/config/memory包下的controller和pilot/pkg/config/monitor持续监控配置文件的变化。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;ii) Kubernetes CRD&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;以Kubernetes apiserver作为config store的情况下，config store的初始化流程如下：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;读取pilot-discovery &lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;kubeconfig&lt;/code&gt; flag配置的kubeconfig配置文件，flag默认为空。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;注册Kubernetes CRD资源。注册的资源类型定义在bootstrap包下的全局变量&lt;code&gt;ConfigDescriptor&lt;/code&gt;变量里，包括:&lt;code&gt;RouteRule&lt;/code&gt;、 &lt;code&gt;VirtualService&lt;/code&gt;、 &lt;code&gt;Gateway&lt;/code&gt;、
+&lt;code&gt;EgressRule&lt;/code&gt;、 &lt;code&gt;ServiceEntry&lt;/code&gt;、 &lt;code&gt;DestinationPolicy&lt;/code&gt;、 &lt;code&gt;DestinationRule&lt;/code&gt;、 &lt;code&gt;HTTPAPISpec&lt;/code&gt;、 &lt;code&gt;HTTPAPISpecBinding&lt;/code&gt;、 &lt;code&gt;QuotaSpec&lt;/code&gt;、 &lt;code&gt;QuotaSpecBinding&lt;/code&gt;、 &lt;code&gt;AuthenticationPolicy&lt;/code&gt;,
+&lt;code&gt;AuthenticationMeshPolicy&lt;/code&gt;、 &lt;code&gt;ServiceRole&lt;/code&gt;、 &lt;code&gt;ServiceRoleBinding&lt;/code&gt;、 &lt;code&gt;RbacConfig&lt;/code&gt;。其中&lt;code&gt;RouteRule&lt;/code&gt;、 &lt;code&gt;EgressRule&lt;/code&gt;、 &lt;code&gt;DestinationPolicy&lt;/code&gt;、 &lt;code&gt;HTTPAPISpec&lt;/code&gt;、 &lt;code&gt;HTTPAPISpecBinding&lt;/code&gt;、 &lt;code&gt;QuotaSpec&lt;/code&gt;、 &lt;code&gt;QuotaSpecBinding&lt;/code&gt;、 &lt;code&gt;ServiceRole&lt;/code&gt;、 &lt;code&gt;ServiceRoleBinding&lt;/code&gt;、 &lt;code&gt;RbacConfig&lt;/code&gt;对应istio v1alpha2版本api，&lt;code&gt;VirtualService&lt;/code&gt;、&lt;code&gt;Gateway&lt;/code&gt;、&lt;code&gt;ServiceEntry&lt;/code&gt;、&lt;code&gt;DestinationRule&lt;/code&gt;对应istio v1alpha3版本api&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;以文件作为config store显然不灵活，所以我们可以说istio的流量管理策略等控制面信息存储依赖Kubernetes的apiserver。那么当使用cloud foundry等其他非Kubernetes平台作为服务注册中心的时候，istio就需要实现一个“假的”Kubernetes apiserver，不过目前这个工作并没完成，详见社区的一些&lt;a href=&#34;https://groups.google.com/forum/#!topic/istio-dev/bhMpHikwrp0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;相关讨论&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;CRD资源注册完成之后将创建config controller，搭建对CRD资源Add、Update、Delete事件的处理框架。对该框架的处理会在本文&amp;quot;pilot-discovery主要功能分析之二：istio控制面信息监控与处理&amp;quot;中描述。&lt;/p&gt;
+&lt;h3 id=&#34;6-配置与服务注册中心service-registry的连接initservicecontrollers方法&#34;&gt;6. 配置与服务注册中心（service registry）的连接（initServiceControllers方法）&lt;/h3&gt;
+&lt;p&gt;istio需要从服务注册中心（service registry）获取服务注册的情况。代表pilot-discovery的server对象包含一个&lt;code&gt;ServiceController&lt;/code&gt;对象，一个&lt;code&gt;ServiceController&lt;/code&gt;对象包含一个或多个service controller(是的，这两个名字只有大小写区别)。每个service controller负责连接服务注册中心并同步相关的服务注册信息。&lt;/p&gt;
+&lt;p&gt;当前istio支持的服务注册中心类型包括ConfigRegistry, MockRegistry, Kubernetes, Consul, Eureka和CloudFoundry。不过仅对Kubernetes服务注册中心的支持成熟度达到stable水平，其他服务注册中心的集成工作成熟度还都处于alpha水平。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;ServiceController&lt;/code&gt;对象的结构体定义在aggregate包下，从包名可以看出一个&lt;code&gt;ServiceController&lt;/code&gt;对象是对多个service controller的聚合。所谓聚合，也就是当对&lt;code&gt;ServiceController&lt;/code&gt;操作时，会影响到其聚合的所有service controller。比如，当我们向&lt;code&gt;ServiceController&lt;/code&gt;注册一个服务注册信息变更事件处理handler时，实际上会将handler注册到所有的service controller上。&lt;/p&gt;
+&lt;p&gt;具体service controller对服务注册信息的变更处理流程框架将在本文“pilot-discovery主要功能分析之三：服务注册信息监控与处理”中描述。&lt;/p&gt;
+&lt;h3 id=&#34;7-初始化discovery服务initdiscoveryservice&#34;&gt;7. 初始化discovery服务（initDiscoveryService）&lt;/h3&gt;
+&lt;p&gt;istio service mesh中的envoy sidecar通过连接pilot-discovery的discovery服务获取服务注册情况、流量控制策略等控制面的控制信息。discovery服务的初始化主要包括如下几步：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;i) 创建对外提供REST协议的discovery服务的discovery service对象&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;istio代码在2018年6月的一次commit （e99cad5）中删除了大量与Envoy v1版本的data plane api相关代码。当前版本的istio中，作为sidecar的Envoy已经不再使用REST协议获取控制面信息。与v1版本Envoy data plane api相关的&lt;code&gt;cds&lt;/code&gt;、&lt;code&gt;rds&lt;/code&gt;、&lt;code&gt;lds&lt;/code&gt;相关代码都已被删除，仅残留&lt;code&gt;sds&lt;/code&gt;部分代码。因此作为&lt;code&gt;sds&lt;/code&gt;的残留功能，用户依然可以访问&lt;code&gt;&amp;quot;/v1/registration&amp;quot;&lt;/code&gt;URL访问与服务&lt;code&gt;endpoint&lt;/code&gt;相关的信息，但Envoy并不会访问这个URL。discovery service默认通过8080端口对外提供服务，可以通过pilot-discovery的&lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;httpAddr&lt;/code&gt; flag自定义端口&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;ii) 创建对外提供gRPC协议discovery服务的Envoy xds server&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;所谓的&lt;code&gt;xds&lt;/code&gt;代表Envoy v2 data plane api中的&lt;code&gt;eds&lt;/code&gt;、 &lt;code&gt;cds&lt;/code&gt;、 &lt;code&gt;rds&lt;/code&gt;、 &lt;code&gt;lds&lt;/code&gt;、 &lt;code&gt;hds&lt;/code&gt;、 &lt;code&gt;ads&lt;/code&gt;、 &lt;code&gt;kds&lt;/code&gt;等一系列api。Envoy xds server默认通过15010和15012端口对外提供服务，可以通过pilot-discovery的&lt;code&gt;discovery&lt;/code&gt;命令的&lt;code&gt;grpcAddr&lt;/code&gt; 、&lt;code&gt;secureGrpcAddr&lt;/code&gt;flag自定义端口。&lt;/p&gt;
+&lt;p&gt;与Envoy xds server相关代码分析我们将在系列文章的下一篇分析。&lt;/p&gt;
+&lt;h3 id=&#34;8-打开运行情况检查端口initmonitor方法&#34;&gt;8. 打开运行情况检查端口（initMonitor方法）&lt;/h3&gt;
+&lt;p&gt;pilot-discovery默认打开9093端口（端口号可以通过pilot-discovery discovery命令的&lt;code&gt;monitoringAddr&lt;/code&gt; flag自定义），对外提供HTTP协议的自身运行状态检查监控功能。当前提供&lt;code&gt;/metrics&lt;/code&gt;和&lt;code&gt;/version&lt;/code&gt;两个运行状况和基本信息查询URL。&lt;/p&gt;
+&lt;h3 id=&#34;9-监控多kubernetes集群中远程集群访问信息变化initmulticlustercontroller方法&#34;&gt;9. 监控多Kubernetes集群中远程集群访问信息变化（initMultiClusterController方法）&lt;/h3&gt;
+&lt;p&gt;当使用一个istio控制面构建跨多个Kubernetes集群的service mesh时，远程Kubernetes集群的访问信息保存在secret中，此处使用list/watch监控secret资源的变化。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;关于上面第五点说的两种config store，代码里实际上还有第三种，通过&lt;code&gt;PilotArgs.Config.Controller&lt;/code&gt;配置。但pilot-discovery的&lt;code&gt;init&lt;/code&gt;函数里没找到对应flag。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;以上一系列初始化不候通过bootstrap包的&lt;code&gt;NewServer&lt;/code&gt;函数带起，在此过程中pilot-discovery已经启动一部分协程，开始一些控制逻辑的循环执行。比如在上述第九步中的多Kubernetes集群访问信息（secret资源）的监控，在&lt;code&gt;initMonitor&lt;/code&gt;方法中，实际上已经启动协程，利用client-go库开始对secret信息的监控（list/watch）与处理。&lt;/p&gt;
+&lt;p&gt;而pilot-discovery的其他控制逻辑则要在bootstrap包下的&lt;code&gt;Server.Start&lt;/code&gt;方法启动，而&lt;code&gt;Start&lt;/code&gt;方法的逻辑是顺序执行之前初始化过程中在&lt;code&gt;server&lt;/code&gt;对象上注册的一系列启动函数（&lt;code&gt;startFunc&lt;/code&gt;）。 本文接下来分析pilot-discovery的其他主要控制逻辑。 TODO 整理有哪些startfunc&lt;/p&gt;
+&lt;h2 id=&#34;pilot-discovery主要功能分析之二istio控制面信息监控与处理&#34;&gt;pilot-discovery主要功能分析之二：istio控制面信息监控与处理&lt;/h2&gt;
+&lt;p&gt;istio的用户可以通过istioctl创建&lt;code&gt;route rule&lt;/code&gt;、&lt;code&gt;virtualservice&lt;/code&gt;等实现对服务网络中的流量管理等配置建。而这些配置需要保存在config store中。在当前的istio实现中，config store以Kubernetes CRD的形式将&lt;code&gt;virtualservice&lt;/code&gt;等存储在Kubernetes apiserver之后的etcd中。&lt;/p&gt;
+&lt;p&gt;在前面pilot-discovery初始化第五步骤中pilot-discovery已经完成了&lt;code&gt;RouteRule&lt;/code&gt;、&lt;code&gt;VirtualService&lt;/code&gt;等CRD资源在Kubernetes apiserver上的注册，接下来pilot-discovery还需要在initConfigController方法中通过config controller搭建CRD资源对象处理的框架。config controller包含以下3个部分：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. client&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;client是一个rest client集合，用于连接Kubernetes apiserver，实现对istio CRD资源的list/watch。具体而言，为每个CRD资源的group version (如&lt;code&gt;config.istio.io/v1alpha2&lt;/code&gt;、&lt;code&gt;networking.istio.io/v1alpha3&lt;/code&gt;)创建一个rest client。该rest client里包含了连接Kubernetes apiserver需要用到的&lt;code&gt;apimachinary&lt;/code&gt;、&lt;code&gt;client-go&lt;/code&gt;等库里的对象，如&lt;code&gt;GroupVersion&lt;/code&gt;、&lt;code&gt;RESTClient&lt;/code&gt;等。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. queue&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;用于缓存istio CRD资源对象（如&lt;code&gt;virtual-service&lt;/code&gt;、&lt;code&gt;route-rule&lt;/code&gt;等）的Add、Update、Delete事件的队列，等待后续由config controller处理。详见本文后续描述&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;3. kinds&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;为每种CRD资源（如&lt;code&gt;virtual-service&lt;/code&gt;、&lt;code&gt;route-rule&lt;/code&gt;等）创建一个用于list/watch的SharedIndexInformer（Kubernetes client-go库里的概念）。&lt;/p&gt;
+&lt;p&gt;pilot-discovery在完成config controller的创建之后，向server对象注册&lt;code&gt;startFunc&lt;/code&gt;，从而在后续server start的时候启动config controller的主循环逻辑（config controller的Run方法），完成与istio控制面信息相关的监控与处理。config controller主循环主要包括两方面：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;利用&lt;code&gt;client-go&lt;/code&gt;库里的SharedIndexInformer实现对CRD资源的list/watch，为每种CRD资源的Add、Update、Delete事件创建处理统一的流程框架。 这个流程将Add、Update、Delete事件涉及到的CRD资源对象封装为一个Task对象，并将之push到config controller的queue成员里。Task对象除了包含CRD资源对象之外，还包含事件类型（如Add、Update、Delete等），以及处理函数ChainHandler。ChainHandler支持多个处理函数的串联。&lt;/li&gt;
+&lt;li&gt;启动协程逐一处理CRD资源事件（queue.run），处理方法是调用每个从queue中取出的Task对象上的ChainHandler&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这个流程执行结束之后，只是搭建了CRD资源对象变更事件的处理框架，真正CRD变更事件的处理逻辑要等到下面在discovery service中将相应的handler注册到ChainHandler当中。&lt;/p&gt;
+&lt;h2 id=&#34;pilot-discovery主要功能分析之三服务注册信息监控与处理&#34;&gt;pilot-discovery主要功能分析之三：服务注册信息监控与处理&lt;/h2&gt;
+&lt;p&gt;istio需要从服务注册中心（service registry）获取服务注册的情况。当前版本中istio可以对接的服务注册中心类型包括Kubernetes、Consul等。本小节以Kubernetes服务注册中心为例，分析istio对服务注册信息的变更处理流程框架。&lt;/p&gt;
+&lt;p&gt;pilot-discovery初始化第六步中通过构建service controller实现对Kubernetes服务注册信息的监控。pilot-discovery在完成service controller的创建之后，会向server对象（server对象代表pilot-discovery组件）注册&lt;code&gt;startFunc&lt;/code&gt;，从而在后续server start的时候启动service controller的主循环逻辑（service controller的Run方法），完成服务注册信息的监控与处理。service controller主循环主要包括两方面：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1.&lt;/strong&gt; 利用&lt;code&gt;client-go&lt;/code&gt;库里的&lt;code&gt;SharedIndexInformer&lt;/code&gt;监控Kubernetes中的&lt;code&gt;service&lt;/code&gt;，&lt;code&gt;endpoints&lt;/code&gt;, &lt;code&gt;node&lt;/code&gt;和&lt;code&gt;pod&lt;/code&gt;资源（默认resync间隔为60秒，可以通过pilot-discovery discovery命令的&lt;code&gt;resync&lt;/code&gt; flag配置）。与config controller对于CRD资源的处理方式类似，所有&lt;code&gt;service&lt;/code&gt;，&lt;code&gt;endpoints&lt;/code&gt;等资源的Add，Update和Delete事件都采用统一处理框架。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;i) 将事件封装为Task对象，包含：&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;​	a) 事件涉及的资源对象&lt;/p&gt;
+&lt;p&gt;​	b) 事件类型：Add、Update和Delete&lt;/p&gt;
+&lt;p&gt;​	c) Handler：ChainHandler。ChainHandler支持多个处理函数的串联&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;ii) 将Task对象push到service controller的queue成员里。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2.&lt;/strong&gt; 启动协程逐一处理服务注册信息变更事件（queue.run），处理方法是调用每个从queue中取出的Task对象上的ChainHandler&lt;/p&gt;
+&lt;p&gt;这个流程执行结束之后，只是搭建了服务注册信息变更事件的处理框架，真正服务注册变更事件的处理逻辑要等到下面在discovery service中将相应的handler注册到ChainHandler当中。&lt;/p&gt;
+&lt;h2 id=&#34;pilot-discovery主要功能分析之四envoy控制面信息服务&#34;&gt;pilot-discovery主要功能分析之四：Envoy控制面信息服务&lt;/h2&gt;
+&lt;p&gt;pilot-discovery创建Envoy xds server对外提供gRPC协议discovery服务。所谓的&lt;code&gt;xds&lt;/code&gt;代表Envoy v2 data plane api中的&lt;code&gt;eds&lt;/code&gt;、 &lt;code&gt;cds&lt;/code&gt;、 &lt;code&gt;rds&lt;/code&gt;、 &lt;code&gt;lds&lt;/code&gt;、 &lt;code&gt;hds&lt;/code&gt;、 &lt;code&gt;ads&lt;/code&gt;、 &lt;code&gt;kds&lt;/code&gt;等api。与Envoy xds server相关代码分析我们将在系列文章的下一篇分析。&lt;/p&gt;
+&lt;h2 id=&#34;本文作者&#34;&gt;本文作者&lt;/h2&gt;
+&lt;p&gt;丁轶群博士&lt;/p&gt;
+&lt;p&gt;谐云科技CTO&lt;/p&gt;
+&lt;p&gt;2004年作为高级技术顾问加入美国道富银行(浙江)技术中心，负责分布式大型金融系统的设计与研发。2011年开始领导浙江大学开源云计算平台的研发工作，是浙江大学SEL实验室负责人，2013年获得浙江省第一批青年科学家称号，CNCF会员，多次受邀在Cloud Foundry, Docker大会上发表演讲，《Docker：容器与容器云》主要作者之一。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Service Mesh深度学习系列part1—istio源码分析之pilot-agent模块分析</title>
+      <link>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin/</link>
+      <pubDate>Wed, 11 Jul 2018 14:24:24 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin/</guid>
+      <description>&lt;p&gt;本文分析的istio代码版本为0.8.0，commit为0cd8d67，commit时间为2018年6月18日。&lt;/p&gt;
+&lt;p&gt;本文为&lt;code&gt;Service Mesh深度学习系列&lt;/code&gt;之一：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin&#34;&gt;Service Mesh深度学习系列part1—istio源码分析之pilot-agent模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin&#34;&gt;Service Mesh深度学习系列part2—istio源码分析之pilot-discovery模块分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-discovery-module-deepin-part2&#34;&gt;Service Mesh深度学习系列part3—istio源码分析之pilot-discovery模块分析（续）&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;pilot总体架构&#34;&gt;pilot总体架构&lt;/h2&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istio-service-mesh-source-code-pilot-agent-deepin/006tKfTcly1ft5wnmvat9j31kw0tu116_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_217013_f02df5f52e65e58d32504e5bf47b5026.webp 400w,
+               /blog/istio-service-mesh-source-code-pilot-agent-deepin/006tKfTcly1ft5wnmvat9j31kw0tu116_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_217013_ab77e90a5c1ce04ba321f8c3c62a808d.webp 760w,
+               /blog/istio-service-mesh-source-code-pilot-agent-deepin/006tKfTcly1ft5wnmvat9j31kw0tu116_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_217013_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-service-mesh-source-code-pilot-agent-deepin/006tKfTcly1ft5wnmvat9j31kw0tu116_hu6b3641bab08a4d9fcd9c17dbfb8d16cd_217013_f02df5f52e65e58d32504e5bf47b5026.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;398&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+
+上面是&lt;a href=&#34;https://github.com/istio/old_pilot_repo/blob/master/doc/design.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方关于pilot的架构图&lt;/a&gt;，因为是old_pilot_repo目录下，可能与最新架构有出入，仅供参考。所谓的pilot包含两个组件：pilot-agent和pilot-discovery。图里的agent对应pilot-agent二进制，proxy对应envoy二进制，它们两个在同一个容器中，discovery service对应pilot-discovery二进制，在另外一个跟应用分开部署的单独的deployment中。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;discovery service&lt;/strong&gt;：从Kubernetes apiserver list/watch service/endpoint/pod/node等资源信息，监听istio控制平面配置信息（Kubernetes CRD），翻译为envoy可以直接理解的配置格式。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;proxy&lt;/strong&gt;：也就是envoy，直接连接discovery service，间接地从Kubernetes apiserver等服务注册中心获取集群中微服务的注册情况&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;agent&lt;/strong&gt;：本文分析对象pilot-agent，生成envoy配置文件，管理envoy生命周期&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;service A/B&lt;/strong&gt;：使用了istio的应用，如Service A/B的进出网络流量会被proxy接管&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;对于模块的命名方法，本文采用模块对应源码main.go所在包名称命名法。其他istio分析文章有其他命名方法。比如pilot-agent也被称为istio pilot，因为它在Kubernetes上的部署形式为一个叫istio-pilot的deployment。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-agent的部署存在形式&#34;&gt;pilot-agent的部署存在形式&lt;/h2&gt;
+&lt;p&gt;pilot-agent在pilot/cmd包下面，是个单独的二进制。&lt;/p&gt;
+&lt;p&gt;pilot-agent跟envoy打包在同一个docker镜像里，镜像由Dockerfile.proxy定义。Makefile（include了tools/istio-docker.mk）把这个dockerfile build成了&lt;code&gt;${HUB}/proxy:${TAG}&lt;/code&gt;镜像，也就是Kubernetes里跟应用放在同一个pod下的sidecar。非Kubernetes情况下需要把pilot-agent、envoy跟应用部署在一起，这个就有点“污染”应用的意思了。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;支持v2 api的sidecar镜像为proxyv2，镜像中包含的pilot-agent和envoy二进制文件和proxy镜像中的完全相同，只是使用不同的envoy bootstrap配置（envoy_bootstrap_tmpl.json vs. envoy_bootstrap_v2.json）。但是当前仅完成部分开发工作，makefile中build proxyv2镜像的target默认也不会自动执行。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;blockquote&gt;
+&lt;p&gt;以上的HUB和TAG是编译istio源码过程中makefile中的一些变量，HUB对应镜像保存的仓库，TAG默认为istio版本号，如0.8.0。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-agent功能简述&#34;&gt;pilot-agent功能简述&lt;/h2&gt;
+&lt;p&gt;在proxy镜像中，pilot-agent负责的工作包括：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;生成envoy的配置&lt;/li&gt;
+&lt;li&gt;启动envoy&lt;/li&gt;
+&lt;li&gt;监控并管理envoy的运行状况，比如envoy出错时pilot-agent负责重启envoy，或者envoy配置变更后reload envoy&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;而envoy负责接受所有发往该pod的网络流量，分发所有从pod中发出的网络流量。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;根据代码中的sidecar-injector-configmap.yaml（用来配置如何自动化地inject istio sidecar），inject过程中，除了proxy镜像作为sidecar之外，每个pod还会带上initcontainer（Kubernetes中的概念），具体镜像为proxy_init。proxy_init通过注入iptables规则改写流入流出pod的网络流量规则，使得流入流出pod的网络流量重定向到proxy的监听端口，而应用对此无感。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;pilot-agent主要功能分析之一生成envoy配置&#34;&gt;pilot-agent主要功能分析之一：生成envoy配置&lt;/h2&gt;
+&lt;p&gt;envoy的配置主要在pilot-agent的init方法与proxy命令处理流程的前半部分生成。其中init方法为pilot-agent二进制的命令行配置大量的flag与flag默认值，而proxy命令处理流程的前半部分负责将这些flag组装成为envoy的配置ProxyConfig对象。下面分析几个相对重要的配置。&lt;/p&gt;
+&lt;h3 id=&#34;role&#34;&gt;role&lt;/h3&gt;
+&lt;p&gt;pilot-agent的role类型为model包下的Proxy，决定了pilot-agent的“角色”，role包括以下属性：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Type
+pilot-agent有三种运行模式。根据role.Type变量定义，类型为model.Proxy，定义在context.go文件中，允许的3个取值范围为：
+&lt;ol&gt;
+&lt;li&gt;&amp;ldquo;sidecar&amp;rdquo;
+默认值，可以在启动pilot-agent，调用proxy命令时覆盖。Sidecar type is used for sidecar proxies in the application containers&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;ingress&amp;rdquo;
+Ingress type is used for cluster ingress proxies&lt;/li&gt;
+&lt;li&gt;&amp;ldquo;router&amp;rdquo;
+Router type is used for standalone proxies acting as L7/L4 routers&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;IPAddress, ID, Domain
+它们都可以通过pilot-agent的proxy命令的对应flag来提供用户自定义值。如果用户不提供，则会在proxy命令执行时，根据istio连接的服务注册中心（service registry）类型的不同，会采用不同的配置方式。agent当前使用的服务注册中心类型保存在pilot-agent的registry变量里，在init函数中初始化为默认值Kubernetes。当前只处理以下三种情况：
+&lt;ol&gt;
+&lt;li&gt;Kubernetes&lt;/li&gt;
+&lt;li&gt;Consul&lt;/li&gt;
+&lt;li&gt;Other&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;registry值&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;role.IPAddress&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;rule.ID&lt;/th&gt;
+&lt;th style=&#34;text-align:left&#34;&gt;role.Domain&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Kubernetes&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;环境变量INSTANCE_IP&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;环境变量POD_NAME.环境变量POD_NAMESPACE&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;环境变量POD_NAMESPACE.svc.cluster.local&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Consul&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;private IP,默认127.0.0.1&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;IPAddress.service.consul&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;service.consul&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;Other&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;private IP,默认127.0.0.1&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;IPAddress&lt;/td&gt;
+&lt;td style=&#34;text-align:left&#34;&gt;“”&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;其中的private ip通过&lt;code&gt;WaitForPrivateNetwork&lt;/code&gt;函数获得。&lt;/p&gt;
+&lt;p&gt;Istio需要从服务注册中心（service registry）获取微服务注册的情况。当前版本中istio可以对接的服务注册中心类型包括：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Mock&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;MockRegistry is a service registry that contains 2 hard-coded test services&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Config&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;ConfigRegistry is a service registry that listens for service entries in a backing ConfigStore&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Kubernetes&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;KubernetesRegistry is a service registry backed by k8s API server&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Consul&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;ConsulRegistry is a service registry backed by Consul&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Eureka&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;EurekaRegistry is a service registry backed by Eureka&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;CloudFoundry&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;CloudFoundryRegistry is a service registry backed by Cloud Foundry.&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://istio.io/zh/docs/concepts/what-is-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方文档&lt;/a&gt;说当前支持Kubernetes、Nomad with Consul，未来准备支持 Cloud Foundry、Apache Mesos。另外根据&lt;a href=&#34;https://istio.io/zh/about/feature-stages/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方的feature成熟度文档&lt;/a&gt;，当前只有Kubernetes的集成达到stable程度，Consul、Eureka和Cloud Foundry都还是alpha水平。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id=&#34;envoy配置文件及命令行参数&#34;&gt;envoy配置文件及命令行参数&lt;/h3&gt;
+&lt;p&gt;agent.waitForExit会调用envoy.Run方法启动envoy进程，为此需要获取envoy二进制所在文件系统路径和flag两部分信息：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;envoy二进制所在文件系统路径：evony.Run通过proxy.config.BinaryPath变量得知envoy二进制所在的文件系统位置，proxy就是envoy对象，config就是pilot-agent的main方法在一开始初始化的proxyConfig对象。里面的BinaryPath在pilot-agent的init方法中被初始化，初始值来自&lt;code&gt;pilot/pkg/model/context.go&lt;/code&gt;的&lt;code&gt;DefaultProxyConfig&lt;/code&gt;函数，值是&lt;code&gt;/usr/local/bin/envoy&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;envoy的启动flag形式为下面的startupArgs，包含一个&lt;code&gt;-c&lt;/code&gt;指定的配置文件，还有一些flag。除了下面代码片段中展示的这些flag，还可以根据启动agent时的flag，再加上&lt;code&gt;--concurrency&lt;/code&gt;, &lt;code&gt;--service-zone&lt;/code&gt;等flag。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;startupArgs&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;-c&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fname&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--restart-epoch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;epoch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--drain-time-s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;int&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;convertDuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;proxy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;DrainDuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;/&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;time&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Second&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--parent-shutdown-time-s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;int&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;convertDuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;proxy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ParentShutdownDuration&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;/&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;time&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Second&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--service-cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;proxy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ServiceCluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--service-node&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;proxy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;node&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;		&lt;span class=&#34;s&#34;&gt;&amp;#34;--max-obj-name-len&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Sprint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;MaxClusterNameLength&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;关于以上启动envoy的flag及其值的解释：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;--restart-epoch&lt;/code&gt;：epoch决定了envoy hot restart的顺序，在后面会有详细描述，第一个envoy进程对应的epoch为0，后面新建的envoy进程对应epoch顺序递增1&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--drain-time-s&lt;/code&gt;：在pilot-agent init函数中指定默认值为2秒，可通过pilot-agent proxy命令的drainDuration flag指定&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--parent-shutdown-time-s&lt;/code&gt;：在pilot-agent init函数中指定默认值为3秒，可通过pilot-agent proxy命令的parentShutdownDuration flag指定&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--service-cluster&lt;/code&gt;：在pilot-agent init函数中指定默认值为”istio-proxy&amp;quot;，可通过pilot-agent proxy命令的serviceCluster flag指定&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--service-node&lt;/code&gt;：将agent.role的Type,IPAddress,ID和Domain用”~&amp;ldquo;连接起来&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;而上面的&lt;code&gt;-c&lt;/code&gt;指定的envoy配置文件有几种生成的方式：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;运行pilot-agent时，用户不指定customConfigFile参数（agent init时默认为空），但是制定了templateFile参数（agent init时默认为空），这时agent的main方法会根据templateFile帮用户生成一个customConfigFile，后面就视作用户制定了customConfigFile。这个流程在agent的main方法里&lt;/li&gt;
+&lt;li&gt;如果用户制定了customConfigFile，那么就用customConfigFile&lt;/li&gt;
+&lt;li&gt;如果用户customConfigFile和templateFile都没指定，则调用pilot/pkg包下的bootstrap_config.go中的WriteBootstrap自动生成一个配置文件，默认将生成的配置文件放在&lt;code&gt;/etc/istio/proxy/envoy-rev%d.json&lt;/code&gt;，这里的&lt;code&gt;%d&lt;/code&gt;会用epoch序列号代替。WriteBootstrap在envoy.Run方法中被调用&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;举个例子的话，根据参考文献中某人实验，第一个envoy进程启动参数为：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-c /etc/istio/proxy/envoy-rev0.json --restart-epoch &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--drain-time-s &lt;span class=&#34;m&#34;&gt;45&lt;/span&gt; --parent-shutdown-time-s &lt;span class=&#34;m&#34;&gt;60&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--service-cluster sleep 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--service-node sidecar~172.00.00.000~sleep-55b5877479-rwcct.default~default.svc.cluster.local 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;--max-obj-name-len &lt;span class=&#34;m&#34;&gt;189&lt;/span&gt; -l info --v2-config-only
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果使用第三种方式自动生成默认的envoy配置文件，如上面例子中的envoy-rev0.json，那么pilot-agent的proxy命令处理流程中前半部分整理的大量envoy参数中的一部分会被写入这个配置文件中，比如&lt;code&gt;DiscoveryAddress&lt;/code&gt;，&lt;code&gt;DiscoveryRefreshDelay&lt;/code&gt;，&lt;code&gt;ZipkinAddress&lt;/code&gt;，&lt;code&gt;StatsdUdpAddress&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id=&#34;证书文件&#34;&gt;证书文件&lt;/h3&gt;
+&lt;p&gt;agent会监控chainfile，keyfile和rootcert三个证书文件的变化，如果是Ingress工作模式，则还会加入ingresscert、ingress key这两个证书文件。&lt;/p&gt;
+&lt;h2 id=&#34;pilot-agent主要功能分析之二envoy监控与管理&#34;&gt;pilot-agent主要功能分析之二：envoy监控与管理&lt;/h2&gt;
+&lt;p&gt;为envoy生成好配置文件之后，pilot-agent还要负责envoy进程的监控与管理工作，包括：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建envoy对象，结构体包含proxyConfig（前面步骤中为envoy生成的配置信息），role.serviceNode(似乎是agent唯一标识符），loglevel和pilotsan（service account name）&lt;/li&gt;
+&lt;li&gt;创建agent对象，包含前面创建的envoy结构体，一个epochs的map，3个channel：configCh, statusCh和abortCh&lt;/li&gt;
+&lt;li&gt;创建watcher并启动协程执行watcher.Run
+watcher.Run首先启动协程执行agent.Run（&lt;strong&gt;agent的主循环&lt;/strong&gt;），然后调用watcher.Reload(kickstart the proxy with partial state (in case there are no notifications coming))，&lt;strong&gt;Reload会调用agent.ScheduleConfigUpdate，并最终导致第一个envoy进程启动，见后面分析&lt;/strong&gt;。然后监控各种证书，如果证书文件发生变化，则调用ScheduleConfigUpdate来reload envoy，然后watcher.retrieveAZ(TODO)&lt;/li&gt;
+&lt;li&gt;创建context，调用cmd.WaitSignal以等待进程接收到SIGINT, SIGTERM信号，接受到信号之后通过context通知agent，agent接到通知后调用terminate来kill所有envoy进程，并退出agent进程&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;上面的pilot/pkg/proxy包下的agent中采用Proxy接口管理pilot/pkg/proxy/envoy包下的envoy对象，从理论上来说也可以把envoy换成其他proxy实现管理。不过此事还牵扯discovery service等其他组件。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;上面第三步启动协程执行的agent.Run是agent的主循环，会一直通过监听以下几个channel来监控envoy进程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;agent的configCh:如果配置文件，主要是那些证书文件发生变化，则调用agent.reconcile来reload envoy&lt;/li&gt;
+&lt;li&gt;statusCh:这里的status其实就是exitStatus，处理envoy进程退出状态，处理流程如下：
+0. 把刚刚退出的epoch从agent维护的两个map里删了，后面会讲到这两个map。把agent.currentConfig置为agent.latestEpoch对应的config，因为agent在reconcile的过程中只有在desired config和current config不同的时候才会创建新的epoch，所以这里把currentConfig设置为上一个config之后，必然会造成下一次reconcile的时候current与desired不等，从而创建新的envoy
+&lt;ol&gt;
+&lt;li&gt;如果exitStatus.err是errAbort，表示是agent让envoy退出的（这个error是调用agent.abortAll时发出的），这时只要log记录epoch序列号为xxx的envoy进程退出了&lt;/li&gt;
+&lt;li&gt;如果exitStatus.err并非errAbort，则log记录epoch异常退出，并给所有当前正在运行的其他epoch进程对应的abortCh发出errAbort，所以后续其他envoy进程也都会被kill掉，并全都往agent.statusCh写入exitStatus，当前的流程会全部再为每个epoch进程走一遍&lt;/li&gt;
+&lt;li&gt;如果是其他exitStatus（什么时候会进入这个否则情况？比如exitStatus.err是wait epoch进程得到的正常退出信息，即nil），则log记录envoy正常退出&lt;/li&gt;
+&lt;li&gt;调用envoy.Cleanup，删除刚刚退出的envoy进程对应的配置文件，文件路径由ConfigPath和epoch序列号串起来得到&lt;/li&gt;
+&lt;li&gt;如果envoy进程为非正常退出，也就是除了“否则”描述的case之外的2中情况，则试图恢复刚刚退出的envoy进程（可见前面向所有其他进程发出errAbort消息的意思，并非永远停止envoy，pilot-agent接下来马上就会重启被abort的envoy）。恢复方式并不是当场启动新的envoy，而是schedule一次reconcile。如果启动不成功，可以在得到exitStatus之后再次schedule（每次间隔时间为 $2^n*200$ 毫秒 ），最多重试10次（budget），如果10次都失败，则退出整个golang的进程（os.Exit）,由容器环境决定如何恢复pilot-agent。所谓的schedule，就是往agent.retry.restart写入一个预定的未来的某个时刻，并扣掉一次budget（budget在每次reconcile之前都会被重置为10），然后就结束当前循环。在下一个开始的时候，会检测agent.retry.restart，如果非空，则计算距离reconcile的时间delay&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;time.After（delay）:监听是否到时间执行schedule的reconcile了，到了则执行agent.reconcile&lt;/li&gt;
+&lt;li&gt;ctx.Done:执行agent.terminate
+terminate方法比较简单，向所有的envoy进程的abortCh发出errAbort消息，造成他们全体被kill（Cmd.Kill），然后agent自己return，退出当前的循环，这样就不会有人再去重启envoy&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;pilot-agent主要功能分析之三envoy启动流程&#34;&gt;pilot-agent主要功能分析之三：envoy启动流程&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;前面pilot-agent proxy命令处理流程中，watcher.Run会调用agent.ScheduleConfigUpdate，这个方法只是简单地往configCh里写一个新的配置，所谓的配置是所有certificate算出的sha256哈希值&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;configCh的这个事件会被agent.Run监控到，然后调用agent.reconcile。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;reconcile方法会&lt;strong&gt;启动协程执行agent.waitForExit从而启动envoy&lt;/strong&gt;
+看reconcile方法名就知道是用来保证desired config和current config保持一致的。reconcile首先会检查desired config和current config是否一致，如果是的话，就不用启动新的envoy进程。否则就启动新的envoy。在启动过程中，agent维护两个map来管理一堆envoy进程，在调用waitForExit之前会将desiredConfig赋值给currentConfig，表示reconcile工作完成：&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;第一个map是agent.epochs，它将整数epoch序列号映射到agent.desiredConfig。这个序列号从0开始计数，也就是第一个envoy进程对应epoch 0，后面递增1。但是如果有envoy进程异常退出，它对应的序列号并非是最大的情况下，这个空出来的序列号不会在计算下一个新的epoch序列号时（agent.latestEpoch方法负责计算当前最大的epoch序列号）被优先使用。所以从理论上来说序列号是会被用光的&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;第二个map是agent.abortCh，它将epoch序列号映射到与envoy进程一一对应的abortCh。abortCh使得pilot-agent可以在必要时通知对应的envoy进程推出。这个channel初始化buffer大小为常量10，至于为什么需要10个buffer，代码中的注释说buffer aborts to prevent blocking on failing proxy，也就是万一想要abort某个envoy进程，但是envoy卡住了abort不了，有buffer的话，就不会使得管理进程也卡住。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;waitForExit会调用agent.proxy.Run，也就是&lt;strong&gt;envoy的Run方法&lt;/strong&gt;，&lt;strong&gt;这里会启动envoy&lt;/strong&gt;。envoy的Run方法流程如下：&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;调用exec.Cmd.Start方法(启动了一个新进程)，并将envoy的标准输出和标准错误置为os.Stdout和Stderr。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;持续监听前面说到由agent创建并管理的，并与envoy进程一一对应的abortCh，如果收到abort事件通知，则会调用Cmd.Process.Kill方法杀掉envoy，如果杀进程的过程中发生错误，也会把错误信息log一下，然后把从abortCh读到的事件返回给waitForExit。waitForExit会把该错误再封装一下，加入epoch序列号，然后作为envoy的exitStatus，并写入到agent.statusCh里&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;启动一个新的协程来wait刚刚启动的envoy进程，并把得到的结果写到done channel里，envoy结构体的Run方法也会监听done channel，并把得到的结果返回给waitForExit&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这里我们总结启动envoy过程中的协程关系：agent是全局唯一一个agent协程，它在启动每个envoy的时候，会再启动一个waitForExit协程，waitForExit会调用Command.Start启动另外一个进程运行envoy，然后waitForExit负责监听abortCh和envoy进程执行结果。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Cmd.Wait只能用于等待由Cmd.Start启动的进程,如果进程结束并范围值为0，则返回nil，如果返回其他值则返回ExitError，也可能在其他情况下返回IO错误等，Wait会释放Cmd所占用的所有资源&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;每次配置发生变化，都会调用agent.reconcile，也就会启动新的envoy，这样envoy越来越多，老的envoy进程怎么办？agent代码的注释里已经解释了这问题，原来agent不用关闭老的envoy，同一台机器上的多个envoy进程会通过unix domain socket互相通讯，即使不同envoy进程运行在不同容器里，也一样能够通讯。而借助这种通讯机制，可以自动实现新envoy进程替换之前的老进程，也就是所谓的envoy hot restart。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;代码注释原文：Hot restarts are performed by launching a new proxy process with a strictly incremented restart epoch. It is up to the proxy to ensure that older epochs gracefully shutdown and carry over all the necessary state to the latest epoch.  The agent does not terminate older epochs.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;而为了触发这种hot restart的机制，让新envoy进程替换之前所有的envoy进程，新启动的envoy进程的epoch序列号必须比之前所有envoy进程的最大epoch序列号大1。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;代码注释原文：The restart protocol matches Envoy semantics for restart epochs: to successfully launch a new Envoy process that will replace the running Envoy processes, the restart epoch of the new process must be exactly 1 greater than the highest restart epoch of the currently running Envoy processes.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id=&#34;参考文献&#34;&gt;参考文献&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href=&#34;https://juejin.im/post/5afad93ef265da0b7e0c6cfb&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下一代 Service Mesh &amp;ndash; istio 架构分析&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://segmentfault.com/a/1190000015171622&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;istio源码分析——pilot-agent如何管理envoy生命周期&lt;/a&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;本文作者&#34;&gt;本文作者&lt;/h2&gt;
+&lt;p&gt;丁轶群博士，谐云科技CTO&lt;/p&gt;
+&lt;p&gt;2004年作为高级技术顾问加入美国道富银行(浙江)技术中心，负责分布式大型金融系统的设计与研发。2011年开始领导浙江大学开源云计算平台的研发工作，是浙江大学SEL实验室负责人，2013年获得浙江省第一批青年科学家称号，CNCF会员，多次受邀在Cloud Foundry, Docker大会上发表演讲，《Docker：容器与容器云》主要作者之一。&lt;/p&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>

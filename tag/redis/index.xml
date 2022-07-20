@@ -1,0 +1,995 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Redis | 云原生社区</title>
+    <link>https://cloudnative.to/tag/redis/</link>
+      <atom:link href="https://cloudnative.to/tag/redis/index.xml" rel="self" type="application/rss+xml" />
+    <description>Redis</description>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Fri, 05 Mar 2021 11:00:00 +0800</lastBuildDate>
+    <image>
+      <url>https://cloudnative.to/media/sharing.png</url>
+      <title>Redis</title>
+      <link>https://cloudnative.to/tag/redis/</link>
+    </image>
+    
+    <item>
+      <title>使用 Aeraki 在 Isito 中支持 Dubbo、Thrift、Redis，以及任何七层协议</title>
+      <link>https://cloudnative.to/blog/istiocon-layer7-traffic/</link>
+      <pubDate>Fri, 05 Mar 2021 11:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istiocon-layer7-traffic/</guid>
+      <description>&lt;p&gt;本文根据腾讯云赵化冰和知乎唐阳在 IstioCon 2021 中的演讲 &lt;a href=&#34;https://events.istio.io/istiocon-2021/sessions/how-to-manage-any-layer-7-traffic-in-an-istio-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;“How to Manage Any Layer-7 Traffic in an Istio Service Mesh?”&lt;/a&gt; 整理而成。&lt;/p&gt;
+&lt;p&gt;大家好，今天我们想和大家分享的主题是如何扩展 Istio 以支持任何七层协议？作为云原生领域中一个人气非常高的开源项目， Istio 目前已经基本成为了 Service Mesh 的事实标准。腾讯云上也提供了基于 Istio 进行增强，和 Istio API 完全兼容的 Service Mesh 管理服务 TCM（Tencent Cloud Mesh），以帮助我们的用户以较小的迁移成本和维护代价快速利用到 Service Mesh 提供的流量管理和服务治理能力。今天非常高兴能够有这个机会来和大家一起分享一下我们在此过程中的一些经验。&lt;/p&gt;
+&lt;p&gt;Service Mesh 提供了一个对应用透明的基础设施层，可以解决我们在分布式应用/微服务中遇到的常见挑战，例如：如何找到服务提供者？如何保证服务之间的通信安全？如何得知服务之间的调用关系？如何进行流量管理如灰度发布？等等。Service Mesh 的实现方式是伴随应用部署一个 Sidecar Proxy，该 Sidecar Proxy 会拦截应用的出向和入向流量， 对这些流量进行分析和处理，以达到在不修改应用代码的情况下对服务进行流量管理、安全加密，遥测数据收集的目的。为了实现这些服务治理能力，Sidecar Proxy 不只需要在 OSI 网络模型的三、四层上对流量进行处理，更重要的是需要在七层上进行处理。在七层上，Istio 缺省只支持了 HTTP 和 gPRC 两种协议。但我们在微服务中经常还会使用到的其他七层协议，当将这些微服务应用迁移到 Service Mesh 时，我们希望使用一致的方式对所有的这些七层协议进行统一管理，以充分利用 Service Mesh 基础设施提供的云原生能力。&lt;/p&gt;
+&lt;p&gt;在今天的分享中，我将会介绍几种将 Istio 流量管理能力扩展到其他七层协议的方法，并对比分析这几种方法各自的优缺点。我会介绍如何利用 Aeraki 开源项目来在 Istio 中管理任何七层协议，包括 Dubbo、Thrift、Redis 等。为了让大家了解 Aeraki 是如何工作的，会展示一个采用 Aeraki 实现 Thrift 服务 Traffic Splitting 的例子。来自知乎的唐阳还会为我们展示如何使用 Aeraki 的一些有趣的真实案例。&lt;/p&gt;
+&lt;h2 id=&#34;service-mesh-中常见的七层协议&#34;&gt;Service Mesh 中常见的七层协议&lt;/h2&gt;
+&lt;p&gt;如下图所示，一个典型的微服务应用中通常会使用到这些七层协议：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;同步调用：不同服务之间会采用 RPC （远程方法调用）进行相互调用。常见的 RPC 调用协议包括 gRPC，Thrift，Dubbo，HTTP 也可以看做一种 RPC （只支持 GET/SET/POST 这几种标准方法） 。一些大的公司为了满足自己特定业务场景的需求，往往还会采用一些私用的 RPC 协议。&lt;/li&gt;
+&lt;li&gt;异步消息：除了 RPC 之外，异步消息也是微服务通信的一种常见模式，包括 Kafka，RabbitMQ，ActiveMQ 等。&lt;/li&gt;
+&lt;li&gt;各种数据库和缓存系统：例如 Redis， MySQL，MongoDB 等等。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Redis 的一个常见用途是用作数据高速缓存。通过在应用服务器和数据库服务器之间加入一个 Redis 缓存层，可以减少应用服务器对数据库的大量读操作，避免数据库服务器在大压力下响应缓慢甚至宕机的风险，显著加强整个系统的健壮性。Redis 作为数据缓存的原理如图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/protocols-in-service-mesh_huc8d0b147fa4fe0ca618fa6c13f3a27a7_126881_06574946965494f58f57c0922b03fee9.webp 400w,
+               /blog/istiocon-layer7-traffic/images/protocols-in-service-mesh_huc8d0b147fa4fe0ca618fa6c13f3a27a7_126881_317c4ea4889cb2d7a3e580459f74bfe3.webp 760w,
+               /blog/istiocon-layer7-traffic/images/protocols-in-service-mesh_huc8d0b147fa4fe0ca618fa6c13f3a27a7_126881_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/protocols-in-service-mesh_huc8d0b147fa4fe0ca618fa6c13f3a27a7_126881_06574946965494f58f57c0922b03fee9.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;443&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;那么当将这样一个微服务应用加入到 Service Mesh 以后，我们希望能够通过 Service Mesh 得到哪些管理能力呢？&lt;/p&gt;
+&lt;p&gt;理想情况下，我们希望 Service Mesh 能够管理微服务中用到的所有七层协议的流量，包括 RPC、Messaging、Cache、DB等。例如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;基于请求的负载均衡：可以将来自同一个 TCP 链接的多个独立的请求分发到不同的后端服务器，以实现更智能，更合理的负载均衡。&lt;/li&gt;
+&lt;li&gt;基于七层 Header 的流量路由：根据七层 Header 中的属性进行路由，例如根据 Dubbo 请求中的服务名或者 Redis 请求的 Key 进行路由。&lt;/li&gt;
+&lt;li&gt;对客户端的请求响应注入延迟或者错误，以测试微服务用的弹性。&lt;/li&gt;
+&lt;li&gt;提供应用级安全，例如基于 HTTP Header 中的 JWT Token 进行认证，或者对 Redis 服务器进行认证。&lt;/li&gt;
+&lt;li&gt;请求层面的遥测数据，包括请求成功率、请求耗时、调用跟踪等等。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/expect-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_376772_235cf9966bf698c74791f248bb688bb8.webp 400w,
+               /blog/istiocon-layer7-traffic/images/expect-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_376772_4727b410736e65437939dfd9ffe878b2.webp 760w,
+               /blog/istiocon-layer7-traffic/images/expect-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_376772_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/expect-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_376772_235cf9966bf698c74791f248bb688bb8.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;433&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;要实现以上这些流量管理和服务治理能力，Service Mesh 需要分析和处理 TCP 数据包中的七层协议的 Header。即 Service Mesh 必须具有七层协议的管理能力，而不只是在 TCP 层面上进行处理。&lt;/p&gt;
+&lt;p&gt;然而在 Istio 中，对于除了 HTTP 和 gRPC 之外的协议，我们只能在 OSI 三到六层对这些协议进行处理。这意味着我们只能基于三层的 IP 地址，四层的 TCP 端口或者六层的 SNI（Server Name Indication）对这些协议进行路由。只能收集到 TCP 层面的指标，例如 TCP 收发包数量或者打开/关闭的 TCP 链接数量。只能采用 mTLS 进行链路层面的认证和权限控制。换而言之，对于这些协议，我们依然需要在应用代码中处理流量控制、可观测性、安全认证这些本应该由 Service Mesh 基础设施来统一处理的共性问题。这违背了我们将微服务迁移到 Service Mesh 的初衷：将微服务通信和治理的共性问题从应用代码下沉到 Service Mesh 基础设施层。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/got-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_381729_879af6ee3da2a29b62f9d50132dc002c.webp 400w,
+               /blog/istiocon-layer7-traffic/images/got-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_381729_27c9c4a52c2486527a765228fc4662d5.webp 760w,
+               /blog/istiocon-layer7-traffic/images/got-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_381729_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/got-from-mesh_hud136e455e6c2fcfce76b300ac04db1b8_381729_879af6ee3da2a29b62f9d50132dc002c.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;433&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;如何扩展-istio-的协议管理能力&#34;&gt;如何扩展 Istio 的协议管理能力？&lt;/h2&gt;
+&lt;p&gt;如果我们希望能够在 Istio 中管理这些七层协议，我们应该如何实现呢？假设我们有一个 BookInfo 微服务，但该微服务采用了一种称为 AwesomeRPC 的协议而不是 HTTP 来实现服务间的远程调用。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/awesomerpc-bookinfo_hu5214a86e2603b2b6f768b7e24b108edd_98685_5168cdecc1f3d7bfb000c5d0718e008e.webp 400w,
+               /blog/istiocon-layer7-traffic/images/awesomerpc-bookinfo_hu5214a86e2603b2b6f768b7e24b108edd_98685_805b588daa53339cd295749840aad8c8.webp 760w,
+               /blog/istiocon-layer7-traffic/images/awesomerpc-bookinfo_hu5214a86e2603b2b6f768b7e24b108edd_98685_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/awesomerpc-bookinfo_hu5214a86e2603b2b6f768b7e24b108edd_98685_5168cdecc1f3d7bfb000c5d0718e008e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们来看一下如何才能够在 Istio 中实现 AwesomeRPC 协议的流量管理，例如根据请求 header 中的 user name 字段将来自 ProductPage 的请求路由到不同版本的 Reviews 中，以实现一个灰度发布的场景。&lt;/p&gt;
+&lt;p&gt;我们想到的最显而易见的方式就是直接修改 Istio 代码。首先我们需要在 Istio 的 VirtualService CRD 中支持 AwesomeRPC 协议。增强后的 VirtualService CRD 如下图中最左的规则配置所示。 AwesomeRPC 和 HTTP 路由的语义类似，都是根据 Header 中某些属性的值进行路由。因此我们只需要将 HTTP 协议类型改为 AwesomeRPC，可以直接采用 VirtualService 中的 HTTPRoute 结构来表示 AwesomeRPC 的路由规则。然后我们需要在 Pilot 代码中根据 AwesomeRPC 的服务定义和 VirtualService 定义的路由规则生成 Envoy 所需的真实配置，并通过 xDS 下发给数据面的 Envoy。当然，以上的前提是我们已经通过 Envoy 的 Filter 扩展机制编写了 AwesomeRPC 的 Filter 插件，实现 AwesomeRPC 的编解码，Header 解析，动态路由等数据面所需的功能。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/code-modification_hu6eb369e029456c3b58a968254eb54f37_601777_3ff9e47508e982043f5a7f3ecb02a372.webp 400w,
+               /blog/istiocon-layer7-traffic/images/code-modification_hu6eb369e029456c3b58a968254eb54f37_601777_c912f42de0bb0a5a9dfe2bd2feb68a10.webp 760w,
+               /blog/istiocon-layer7-traffic/images/code-modification_hu6eb369e029456c3b58a968254eb54f37_601777_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/code-modification_hu6eb369e029456c3b58a968254eb54f37_601777_3ff9e47508e982043f5a7f3ecb02a372.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;419&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;采用这种方式，在 Envoy Filter 已经实现了的情况下，在控制面增加一个新的七层协议的过程是相对比较简单的。但是由于我们修改了 Istio 的源码，因此需要自己维护一个 Istio 的私有分支，这导致了额外的维护代价，并且很难跟上 Istio 快速的迭代步伐。&lt;/p&gt;
+&lt;p&gt;如果不希望维护自己的 Istio 代码分支，一种可行的替代方式是采用 Istio EnvoyFilter CRD：EnvoyFilter 是 Istio 提供的一种灵活强大的配置机制。我们可以使用 EnvoyFilter为 Pilot 生成的缺省 Envoy 配置打一个补丁，添加、修改或者删除缺省 Envoy 配置中的部分内容，以按我们的要求修改 Envoy 在 Istio Service Mesh 中的缺省行为。&lt;/p&gt;
+&lt;p&gt;如下图所示，由于 Pilot 并不理解 AwesomeRPC 协议，对于 Pilot 来说， AwesomeRPC 服务只是一个 TCP 服务。在 Pilot 生成的缺省配置中，AwesomeRPC 服务对应的 Outbound Listener 的 FilterChain 中采用了一个 TCP Proxy 来处理其流量。我们在 EnvoyFilter 的 Match 部分中选中该 TCP Proxy，并在 Operation 部分将其替换为一个配置了 Traffic Splitting 规则的 AwesomeRPC Filter。Pilot 会根据 EnvoyFilter 修改其生成的缺省 Envoy 配置，然后下发到数据面的 Envoy 上。这样我们就通过 EnvoyFilter 在 Istio 中实现了对 AwesomeRPC 协议的支持。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/awesomerpc-envoyfilter_hu6eb369e029456c3b58a968254eb54f37_434157_69b179ef3302ae444155185c8651fbf1.webp 400w,
+               /blog/istiocon-layer7-traffic/images/awesomerpc-envoyfilter_hu6eb369e029456c3b58a968254eb54f37_434157_157bd7a5a0a847acc76bd74f888c63d0.webp 760w,
+               /blog/istiocon-layer7-traffic/images/awesomerpc-envoyfilter_hu6eb369e029456c3b58a968254eb54f37_434157_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/awesomerpc-envoyfilter_hu6eb369e029456c3b58a968254eb54f37_434157_69b179ef3302ae444155185c8651fbf1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;419&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;下面我们来看一个采用 Thrift 协议的真实案例。Thrift 是 Apache 基金会下一个轻量级、支持多语言的开源 RPC 框架。Envoy 中已经支持 Thrift，但 Istio 中只对 Thrift 提供了有限的支持，并不能实现 Traffic Splitting 等高级流量管理功能。如果我们希望在 Istio 中提供下图中右下角所示 Thrift 服务的 Traffic Splitting 流量控制，我们可以通过 EnvoyFilter 来实现。&lt;/p&gt;
+&lt;p&gt;(本示例相关源码可以从 &lt;a href=&#34;https://github.com/aeraki-framework/thrift-envoyfilter-example&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/aeraki-framework/thrift-envoyfilter-example&lt;/a&gt; 下载）&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/envoyfilter-thrift_huf9771b193212804f5339c3436f828a18_530810_575d49eb153986440eed1e8699b15607.webp 400w,
+               /blog/istiocon-layer7-traffic/images/envoyfilter-thrift_huf9771b193212804f5339c3436f828a18_530810_150d324c614b2410b46a083386adc092.webp 760w,
+               /blog/istiocon-layer7-traffic/images/envoyfilter-thrift_huf9771b193212804f5339c3436f828a18_530810_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/envoyfilter-thrift_huf9771b193212804f5339c3436f828a18_530810_575d49eb153986440eed1e8699b15607.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;424&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;首先，我们需要创建一个图中左边所示的 EnvoyFilter 来处理客户端的出向流量，该 EnvoyFilter 的 Match 条件选中了  &lt;code&gt;$(thrift-sample-server-vip)_9090&lt;/code&gt; 这个 Outbound Listener 中 的 tcp_proxy，在 Patch 部分将其替换为一个 thrift_proxy。在该 thrift_proxy 中，我们按照 Traffic Splitting 的要求为其配置了相应的路由：将 30% 的流量路由到 Server v1版本，70% 的流量路由到 Server v2 版本。我们也需要为 Thrift Server 端创建一个如图右上所示的 EnvoyFilter 来处理服务器端的入向流量。相比客户端的 EnvoyFilter 而言，服务器端的 EnvoyFilter 配置要简单一些，因此我们不需要在服务器端配置任何路由规则，只需要将 tcp_proxy 替换为 thrift_proxy 即可。这个 thrift_proxy 虽然没有路由规则，但提供了大量七层的服务通信和治理能力，包括请求层面的负载均衡、产生请求层面的 Metrics 数据等。&lt;/p&gt;
+&lt;p&gt;从上面的介绍和示例可以看到， EnvoyFilter CRD 好比是 Istio 中的一把瑞士军刀，可以对 Pilot 生成的 Envoy 配置进行非常灵活的定制，以达到对七层协议进行管理的目的。但是 EnvoyFilter 也带来了一些难以处理的问题：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;EnvoyFilter 将 Envoy 的底层实现细节直接暴露给了运维人员：运维人员必须非常了解 Envoy 的配置细节，而这些配置细节往往和 Envoy Filter 内部的实现机制紧密相关，例如 Filter 的名称和 Filter 内部的配置格式等。这导致创建 EnvoyFilter 成为了一种和代码细节高度耦合的工作，难以直接交付给运维人员。更为合理的方式则应该是采用一种面向用户的高级配置语言来屏蔽这些实现细节，例如 Istio 中的 VirtualService 和 DestinationRule。&lt;/li&gt;
+&lt;li&gt;EnvoyFilter 中的匹配条件依赖于 Pilot 生成的 Envoy 配置中的结构组成和元素命名，例如 Listener 的名称，FilterChain 的构成等。而这些结构和命名在不同的 Istio 版本之间可能发生变化，导致原本能够正常工作的 EnvoyFilter 在新版本中出现问题。&lt;/li&gt;
+&lt;li&gt;EnvoyFilter 中的匹配条件还依赖于一些和特定 Kubernetes 集群相关的内容，例如 Service Cluster IP，这意味着一个 EnvoyFilter 不能用于多个不同集群中的相同服务。当 Service 被重建时，由于 Cluster IP 会发生变化，相应的 EnvoyFilter 也必须进行改动，修改 Match 条件中的 Cluster IP。&lt;/li&gt;
+&lt;li&gt;我们需要为每个 Service 创建相应的 EnvoyFilter，当 Mesh 中管理的服务较多时，手动创建成百上千的 EnvoyFilter 的工作是非常繁琐而且及易出错的。&lt;/li&gt;
+&lt;li&gt;对 Istio 而言，EnvoyFilter 中的 Patch 部分基本上是一个黑盒，因此 Istio 只能对 EnvoyFilter 的正确性进行非常有限的验证。这导致 EnvoyFilter 的调试非常困难，当 Envoy 未能按照你的设想工作时，你很难知道到底是 EnvoyFilter 的什么地方出现了问题。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;由于上述的种种问题，我们可以看到，虽然可以使用 EnvoyFilter 来在 Istio 中实现七层协议的管理，但是在一个生产系统，特别是一个中大型的 Service Mesh 中管理和维护这些 EnvoyFilter 是非常困难的。&lt;/p&gt;
+&lt;h2 id=&#34;aeraki在-istio-中管理任何七层协议&#34;&gt;Aeraki：在 Istio 中管理任何七层协议&lt;/h2&gt;
+&lt;p&gt;由于难以手动对 EnvoyFilter 进行管理和维护 ，我们创建了&lt;a href=&#34;https://github.com/aeraki-framework/aeraki&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki&lt;/a&gt; (发音：[Air-rah-ki]）项目来自动化这个流程。Aeraki 是希腊语中“微风”的意思，我们希望 Aeraki 这股微风能帮助 Istio 在云原生的旅程中航行得更远。&lt;/p&gt;
+&lt;p&gt;Aeraki 的基本工作原理如下图所示：Aeraki 从 Istio 中拉取服务数据，根据 ServiceEntry 和 Aeraki 流量规则生成 Envoy 配置，并采用 EnvoyFilter 将生成的配置推送到 Istio 中。简而言之，你可以把 Aeraki 看做 Istio 中管理的七层协议的 &lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/operator/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Operator&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/aeraki_hu43cc623b7ea2c23d1f1d459b523d263a_291943_77291cad8e5e413675817fa51763b841.webp 400w,
+               /blog/istiocon-layer7-traffic/images/aeraki_hu43cc623b7ea2c23d1f1d459b523d263a_291943_6443473bc677746a0f96bdec166f33f4.webp 760w,
+               /blog/istiocon-layer7-traffic/images/aeraki_hu43cc623b7ea2c23d1f1d459b523d263a_291943_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/aeraki_hu43cc623b7ea2c23d1f1d459b523d263a_291943_77291cad8e5e413675817fa51763b841.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;446&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;相比于直接修改 Istio 代码和采用 EnvoyFilter 这两种扩展 Istio 流量管理能力的方式，采用 Aeraki 为我们带来了以下的好处：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;不需要修改 Istio 代码，因此节省了单独维护一个 Istio 的私有代码分支的额外工作量，可以快速跟随 Istio 的版本迭代进行升级。&lt;/li&gt;
+&lt;li&gt;Aeraki 作为一个独立组件部署在 Mesh 的控制面，可以很方便地作为一个插件和 Istio 进行集成，对 Istio 的流量管理能力进行扩展。&lt;/li&gt;
+&lt;li&gt;协议相关的缺省配置由 Aeraki 自动生成，并且这些配置可以根据 Istio 版本和 Kubernetes 集群相关信息自动进行调整。节约了大量 EnvoyFilter 的手动创建和维护工作。&lt;/li&gt;
+&lt;li&gt;Aeraki 在 Envoy 配置之上进行了抽象，提供了一层面向用户的配置 CRD 来对这些七层协议进行管理。这些高级 CRD 隐藏了 Envoy 的配置细节，屏蔽了不同 Istio 版本生成的缺省 Envoy 配置的差异，对于运维非常友好。对于 Thrift 和 Dubbo 这样的 RPC 协议，由于其语义和 HTTP 类似，Aeraki 直接采用了 Istio VirtualService 和 DestinationRule；对于非 RPC 协议，Aeraki 则定义了一些新的 CRD 来进行管理，例如 RedisService 和 RedisDestination。我们后面将进一步介绍如何使用这些配置 CRD 来定制规则，例如实现 Traffic Splitting。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;和 Istio 类似，Aeraki 也采用了端口名称来识别协议类型。端口取名需要遵循 “tcp-七层协议名-xxx” 的命名规则。例如，一个 Thrift 服务应取名为 “tcp-thrift-service”。需要注意的是，我们必须保留端口名中的“tcp-”前缀，因为对于 Istio 而言，这是一个 TCP 协议的服务。Aeraki 则会根据端口名中的七层协议来生成相应的 Envoy 配置，并替换 Istio 缺省生成的 tcp_proxy。&lt;/p&gt;
+&lt;p&gt;我们来看看如何采用 Aeraki 来实现上面 Thrift 服务的 Traffic Splitting 用例。首先我们需要在 Thrift Service 定义的 Port 命名中声明该 Service 的七层协议类型：“tcp-thrift-hello-server”，然后创建一个 VirtualService 将 Thrift 请求按照指定比例路由到不同的服务版本中。Aeraki 将根据服务定义和 VirtualService 生成所需的 Envoy 配置，并通过 EnvoyFilter 发送给 Istio。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/aeraki-thrift_hud8986884059b44d503cd39a05b926eeb_218678_058895b7fc3d424e81b4a917edb49a47.webp 400w,
+               /blog/istiocon-layer7-traffic/images/aeraki-thrift_hud8986884059b44d503cd39a05b926eeb_218678_194fa5b73bf4971139ab39944871a003.webp 760w,
+               /blog/istiocon-layer7-traffic/images/aeraki-thrift_hud8986884059b44d503cd39a05b926eeb_218678_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/aeraki-thrift_hud8986884059b44d503cd39a05b926eeb_218678_058895b7fc3d424e81b4a917edb49a47.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;275&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;可以看到，相对于手动创建 EnvoyFilter，采用 Aeraki 来管理 Thrift 要简单得多。如果不需要特殊的流量规则，则会更简单，只需要按照命名规范在 Port 名称中声明 Thrift 协议即可，Aeraki 会生成所需的 Envoy 配置，无需任何额外的工作。&lt;/p&gt;
+&lt;p&gt;想自己试试 Aeraki 的 Thrift、Dubbo、Redis 服务管理能力？非常简单，只需在一个连接到 K8s 集群的命令行终端上运行下面两行代码，就可以安装一个带有 Aeraki 插件的 Istio 集群以及相应的 Demo 程序，欢迎大家尝试！&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/aeraki-framework/aeraki.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;aeraki/demo/install-demo.sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;也可以访问 Aeraki 的在线 Demo，查看从 Thrift、Dubbo、Redis 等服务收集到的监控指标面板：http://aeraki.zhaohuabing.com:3000/d/pgz7wp-Gz/aeraki-demo?orgId=1&amp;amp;refresh=10s&amp;amp;kiosk&lt;/p&gt;
+&lt;h2 id=&#34;使用-aeraki-增强-service-mesh&#34;&gt;使用 Aeraki 增强 Service Mesh&lt;/h2&gt;
+&lt;p&gt;下面我们来看一下使用 Aeraki 的七层协议管理能力来增强 Service Mesh 的一些案例。&lt;/p&gt;
+&lt;h3 id=&#34;屏蔽开发生产环境的差异&#34;&gt;屏蔽开发/生产环境的差异&lt;/h3&gt;
+&lt;p&gt;我们在开发、测试和生产环境中通常需要访问不同的后端资源，例如需要连接到不同的 Redis 缓存或者不同的 MySQL 数据库。一般来说，我们需要修改随应用程序发布的配置文件中的后端资源地址，以达到在不同环境中切换后端资源的目的。通过 Aeraki 的帮助，我们可以用 Service Mesh 来屏蔽不同后端资源的配置差异，使得应用程序可以用相同的方式访问不同环境中的后端资源。&lt;/p&gt;
+&lt;p&gt;如下图所示，我们在 Dev、Staging 和 Prod 三个环境中都需要访问 Redis 服务，这三个 Redis 服务有不同的 IP 地址和访问密码，部署方式也可能不同：在开发环境中，为了节约资源和简化部署，我们可能使用单个 Redis 实例；在测试和生产环境中，我们会使用 Redis 集群来保证 Redis 服务的高可用和扩展性，我们也可能直接使用云服务商提供的 Redis 托管服务。当在这三个环境中进行切换时，我们需要配置不同的 IP 地址和访问密码，如果 Redis 部署的方式不同，我们甚至可能需要修改客户端代码来切换 Redis 单实例模式和集群模式，这极大影响了我们开发、测试和上线的效率。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/redis-example_hub118e30e3028bd1794e79db176f5da56_1876085_f314181e5f9791fe35b4a1bee4d95991.webp 400w,
+               /blog/istiocon-layer7-traffic/images/redis-example_hub118e30e3028bd1794e79db176f5da56_1876085_9d2072f95d9d62cca0b3ab4bdc6b21b9.webp 760w,
+               /blog/istiocon-layer7-traffic/images/redis-example_hub118e30e3028bd1794e79db176f5da56_1876085_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/redis-example_hub118e30e3028bd1794e79db176f5da56_1876085_f314181e5f9791fe35b4a1bee4d95991.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;569&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;通过 Aeraki 提供的 RedisService 和 RedisDestination CRD，我们可以屏蔽这些不同 Redis 服务提供者之间的差异，允许客户端以统一的方式访问后端的 Redis 服务。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/redis-example-aeraki_huc173425598ec5fb1fd4efcb5e87866a3_219148_cb7d6baddf61d44dba24862ff989dadd.webp 400w,
+               /blog/istiocon-layer7-traffic/images/redis-example-aeraki_huc173425598ec5fb1fd4efcb5e87866a3_219148_6ac9b04cc01e3b5fa6368e1c202736be.webp 760w,
+               /blog/istiocon-layer7-traffic/images/redis-example-aeraki_huc173425598ec5fb1fd4efcb5e87866a3_219148_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/redis-example-aeraki_huc173425598ec5fb1fd4efcb5e87866a3_219148_cb7d6baddf61d44dba24862ff989dadd.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;431&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在采用 Aeraki 之前，我们在不同的环境中需要配置不同的 IP 地址和 Redis 访问密码。采用 Aeraki 之后，在客户端可以采用相同的代码和配置，通过修改 Aeraki CRD 来切换不同环境中的 Redis 配置，大大减少在不同环境之间进行切换的成本。即使 Redis 从单实例改为了 Redis 集群，客户端也可以采用相同的方式进行访问。&lt;/p&gt;
+&lt;h3 id=&#34;采用流量镜像进行对比测试&#34;&gt;采用流量镜像进行对比测试&lt;/h3&gt;
+&lt;p&gt;有一些数据库或者数据库代理采用相同的网络协议。例如 TiDB、Oceanbase、Aurora、Kingshard 等都兼容 MySQL 协议；Twemproxy、Codis、Tendis、Pika 等都采用了 Redis 协议。由于业务需求，我们有时需要从一个实现迁移到另一个实现上。在迁移之前，我们需要进行对比测试，以对比不同实现的性能、功能及兼容性。&lt;/p&gt;
+&lt;p&gt;例如下面的场景：我们最初只用了一个单实例 Redis 来做缓存，随着线上业务的不断扩展，该 Redis 实例已经出现了访问瓶颈，我们希望切换为采用 Twemproxy 来对 Redis 进行水平扩展。通过采用 Aeraki 来将线上的 Redis 流量镜像到 Twemproxy 测试环境，我们可以采用真实的业务数据对 Twemproxy 进行充分的测试，以评估其对线上业务的影响。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/database-example_hu1646e75916833edbfd7a96cb95d524a3_883557_eb9e81c3e42eafd3f509b2b81c8bb615.webp 400w,
+               /blog/istiocon-layer7-traffic/images/database-example_hu1646e75916833edbfd7a96cb95d524a3_883557_ad5b88c282db8ba8241766c9bb09c09a.webp 760w,
+               /blog/istiocon-layer7-traffic/images/database-example_hu1646e75916833edbfd7a96cb95d524a3_883557_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/database-example_hu1646e75916833edbfd7a96cb95d524a3_883557_eb9e81c3e42eafd3f509b2b81c8bb615.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;采用全流量故障注入测试系统弹性&#34;&gt;采用全流量故障注入测试系统弹性&lt;/h3&gt;
+&lt;p&gt;Istio 可以实现 HTTP 和 gRPC 的故障注入，但这还不够。在一个分布式系统中，应用服务、数据库、缓存、消息系统等都可能由于网络或者其他原因出现不可用的情况。采用 Aeraki，我们可以对系统中的所有这些可能的故障点进行完整的模拟，以测试系统的弹性，保证我们的系统在一部分出现问题后可以自愈或者通过降级保证系统基本可用，而不至于整个系统崩溃。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/istiocon-layer7-traffic/images/fault-injection_hu7ce50fb52dc5ba98f85b1790e43b6261_1127628_110699c21fc34fc03efc4f56c42703e4.webp 400w,
+               /blog/istiocon-layer7-traffic/images/fault-injection_hu7ce50fb52dc5ba98f85b1790e43b6261_1127628_9a8414dc51c0838b54b54d09ebcb41a3.webp 760w,
+               /blog/istiocon-layer7-traffic/images/fault-injection_hu7ce50fb52dc5ba98f85b1790e43b6261_1127628_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istiocon-layer7-traffic/images/fault-injection_hu7ce50fb52dc5ba98f85b1790e43b6261_1127628_110699c21fc34fc03efc4f56c42703e4.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;525&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;小结&#34;&gt;小结&lt;/h2&gt;
+&lt;p&gt;Service Mesh 中有大量的七层协议流量，包括 RPC、Database、Cache、Messaging 等类型的七层协议，但 Istio 只提供了 HTTP 和 gRPC 的七层管理能力，对其他七层协议的支持非常有限。Aerkai 开源项目通过非侵入的方式为 Istio 提供了任意七层协议的支持能力，并提供了面向用户的高级配置 CRD，可以很方便地对这些协议的流量进行管理，实现灰度发布等高级流量管理能力。目前 Aeraki 已经支持了 Thrift、Dubbo、Redis、Kafka、Zookeeper，并即将支持更多的协议。Aeraki 的定位是做成一个非侵入式 Istio 功能增强工具集，除了协议扩展之外，还会关注解决在 Istio 使用过程中遇到的其他常见问题，包括效率优化、配置简化、第三方服务发现接入、功能扩展等。如果您希望了解更多关于 Aeraki 的内容，欢迎访问 Github 主页  &lt;a href=&#34;https://github.com/aeraki-framework&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/aeraki-framework&lt;/a&gt; 。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;招聘信息&lt;/strong&gt;：腾讯云 Service Mesh 团队正在火热招聘中，Base 成都、北京、深圳或者西安，要求候选者熟悉 Kubernetes/Istio/Envoy。欢迎大家发送简历到 &lt;a href=&#34;mailto:huabingzhao@tencent.com&#34;&gt;huabingzhao@tencent.com&lt;/a&gt; 或者微信联系 zhao_huabing。&lt;/p&gt;
+&lt;h2 id=&#34;参考链接&#34;&gt;参考链接&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.bilibili.com/video/BV1XN41197Sq&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon talk “How to Manage Any Layer-7 Traffic in an Istio Service Mesh?” 视频回放&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/slides/how-to-manage-any-layer-7-traffic-in-istio.pdf&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IstioCon talk “How to Manage Any Layer-7 Traffic in an Istio Service Mesh? 讲稿下载&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/aeraki-framework&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki Github 主页&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;http://aeraki.zhaohuabing.com:3000/d/pgz7wp-Gz/aeraki-demo?orgId=1&amp;amp;refresh=10s&amp;amp;kiosk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Aeraki 在线 Demo&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>在 Istio 中实现 Redis 集群的数据分片、读写分离和流量镜像</title>
+      <link>https://cloudnative.to/blog/redis-cluster-with-istio/</link>
+      <pubDate>Mon, 26 Oct 2020 11:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/redis-cluster-with-istio/</guid>
+      <description>&lt;p&gt;Redis 是一个高性能的 key-value 存储系统，被广泛用于微服务架构中。如果我们想要使用 Redis 集群模式提供的高级特性，则需要对客户端代码进行改动，这带来了应用升级和维护的一些困难。利用 Istio 和 Envoy ，我们可以在不修改客户端代码的前提下实现客户端无感知的 Redis Cluster 数据分片，并提供读写分离、流量镜像等高级流量管理功能。&lt;/p&gt;
+&lt;h2 id=&#34;redis-cluster&#34;&gt;Redis Cluster&lt;/h2&gt;
+&lt;p&gt;Redis 的一个常见用途是用作数据高速缓存。通过在应用服务器和数据库服务器之间加入一个 Redis 缓存层，可以减少应用服务器对数据库的大量读操作，避免数据库服务器在大压力下响应缓慢甚至宕机的风险，显著加强整个系统的健壮性。Redis 作为数据缓存的原理如图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-as-cache_hu4accfacd2eae7834e79440d40bb52bf2_29021_8fac504bb3b513e5f970483614fd255f.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-as-cache_hu4accfacd2eae7834e79440d40bb52bf2_29021_1a36f8fef2b3af8fce4e3c3286f31c78.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-as-cache_hu4accfacd2eae7834e79440d40bb52bf2_29021_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-as-cache_hu4accfacd2eae7834e79440d40bb52bf2_29021_8fac504bb3b513e5f970483614fd255f.webp&#34;
+               width=&#34;491&#34;
+               height=&#34;225&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在一个小规模的系统中，上图所示的单个 Redis 就可以很好地实现缓存层的功能。当系统中需要缓存的数据量较大时，一个 Redis 服务器无法承担所有应用服务器的缓存需求；同时单个 Redis 实例失效时也会导致大量读请求被直接发送到后端的数据库服务器上，导致数据库服务器瞬时压力超标，影响系统的稳定性。我们可以采用 &lt;a href=&#34;https://redis.io/topics/cluster-spec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Redis Cluster&lt;/a&gt; 来对缓存数据进行分片，将不同的数据放到不同的 Redis 分片中，以提高 Redis 缓存层的容量能力。在每个 Redis 分片中，还可以采用多个 replica 节点对缓存的读请求进行负载分担，并实现 Redis 的高可用。采用了 Redis Cluster 的系统如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-cluster-no-proxy_hue706fbab458cfb8d43426db815f5b7af_66126_22b3cd80b2c3977d33d7423ca4ce0bf7.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-no-proxy_hue706fbab458cfb8d43426db815f5b7af_66126_fcb36695d6e36af00b650c329302863d.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-no-proxy_hue706fbab458cfb8d43426db815f5b7af_66126_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-cluster-no-proxy_hue706fbab458cfb8d43426db815f5b7af_66126_22b3cd80b2c3977d33d7423ca4ce0bf7.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;384&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;从图中可以看到，在 Redis Cluster 模式下，客户端需要根据集群的分片规则将不同 key 的读写操作发送到集群中不同的 Redis 节点上，因此客户端需要了解 Redis Cluster 的拓扑结构，这导致我们无法在不修改客户端的情况下将一个使用 Redis 独立节点模式的应用平滑迁移到 Redis Cluster 上。另外，由于客户端需要了解 Redis Cluster 的内部拓扑，也将导致客户端代码和 Redis Cluster 运维上的耦合，例如要实现读写分离或者流量镜像的话，就需要修改每个客户端的代码并重新部署。&lt;/p&gt;
+&lt;p&gt;这种场景下，我们可以在应用服务器和 Redis Cluster 之间放置一个 Envoy 代理服务器，由 Envoy 来负责将应用发出的缓存读写请求路由到正确的 Redis 节点上。一个微服务系统中存在大量需要访问缓存服务器的应用进程，为了避免单点故障和性能瓶颈，我们以 Sidecar 的形式为每个应用进程部署一个 Envoy 代理。同时，为了简化对这些代理的管理工作，我们可以采用 Istio 作为控制面来统一对所有 Envoy 代理进行配置,如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-cluster-with-proxy_hub9259985f4d4f135fe50e67d6c49bef9_77630_4ae63c35b84ca98ef2b44395536cf2a2.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-with-proxy_hub9259985f4d4f135fe50e67d6c49bef9_77630_49ec4b020514094fa143bd3354a69b8d.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-with-proxy_hub9259985f4d4f135fe50e67d6c49bef9_77630_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-cluster-with-proxy_hub9259985f4d4f135fe50e67d6c49bef9_77630_4ae63c35b84ca98ef2b44395536cf2a2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;361&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在本文的后续部分，我们将介绍如何通过 Istio 和 Envoy 来管理 Redis Cluster，实现客户端无感知的数据分区，以及读写分离、流量镜像等高级路由策略。&lt;/p&gt;
+&lt;h2 id=&#34;部署-istio&#34;&gt;部署 Istio&lt;/h2&gt;
+&lt;p&gt;Pilot 中已经支持了 Redis 协议，但功能较弱，只能为 Redis 代理配置一个缺省路由，而且不支持 Redis Cluster 模式，无法实现 Redis filter 的数据分片、读写分离、流量镜像等高级流量管理功能。为了让 Istio 可以将 Redis Cluster 相关的配置下发到 Envoy Sidecar 上，我们修改了 EnvoyFilter 配置相关代码，以支持 EnvoyFilter 的 &amp;ldquo;REPLCAE&amp;rdquo; 操作。该修改的 PR &lt;a href=&#34;https://github.com/istio/istio/pull/27426/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Implement REPLACE operation for EnvoyFilter patch&lt;/a&gt; 已经提交到 Istio 社区，并合入到了主分支中，将在 Istio 后续的版本中发布。&lt;/p&gt;
+&lt;p&gt;在撰写本文的时候，最新的 Istio 发布版本 1.7.3 中尚未合入该 PR。因此我构建了一个 Pilot 镜像，以启用 EnvoyFilter 的 &amp;ldquo;REPLACE&amp;rdquo; 操作。在安装 Istio 时，我们需要在 istioctl 命令中指定采用该 Pilot 镜像，如下面的命令行所示：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; istio-1.7.3/bin
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ./istioctl install --set components.pilot.hub&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;zhaohuabing --set components.pilot.tag&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;1.7.3-enable-ef-replace
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;备注：如果你采用的 Istio 版本新于 1.7.3，并且已经合入了该 PR，则可以直接采用 Istio 版本中缺省的 Pilot 镜像。&lt;/p&gt;
+&lt;h2 id=&#34;部署-redis-cluster&#34;&gt;部署 Redis Cluster&lt;/h2&gt;
+&lt;p&gt;请从 &lt;a href=&#34;https://github.com/zhaohuabing/istio-redis-culster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/zhaohuabing/istio-redis-culster&lt;/a&gt; 下载下面示例中需要用到的相关代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ git clone https://github.com/zhaohuabing/istio-redis-culster.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; istio-redis-culster
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们创建一个 &amp;ldquo;redis&amp;rdquo; namespace 来部署本例中的 Redis Cluster。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl create ns redis
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;namespace/redis created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;部署 Redis 服务器的 Statefulset 和 Configmap。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f k8s/redis-cluster.yaml -n redis
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;configmap/redis-cluster created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;statefulset.apps/redis-cluster created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;service/redis-cluster created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;验证-redis-部署&#34;&gt;验证 Redis 部署&lt;/h3&gt;
+&lt;p&gt;确认 Redis 节点已经启动并正常运行：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pod -n redis
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME              READY   STATUS    RESTARTS   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-0   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          4m25s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-1   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          3m56s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-2   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          3m28s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-3   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          2m58s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-4   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          2m27s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster-5   2/2     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          117s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;创建-redis-cluster&#34;&gt;创建 Redis Cluster&lt;/h3&gt;
+&lt;p&gt;在上面的步骤中，我们采用 Statefulset 部署了6个 Redis 节点，但目前这6个节点还是相互独立的，并未形成一个集群。下面我们采用 Redis 的 &lt;code&gt;cluster create&lt;/code&gt; 命令将这些节点组成一个 Redis Cluster。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it redis-cluster-0 -n redis -- redis-cli --cluster create --cluster-replicas &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get pods -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;redis-cluster -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{range.items[*]}{.status.podIP}:6379 &amp;#39;&lt;/span&gt; -n redis&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Defaulting container name to redis.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Use &lt;span class=&#34;s1&#34;&gt;&amp;#39;kubectl describe pod/redis-cluster-0 -n redis&amp;#39;&lt;/span&gt; to see all of the containers in this pod.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Performing &lt;span class=&#34;nb&#34;&gt;hash&lt;/span&gt; slots allocation on &lt;span class=&#34;m&#34;&gt;6&lt;/span&gt; nodes...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Master&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;0&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; -&amp;gt; Slots &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - &lt;span class=&#34;m&#34;&gt;5460&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Master&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;1&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; -&amp;gt; Slots &lt;span class=&#34;m&#34;&gt;5461&lt;/span&gt; - &lt;span class=&#34;m&#34;&gt;10922&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Master&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; -&amp;gt; Slots &lt;span class=&#34;m&#34;&gt;10923&lt;/span&gt; - &lt;span class=&#34;m&#34;&gt;16383&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Adding replica 172.16.0.72:6379 to 172.16.0.138:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Adding replica 172.16.0.201:6379 to 172.16.1.52:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Adding replica 172.16.0.139:6379 to 172.16.1.53:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 8fdc7aa28a6217b049a2265b87bff9723f202af0 172.16.0.138:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;0-5460&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5461&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 4dd6c1fecbbe4527e7d0de61b655e8b74b411e4c 172.16.1.52:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;5461-10922&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5462&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 0b86a0fbe76cdd4b48434b616b759936ca99d71c 172.16.1.53:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;10923-16383&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5461&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: 94b139d247e9274b553c82fbbc6897bfd6d7f693 172.16.0.139:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 0b86a0fbe76cdd4b48434b616b759936ca99d71c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: e293d25881c3cf6db86034cd9c26a1af29bc585a 172.16.0.72:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 8fdc7aa28a6217b049a2265b87bff9723f202af0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: ab897de0eca1376558e006c5b0a49f5004252eb6 172.16.0.201:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 4dd6c1fecbbe4527e7d0de61b655e8b74b411e4c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Can I &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; the above configuration? &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;yes&amp;#39;&lt;/span&gt; to accept&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;: yes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Nodes configuration updated
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Assign a different config epoch to each node
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Sending CLUSTER MEET messages to join the cluster
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Waiting &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; the cluster to join
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Performing Cluster Check &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;using node 172.16.0.138:6379&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 8fdc7aa28a6217b049a2265b87bff9723f202af0 172.16.0.138:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;0-5460&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5461&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; additional replica&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;s&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 4dd6c1fecbbe4527e7d0de61b655e8b74b411e4c 172.16.1.52:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;5461-10922&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5462&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; additional replica&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;s&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: 94b139d247e9274b553c82fbbc6897bfd6d7f693 172.16.0.139:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; slave
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 0b86a0fbe76cdd4b48434b616b759936ca99d71c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;M: 0b86a0fbe76cdd4b48434b616b759936ca99d71c 172.16.1.53:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots:&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;10923-16383&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5461&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; master
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; additional replica&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;s&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: ab897de0eca1376558e006c5b0a49f5004252eb6 172.16.0.201:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; slave
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 4dd6c1fecbbe4527e7d0de61b655e8b74b411e4c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;S: e293d25881c3cf6db86034cd9c26a1af29bc585a 172.16.0.72:6379
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   slots: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; slots&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; slave
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   replicates 8fdc7aa28a6217b049a2265b87bff9723f202af0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;OK&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; All nodes agree about slots configuration.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Check &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; open slots...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt;&amp;gt;&amp;gt; Check slots coverage...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;OK&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; All &lt;span class=&#34;m&#34;&gt;16384&lt;/span&gt; slots covered.
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;验证-redis-cluster&#34;&gt;验证 Redis Cluster&lt;/h3&gt;
+&lt;p&gt;我们可以采用 &lt;code&gt;cluster info&lt;/code&gt; 命令查看 Redis Cluster 的配置信息和 Cluster 中的成员节点，以验证集群是否创建成功。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it redis-cluster-0 -c redis -n redis -- redis-cli cluster info 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_state:ok
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_slots_assigned:16384
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_slots_ok:16384
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_slots_pfail:0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_slots_fail:0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_known_nodes:6
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_size:3
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_current_epoch:6
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_my_epoch:1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_ping_sent:206
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_pong_sent:210
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_sent:416
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_ping_received:205
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_pong_received:206
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_meet_received:5
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cluster_stats_messages_received:416
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署测试用客户端&#34;&gt;部署测试用客户端&lt;/h3&gt;
+&lt;p&gt;我们部署一个客户端，以用于发送测试命令:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f k8s/redis-client.yaml -n redis
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.apps/redis-client created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;通过-istio-下发-redis-cluster-相关的-envoy-配置&#34;&gt;通过 Istio 下发 Redis Cluster 相关的 Envoy 配置&lt;/h2&gt;
+&lt;p&gt;在下面的步骤中，我们将通过 Istio 向 Envoy Sidecar 下发 Redis Cluster 相关配置，以在无需改动客户端的情况下启用 Redis Cluster 的高级功能，包括数据分片、读写分离和流量镜像。&lt;/p&gt;
+&lt;h3 id=&#34;创建-envoy-redis-cluster&#34;&gt;创建 Envoy Redis Cluster&lt;/h3&gt;
+&lt;p&gt;Envoy 提供了 &amp;ldquo;envoy.clusters.redis&amp;rdquo; 类型的 Envoy Cluster 来连接后端的 Redis Cluster，Envoy 会通过该 Cluster 获取后端 Redis Cluster 的拓扑结构，包括有多少个分片（shard），每个分片负责哪些 slot，以及分片中包含哪些节点，以将来自客户端的请求分发到正确的 Redis 节点上。&lt;/p&gt;
+&lt;p&gt;采用 EnvoyFilter 来创建所需的 Envoy Redis Cluster：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f istio/envoyfilter-custom-redis-cluster.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;envoyfilter.networking.istio.io/custom-redis-cluster created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;创建-envoy-redis-proxy&#34;&gt;创建 Envoy Redis Proxy&lt;/h3&gt;
+&lt;p&gt;Istio 缺省下发的 LDS 中配置的是 TCP proxy filter，我们需要将其替换为 Redis Proxy filter。&lt;/p&gt;
+&lt;p&gt;由于 1.7.3 中尚不支持 EnvoyFilter 的 &amp;ldquo;REPLACE&amp;rdquo; 操作，我们首先需要更新 EnvoyFilter 的 CRD 定义，然后才能创建该 EnvoyFilter：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f istio/envoyfilter-crd.yaml 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;customresourcedefinition.apiextensions.k8s.io/envoyfilters.networking.istio.io configured
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;采用 EnvoyFilter 来将 TCP proxy filter 替换为 Redis Proxy filter，以使 Envoy 可以代理来自客户端的 Redis 操作请求：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ sed -i .bak &lt;span class=&#34;s2&#34;&gt;&amp;#34;s/\${REDIS_VIP}/`kubectl get svc redis-cluster -n redis -o=jsonpath=&amp;#39;{.spec.clusterIP}&amp;#39;`/&amp;#34;&lt;/span&gt; istio/envoyfilter-redis-proxy.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f istio/envoyfilter-redis-proxy.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;envoyfilter.networking.istio.io/add-redis-proxy created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;验证-redis-cluster-功能&#34;&gt;验证 Redis Cluster 功能&lt;/h2&gt;
+&lt;p&gt;现在一切就绪，下面我们来验证 Redis Cluster 的各项功能。&lt;/p&gt;
+&lt;h3 id=&#34;redis-数据分片&#34;&gt;Redis 数据分片&lt;/h3&gt;
+&lt;p&gt;我们通过 Istio 将 EnvoyFilter 中定义的配置下发到 Envoy 后，Envoy 就能够自动发现后端 Redis Cluster 的拓扑结构，并根据客户端请求中的 key 将请求自动分发到 Redis Cluster 中正确的节点上。&lt;/p&gt;
+&lt;p&gt;根据前面创建 Redis Cluster 步骤中的命令行输出，我们可以看出该 Redis Cluster 的拓扑结构：Cluster 中有三个分片，每个分片中有一个 Master 节点，一个 Slave(Replica) 节点。客户端通过和其部署在同一个 Pod 中的 Envoy Proxy 访问 Redis Cluster，如下图所示：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-cluster_hufdd501eb96691b515beae3dc52d4b2da_109185_2e4e3ecc6597d3307f0cf27ef395c732.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-cluster_hufdd501eb96691b515beae3dc52d4b2da_109185_72092f8b195745e158e3c84e46ae4909.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-cluster_hufdd501eb96691b515beae3dc52d4b2da_109185_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-cluster_hufdd501eb96691b515beae3dc52d4b2da_109185_2e4e3ecc6597d3307f0cf27ef395c732.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;322&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Redis Cluster 中各个分片的 Master 和 Slave 节点地址：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Shard[0] Master[0]  redis-cluster-0 172.16.0.138:6379   replica  redis-cluster-4 172.16.0.72:6379  -&amp;gt; Slots 0 - 5460 
+Shard[1] Master[1]  redis-cluster-1 172.16.1.52:6379    replica  redis-cluster-5 172.16.0.201:6379 -&amp;gt; Slots 5461 - 10922
+Shard[2] Master[2]  redis-cluster-2 172.16.1.53:6379    replica  redis-cluster-3 172.16.0.139:6379 -&amp;gt; Slots 10923 - 16383
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;备注：如果你在自己的 K8s cluster 中部署该示例，那么 Redis Cluster 中各个节点的 IP 地址和拓扑结构可能稍有不同，但基本结构应该是类似的。&lt;/p&gt;
+&lt;p&gt;我们尝试从客户端向 Rdeis Cluster 发送一些不同 key 的 &lt;code&gt;set&lt;/code&gt; 请求:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;redis-client -n redis -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;{.items[0].metadata.name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt; -c redis-client -n redis -- redis-cli -h redis-cluster
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; a a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; b b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; c c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; d d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; e e
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; f f
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; g g
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; h h
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从客户端来看，所有的请求都成功了，我们可以使用 &lt;code&gt;scan&lt;/code&gt; 命令在服务器端查看各个节点中的数据：&lt;/p&gt;
+&lt;p&gt;查看分片 Shard[0] 中的数据，master 节点是 redis-cluster-0 slave 节点是 redis-cluster-4。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-0 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;f
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-4 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;f
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;b
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看分片 Shard[1] 中的数据，master 节点是 redis-cluster-1 slave 节点是 redis-cluster-5。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-1 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;g
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-5 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;g
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;c
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看分片 Shard[2] 中的数据，master 节点是 redis-cluster-2 slave 节点是 redis-cluster-3。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-2 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;a
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;e
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;h
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-3 -c redis -n redis -- redis-cli --scan
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;h
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;e
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;a
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从上面的验证结果中可以看到，客户端设置的数据被分发到了 Redis Cluster 中的三个分片中。该数据分发过程是由 Envoy Redis Proxy 自动实现的，客户端并不感知后端的 Redis Cluster，对客户端而言，和该 Redis Cluster 的交互与和一个单一 Redis 节点的交互是相同的。&lt;/p&gt;
+&lt;p&gt;采用该方法，我们可以在应用业务规模逐渐扩张，单一 Redis 节点压力过大时，将系统中的 Redis 从单节点无缝迁移到集群模式。在集群模式下，不同 key 的数据被缓存在不同的数据分片中，我们可以增加分片中 Replica 节点的数量来对一个分片进行扩容，也可以增加分片个数来对整个集群进行扩展，以应对由于业务不断扩展而增加的数据压力。由于 Envoy 可以感知 Redis Cluster 集群拓扑，数据的分发由 Envoy 完成，整个迁移和扩容过程无需客户端，不会影响到线上业务的正常运行。&lt;/p&gt;
+&lt;h3 id=&#34;redis-读写分离&#34;&gt;Redis 读写分离&lt;/h3&gt;
+&lt;p&gt;在一个 Redis 分片中，通常有一个 Master 节点，一到多个 Slave（Replica）节点，Master 节点负责写操作，并将数据变化同步到 Slave 节点。当来自应用的读操作压力较大时，我们可以在分片中增加更多的 Replica，以对读操作进行负载分担。Envoy Redis Rroxy 支持设置不同的读策略：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;MASTER：&lt;/strong&gt;        只从 Master 节点读取数据，当客户端要求数据强一致性时需要采用该模式。该模式对 Master 压力较大，在同一个分片内无法采用多个节点对读操作进行负载分担。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;PREFER_MASTER：&lt;/strong&gt;   优先从 Master 节点读取数据，当 Master 节点不可用时，从 Replica 节点读取。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;REPLICA：&lt;/strong&gt;         只从 Replica 节点读取数据，由于 Master 到 Replica 的数据复制过程是异步执行的，采用该方式有可能读取到过期的数据，因此适用于客户端对数据一致性要求不高的场景。该模式下可以采用多个 Replica 节点来分担来自客户端的读负载。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;PREFER_REPLICA：&lt;/strong&gt;  优先从 Replica 节点读取数据，当 Replica 节点不可用时，从 Master 节点读取。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ANY：&lt;/strong&gt;             从任意节点读取数据。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在前面下发的 EnvoyFilter 中，我们将 Envoy Redis Proxy 的读策略设置为了 &amp;ldquo;REPLICA&amp;rdquo;， 因此客户端的读操作应该只会被发送到 Replica 节点。让我们使用下面的命令来验证读写分离的策略:&lt;/p&gt;
+&lt;p&gt;通过客户端发起一系列 key 为 &amp;ldquo;b&amp;rdquo; 的 &lt;code&gt;get&lt;/code&gt; 和 &lt;code&gt;set&lt;/code&gt; 操作：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;redis-client -n redis -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;{.items[0].metadata.name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt; -c redis-client -n redis -- redis-cli -h redis-cluster
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; b bb
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;bb&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在前面的 Redis Cluster 拓扑中，我们已经得知 key &amp;ldquo;b&amp;rdquo; 属于 Shard[0] 这个分片。我们可以通过命令 &lt;code&gt;redis-cli monitor&lt;/code&gt; 查看该分片中 Master 和 Replica 节点中收到的命令。&lt;/p&gt;
+&lt;p&gt;Master 节点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-0 -c redis -n redis -- redis-cli monitor
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Slave 节点:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-4 -c redis -n redis -- redis-cli monitor
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从下图中可以看到，所有 &lt;code&gt;get&lt;/code&gt; 请求都被 Envoy 发送到了 Replica 节点上。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-cluster-read-policy_hu5fca8d57f57067e5a0c08f867748a1fb_392444_5ba5ed5787dbaa70d8346680eaeb5243.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-read-policy_hu5fca8d57f57067e5a0c08f867748a1fb_392444_961f71bb1070fdf1fade29e7d3d6bf3f.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-read-policy_hu5fca8d57f57067e5a0c08f867748a1fb_392444_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-cluster-read-policy_hu5fca8d57f57067e5a0c08f867748a1fb_392444_5ba5ed5787dbaa70d8346680eaeb5243.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;455&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;redis-流量镜像&#34;&gt;Redis 流量镜像&lt;/h3&gt;
+&lt;p&gt;Envoy Redis Proxy 支持流量镜像，即将客户端发送的请求同时发送到一个镜像 Redis 服务器/集群上。流量镜像是一个非常有用的功能，我们可以使用流量镜像将生产环境中的线上数据导入到测试环境中，以使用线上数据对应用进行尽可能真实的模拟测试，同时又不会影响到线上用户的正常使用。&lt;/p&gt;
+&lt;p&gt;我们创建一个单节点的 Redis 节点，用做镜像服务器：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f k8s/redis-mirror.yaml -n redis 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.apps/redis-mirror created
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;service/redis-mirror created
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;采用 EnvoFilter 来启用镜像策略：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ sed -i .bak &lt;span class=&#34;s2&#34;&gt;&amp;#34;s/\${REDIS_VIP}/`kubectl get svc redis-cluster -n redis -o=jsonpath=&amp;#39;{.spec.clusterIP}&amp;#39;`/&amp;#34;&lt;/span&gt; istio/envoyfilter-redis-proxy-with-mirror.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f istio/envoyfilter-redis-proxy-with-mirror.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;envoyfilter.networking.istio.io/add-redis-proxy configured
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过客户端发起一系列 key 为 &amp;ldquo;b&amp;rdquo; 的 &lt;code&gt;get&lt;/code&gt; 和 &lt;code&gt;set&lt;/code&gt; 操作：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;redis-client -n redis -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;{.items[0].metadata.name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt; -c redis-client -n redis -- redis-cli -h redis-cluster
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;b&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; b bb
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;bb&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; b bbb
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;bbb&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;redis-cluster:6379&amp;gt; get b
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;bbb&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以通过命令 &lt;code&gt;redis-cli monitor&lt;/code&gt; 分别查看 Master、Replica 和镜像节点中收到的命令。&lt;/p&gt;
+&lt;p&gt;Master 节点:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-0 -c redis -n redis -- redis-cli monitor
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Slave 节点:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; redis-cluster-4 -c redis -n redis -- redis-cli monitor
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;镜像节点:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; -it &lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt;kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;redis-mirror -n redis -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;{.items[0].metadata.name}&amp;#34;&lt;/span&gt;&lt;span class=&#34;sb&#34;&gt;`&lt;/span&gt; -c redis-mirror -n redis -- redis-cli monitor
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从下图中可以看到，所有 &lt;code&gt;set&lt;/code&gt; 请求都被 Envoy 发送到了一份镜像节点上。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/redis-cluster-with-istio/images/redis-cluster-mirror-policy_hu968358f82bbf415fe6b9edccd0cdab46_742226_01c76642d53f48dd6d97ad534d5b8cf4.webp 400w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-mirror-policy_hu968358f82bbf415fe6b9edccd0cdab46_742226_d9299e92628634d26728b853a3aa603d.webp 760w,
+               /blog/redis-cluster-with-istio/images/redis-cluster-mirror-policy_hu968358f82bbf415fe6b9edccd0cdab46_742226_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/redis-cluster-with-istio/images/redis-cluster-mirror-policy_hu968358f82bbf415fe6b9edccd0cdab46_742226_01c76642d53f48dd6d97ad534d5b8cf4.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;361&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;实现原理&#34;&gt;实现原理&lt;/h2&gt;
+&lt;p&gt;在上面的步骤中，我们在 Istio 中创建了两个 EnvoyFilter 配置对象。这两个 EnvoyFilter 修改了 Envoy 代理的配置，主要包括两部分内容：Redis Proxy Network Filter 配置和 Redis Cluster 配置。&lt;/p&gt;
+&lt;p&gt;下面的 EnvoyFilter 替换了 Pilot 为 Redis Service 创建的 Listener 中的 TCP Proxy Network Filter，将其替换为一个 &amp;ldquo;type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProxy&amp;rdquo; 类型的 Network Filter。 该 Redis Proxy 的缺省路由指向 &amp;ldquo;custom-redis-cluster&amp;rdquo;，并且配置了读写分离策略和流量镜像策略。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EnvoyFilter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;add-redis-proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configPatches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;applyTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NETWORK_FILTER&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listener&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;${REDIS_VIP}_6379            &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# Replace REDIS_VIP with the cluster IP of &amp;#34;redis-cluster service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filterChain&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;filter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy.filters.network.tcp_proxy&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;REPLACE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.redis_proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;stat_prefix&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis_stats&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;prefix_routes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;catch_all_route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;request_mirror_policy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# Send requests to the mirror cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;outbound|6379||redis-mirror.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;exclude_read_commands&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;True     # Mirror write commands only&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;custom-redis-cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;settings&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;op_timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;5s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enable_redirection&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;enable_command_stats&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;read_policy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;REPLICA              &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# Send read requests to replica&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面的 EnvoyFilter 在 Pilot 下发的 CDS 中创建了一个 &amp;ldquo;envoy.clusters.redis&amp;rdquo; 类型的 Cluster： &amp;ldquo;custom-redis-cluster&amp;rdquo;，该 Cluster 会采用 &lt;a href=&#34;https://redis.io/commands/cluster-slots&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CLUSTER SLOTS 命令&lt;/a&gt; 向 Redis 集群中的一个随机节点查询集群的拓扑结构，并在本地保存该拓扑结构，以将来自客户端的请求分发到集群中正确的 Redis 节点上。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;EnvoyFilter&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;custom-redis-cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;configPatches&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;applyTo&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CLUSTER&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;patch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;operation&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;INSERT_FIRST&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;custom-redis-cluster&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;connect_timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0.&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;5s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;lb_policy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;CLUSTER_PROVIDED&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;load_assignment&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;custom-redis-cluster&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;endpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;lb_endpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-0.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-1.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-2.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-3.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-4.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;redis-cluster-5.redis-cluster.redis.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;6379&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy.clusters.redis&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;typed_config&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;@type&amp;#34;: &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;type.googleapis.com/google.protobuf.Struct&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_refresh_rate&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;5s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_refresh_timeout&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;3s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;redirect_refresh_interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;5s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;redirect_refresh_threshold&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;小结&#34;&gt;小结&lt;/h2&gt;
+&lt;p&gt;本文介绍了如何使用 Envoy 为微服务应用提供客户端无感知的 Redis 数据分片，以及如何通过 Istio 来统一管理系统中多个 Envoy 代理的 Redis Cluster 配置。我们可以看到，采用 Istio 和 Envoy 可以大大简化客户端使用 Redis Cluster 的编码和配置工作，并且可以在线修改 Redis Cluster 的运维策略，实现读写分离、流量镜像等高级流量管理。当然，引入 Istio 和 Envoy 并未减少整个系统的复杂度，而是将 Redis Cluster 维护的工作从各个分散的应用代码中集中到了服务网格基础设施层。对应广大应用开放者来说，其业务价值主要来自于应用代码，将大量精力投入此类基础设施是不太划算的。建议直接采用腾讯云上的云原生 Service Mesh 服务 TCM（Tencent Cloud Mesh），为微服务应用快速引入 Service Mesh 的流量管理和服务治理能力，而无需再关注 Service Mesh 基础设施自身的安装、维护、升级等事项。&lt;/p&gt;
+&lt;h2 id=&#34;参考文档&#34;&gt;参考文档&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://rancher.com/blog/2019/deploying-redis-cluster&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Deploying Redis Cluster on Top of Kubernetes&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://medium.com/@fr33m0nk/migrating-to-redis-cluster-using-envoy-93a87ae79dc3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Migrating to Redis cluster using envoy proxy&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/istio/istio/pull/27426/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Implement REPLACE operation for EnvoyFilter patch&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+  </channel>
+</rss>
