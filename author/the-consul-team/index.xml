@@ -12,5 +12,284 @@
       <link>https://cloudnative.to/author/the-consul-team/</link>
     </image>
     
+    <item>
+      <title>Consul Service Mesh的7层网络可观察性</title>
+      <link>https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/</link>
+      <pubDate>Fri, 12 Jul 2019 00:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/</guid>
+      <description>&lt;p&gt;&lt;em&gt;编者按：Consul团队写了一篇易懂、又有实操的如何在Service Mesh中，实现服务的可观察性的文章。即使没有太多基础，也能比较容易的看懂并了解service mesh中，如何实现服务的度量。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;这是系列博客的第二篇文章，重点介绍Consul服务网格中的新功能。&lt;/p&gt;
+&lt;h2 id=&#34;简介&#34;&gt;简介&lt;/h2&gt;
+&lt;p&gt;您之前可能已经听过“可观察性”一词，但它实际上意味着什么？ 它只是监控重新品牌，还是更多的可观察性？ 我们正在发布一系列博客文章，讨论服务网格的核心用例。 在本博客中，我们将详细介绍可观察性以及如何启用最近&lt;a href=&#34;https://www.hashicorp.com/blog/hashicorp-consul-1-5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Consul 1.5发布&lt;/a&gt;中包含的Consul Connect的新L7可观察性功能。&lt;/p&gt;
+&lt;p&gt;首先，让我们重新审视一个熟悉的概念：监控。&lt;/p&gt;
+&lt;h3 id=&#34;监控&#34;&gt;监控&lt;/h3&gt;
+&lt;p&gt;监控意味着使用内部或外部工具检测应用程序和系统，以确定其状态。&lt;/p&gt;
+&lt;p&gt;例如，您可能有一个外部运行状况检查，用于探测应用程序的状态或确定其当前的资源消耗。 您可能还有内部统计信息，用于报告特定代码块的性能，或执行某个数据库事务所需的时间。&lt;/p&gt;
+&lt;h3 id=&#34;可观察性&#34;&gt;可观察性&lt;/h3&gt;
+&lt;p&gt;可观察性来自工程和控制理论的世界。控制理论&lt;a href=&#34;https://en.wikipedia.org/wiki/Observability&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指出&lt;/a&gt;可观察性本身就是一种描述“从外部产出的知识中推断出系统内部状态的程度”的措施。与监视哪些是你所做的相比，可观察性是系统的属性。如果外部输出，日志记录，度量，跟踪，健康检查等允许您了解其内部状态，则可以观察系统。&lt;/p&gt;
+&lt;p&gt;可观察性对于频繁发布的现代分布式应用程序尤其重要。与通过进程内调用进行通信的单片体系结构相比，微服务体系结构在服务交互期间会出现更多故障，因为这些调用发生在可能不可靠的网络上。随着为测试创建逼真的类似生产的环境变得越来越困难，在客户开始之前检测生产中的问题变得更加重要。这些服务调用的视图可帮助团队及早发现故障，跟踪故障并设计弹性。&lt;/p&gt;
+&lt;p&gt;借助模块化和可独立部署的（微）服务，很难实现对这些服务的可视性。单个用户请求可以流经多个服务，每个服务由不同的团队独立开发和部署。由于无法预测系统中可能发生的每个潜在故障或问题，因此您需要构建一旦部署后易于调试的系统。对网络的了解对于了解这些高度分布式系统的流量和性能至关重要。&lt;/p&gt;
+&lt;h2 id=&#34;服务网格&#34;&gt;服务网格&lt;/h2&gt;
+&lt;p&gt;服务网格是一种网络基础设施，它利用“边车”代理进行微服务部署。 由于边车代理存在于每个网络跃点，因此它捕获上游和下游通信。 因此，服务网格提供了对所有服务的外部性能的完全可见性。&lt;/p&gt;
+&lt;p&gt;采用服务网格的一个主要好处是，边车代理队伍可以完全了解所有服务流量，并且可以以一致的方式公开指标，而不管不同的编程语言和框架。 应用程序仍需要进行检测，以便深入了解内部应用程序性能。&lt;/p&gt;
+&lt;h3 id=&#34;控制平面&#34;&gt;控制平面&lt;/h3&gt;
+&lt;p&gt;服务网格传统上由两个主要组件构成：控制平面和数据平面。 控制平面为网格中的所有正在运行的数据平面提供策略和配置。 数据平面通常是本地代理，作为应用程序的边车运行。 数据平面根据控制平面中的策略和服务图终止所有TLS连接和托管授权。 Consul构成服务网格的控制平面，简化了边车代理的配置，以实现安全的流量通信和度量收集。 Consul旨在支持各种代理作为sidecars，并且目前已经为Envoy提供了一流的支持，因为它具有轻量级的占用空间和可观察性支持。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-envoy-sidecar-proxy-with-its-upstream-services&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy sidecar proxy with its upstream services&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253731-consul_hu2eb839ff43ce99e0d9c67ed38ca02111_50640_eb4a1efee28706017177c2f06f0e1be0.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253731-consul_hu2eb839ff43ce99e0d9c67ed38ca02111_50640_b4e5a8eaa49e77f9e0769f7741a46123.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253731-consul_hu2eb839ff43ce99e0d9c67ed38ca02111_50640_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253731-consul_hu2eb839ff43ce99e0d9c67ed38ca02111_50640_eb4a1efee28706017177c2f06f0e1be0.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;360&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Envoy sidecar proxy with its upstream services
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Consul UI showing the Envoy sidecar proxy and its upstream services&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;Consul 1.5引入了使用&lt;code&gt;consul connect envoy&lt;/code&gt;命令立即为Consul Connect中的所有Envoy代理配置度量集合的功能。 在新的发现阶段，此命令从本地Consul代理获取集中存储的代理配置，并使用其值来引导Envoy代理。&lt;/p&gt;
+&lt;p&gt;通过Consul Connect配置Envoy引导程序时，可以支持几种不同级别的自定义。 更高级别的配置是最简单的配置，涵盖了从Envoy获取指标所需的一切。&lt;/p&gt;
+&lt;p&gt;可以通过创建配置文件来创建集中配置。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;kind&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;proxy-defaults&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;name&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;global&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;config &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# (dog)statsd listener on either UDP or Unix socket. &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# envoy_statsd_url = &amp;#34;udp://127.0.0.1:9125&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nv&#34;&gt;envoy_dogstatsd_url&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;udp://127.0.0.1:9125&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# IP:port to expose the /metrics endpoint on for scraping.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# prometheus_bind_addr = &amp;#34;0.0.0.0:9102&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;c1&#34;&gt;# The flush interval in seconds.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nv&#34;&gt;envoy_stats_flush_interval&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;10&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以使用&lt;code&gt;consul config write &amp;lt;filename&amp;gt;&lt;/code&gt;命令将此配置写入Consul。&lt;/p&gt;
+&lt;p&gt;上述文件中的配置部分通过告知Envoy将指标发送到何处来启用指标收集。目前，Consul Connect通过集中配置支持以下度量标准输出格式：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;StatsD&lt;/strong&gt;：允许客户报告指标的网络协议，如计数器和计时器&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;DogStatsD&lt;/strong&gt;：StatsD协议的扩展，支持直方图和指标标记&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Prometheus&lt;/strong&gt;：暴露出Prometheus可以抓取指标的终点&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;DogStatsD接收器优于statsd，因为它允许标记指标，这对于能够在Grafana中正确过滤它们至关重要。一旦支持Envoy 1.10并发出直方图，prometheus端点对大多数用户来说都是一个不错的选择。&lt;/p&gt;
+&lt;p&gt;Consul将使用该配置生成Envoy设置代理并配置相应统计信息接收器所需的引导配置。一旦Envoy代理被引导，它将开始发出指标。您可以在Prometheus等时间序列存储中捕获这些指标，并在Grafana等工具中查询它们，或将它们发送到托管监控解决方案。下面是一个Prometheus查询示例，您可以根据生成的指标编写，该查询将所有请求时间记录到上游“emojify-api”集群，然后按分位数对它们进行分组&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# The response times of the emojify-api upstream, &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# categorized by quantile &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sum&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_cluster_upstream_rq_time&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;envoy_cluster_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;emojify-api&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &amp;gt; 0&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; by &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;quantile&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-resulting-graph-showing-the-request-time-quantiles&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Resulting graph showing the request time quantiles&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253416-requesttime_hu09423e67206d13b684a713ec628a7a9a_12411_98c29524fbb8370c64c779c2f11b564e.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253416-requesttime_hu09423e67206d13b684a713ec628a7a9a_12411_e753ebe1eb9f1c354ccbcd26cb0347ff.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253416-requesttime_hu09423e67206d13b684a713ec628a7a9a_12411_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253416-requesttime_hu09423e67206d13b684a713ec628a7a9a_12411_98c29524fbb8370c64c779c2f11b564e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;336&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Resulting graph showing the request time quantiles
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;em&gt;Resulting graph showing the request time quantiles&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;Envoy根据其配置方式发出&lt;a href=&#34;https://docs.datadoghq.com/integrations/envoy/#data-collected&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;大量&lt;/a&gt;统计信息。 一般来说，有三类统计数据：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Downstream&lt;/strong&gt; 与传入连接/请求相关的&lt;strong&gt;下游&lt;/strong&gt;统计信息。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Upstream&lt;/strong&gt; 与传出连接/请求相关的&lt;strong&gt;上游&lt;/strong&gt;统计信息。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Server&lt;/strong&gt; 描述Envoy服务器实例如何执行的&lt;strong&gt;服务器&lt;/strong&gt;统计信息。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;统计信息的格式类似于``envoy.&lt;category&gt;(.&lt;subcategory&gt;).metric`，我们感兴趣的一些类别是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Cluster&lt;/strong&gt;：Envoy连接的一组逻辑上相似的上游主机。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Listener&lt;/strong&gt;：一个命名的网络位置，如端口或unix套接字，可由下游客户端连接。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;TCP&lt;/strong&gt;：连接，吞吐量等指标&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;HTTP&lt;/strong&gt;：有关HTTP和HTTP/2连接和请求的指标。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-grafana-dashboard-containing-envoy-metrics&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Grafana dashboard containing Envoy metrics&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253406-dashboard_hu13d99dff9587967e180fc0b26e47c2be_253836_7d7169c4a0be2147c470985c7caf7cca.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253406-dashboard_hu13d99dff9587967e180fc0b26e47c2be_253836_d6731d0cf4b453d272010c729b700e36.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253406-dashboard_hu13d99dff9587967e180fc0b26e47c2be_253836_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253406-dashboard_hu13d99dff9587967e180fc0b26e47c2be_253836_7d7169c4a0be2147c470985c7caf7cca.webp&#34;
+               width=&#34;757&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Grafana dashboard containing Envoy metrics
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Grafana dashboard containing Envoy metrics&lt;/em&gt;&lt;/p&gt;
+&lt;h2 id=&#34;l7可观察性&#34;&gt;L7可观察性&lt;/h2&gt;
+&lt;p&gt;默认情况下，Envoy代理L4或TCP层的连接。虽然这可能有用，但它不包括重要的协议特定信息，如请求率和指示错误所需的响应代码。&lt;/p&gt;
+&lt;p&gt;例如，使用L4，您将看到发送和接收的连接数和字节数，但只有在连接意外终止时才会报告故障。当您的API或网站报告失败时，它们通常会响应特定于协议的错误消息，同时保持TCP连接处于活动状态或正常关闭它。例如，HTTP服务的响应带有状态代码，该状态代码指示响应的性质。当请求成功时，您将返回状态200，如果找不到，则返回404，当服务出现意外错误时，返回5xx。特使可以配置为记录每个响应的状态属于哪个类，以允许监视错误率。&lt;/p&gt;
+&lt;p&gt;用于服务之间通信的另一个新兴协议是gRPC，它使用HTTP/2进行传输，使用Protocol Buffers作为接口定义和序列化格式，以执行远程过程调用。在为GRPC配置Envoy时，发出的指标将为您提供所调用的函数以及这些调用的结果状态。&lt;/p&gt;
+&lt;p&gt;监控这些代码对于理解您的应用程序至关重要，但是，您需要在Envoy中启用一些其他配置，以便它了解您的应用正在使用L7。&lt;/p&gt;
+&lt;p&gt;您可以通过在配置文件中设置服务默认值来指定服务的协议（请参阅下面的示例）。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;service-defaults&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;emojify-api&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;l&#34;&gt;protocol = &amp;#34;http&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后使用&lt;code&gt;consul write &amp;lt;filename&amp;gt;&lt;/code&gt;命令将其写入集中式配置。&lt;/p&gt;
+&lt;p&gt;如果协议是“http”，“http2”或“grpc”，它将使侦听器发出L7指标。 在引导Envoy代理时，Consul将尝试从其引用的服务中解析上游协议。 如果已定义，则无需在上游指定协议。&lt;/p&gt;
+&lt;p&gt;一旦通过Consul指定或发现代理和上游的协议字段，Envoy将配置集群以发出额外的L7指标，HTTP类别和指标的HTTP/GRPC子类别。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-the-emojify-cache-and-emojify-facebox-clusters-are-emitting-response-codes-with-their-metrics&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;The emojify-cache and emojify-facebox clusters are emitting response codes with their metrics&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253409-l7metrics_hu5e0506212c5db93e52eb254cd626e237_32544_57231520c38ed274311be63b652f5a61.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253409-l7metrics_hu5e0506212c5db93e52eb254cd626e237_32544_98669d3580a29b38e755fecfc694b07f.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253409-l7metrics_hu5e0506212c5db93e52eb254cd626e237_32544_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253409-l7metrics_hu5e0506212c5db93e52eb254cd626e237_32544_57231520c38ed274311be63b652f5a61.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;651&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      The emojify-cache and emojify-facebox clusters are emitting response codes with their metrics
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;The emojify-cache and emojify-facebox clusters are emitting response codes with their metrics&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;一旦您在Grafana中获得L7指标，您就可以开始更精确地关联事件，并了解系统中的故障是如何冒泡的。&lt;/p&gt;
+&lt;p&gt;例如，如果emojify-api上游开始返回5xx响应代码，您可以查看对emojify-cache服务的调用，并查看Get调用是否也失败。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Number of requests to the emojify-upstream, &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# categorized by resulting response code&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sum&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;increase&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_cluster_upstream_rq_xx&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;envoy_cluster_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;emojify-api&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}[&lt;/span&gt;30s&lt;span class=&#34;o&#34;&gt;]))&lt;/span&gt; by &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_response_code_class&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Number of retry attempts to the emojify-api upstream&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sum&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;increase&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_cluster_upstream_rq_retry&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;envoy_cluster_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;emojify-api&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}[&lt;/span&gt;30s&lt;span class=&#34;o&#34;&gt;]))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-resulting-graph-showing-the-number-of-requests-and-retries&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Resulting graph showing the number of requests and retries&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253412-requestcount_hu1de564e25b0b4012763f1448151426de_9782_4abdce4301fb161cd3e964a820228e76.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253412-requestcount_hu1de564e25b0b4012763f1448151426de_9782_a378ab79021d7c081098309dadd2fb8a.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253412-requestcount_hu1de564e25b0b4012763f1448151426de_9782_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253412-requestcount_hu1de564e25b0b4012763f1448151426de_9782_4abdce4301fb161cd3e964a820228e76.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;336&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Resulting graph showing the number of requests and retries
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Resulting graph showing the number of requests and retries&lt;/em&gt;&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Number of GRPC calls to the emojify-cache upstream, &lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# categorized by function called&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sum&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;increase&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_cluster_grpc_0&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;envoy_cluster_name&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;emojify-cache&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}[&lt;/span&gt;30s&lt;span class=&#34;o&#34;&gt;]))&lt;/span&gt; by &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;envoy_grpc_bridge_method&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-resulting-graph-showing-the-grpc-functions-and-their-call-count&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Resulting graph showing the GRPC functions and their call count&#34; srcset=&#34;
+               /blog/layer-7-observability-with-consul-service-mesh/1558253414-requestgrpc_hu917c4645894c18d6f0b26b3251967b70_10673_ed5ed7a77a90d410e119d61c294f883f.webp 400w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253414-requestgrpc_hu917c4645894c18d6f0b26b3251967b70_10673_b11b1f0c17470354911f9ac5bd4529d3.webp 760w,
+               /blog/layer-7-observability-with-consul-service-mesh/1558253414-requestgrpc_hu917c4645894c18d6f0b26b3251967b70_10673_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/layer-7-observability-with-consul-service-mesh/1558253414-requestgrpc_hu917c4645894c18d6f0b26b3251967b70_10673_ed5ed7a77a90d410e119d61c294f883f.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;336&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Resulting graph showing the GRPC functions and their call count
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Resulting graph showing the GRPC functions and their call count&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;通过使用分布式跟踪，您可以在系统上获得更好的可观察性。 这需要应用程序的一些合作来通过服务调用来发起跟踪和传播跟踪上下文。 可以将服务网格配置为集成并向跟踪添加跨度，以深入了解在代理中花费的时间。 这可以通过&lt;code&gt;envoy_tracing_json&lt;/code&gt;字段提供，该字段接受JSON格式的Envoy跟踪配置。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;通过使用集中式配置，您可以同时在中央位置为所有服务配置度量标准收集。 L7指标可让您更深入地了解服务的行为和性能。&lt;/p&gt;
+&lt;p&gt;此处描述的L7可观察性功能已在&lt;a href=&#34;https://hashicorp.com/blog/hashicorp-consul-1-5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Consul 1.5&lt;/a&gt;中发布。 如果您想亲自试用新功能，这个&lt;a href=&#34;https://instruqt.com/hashicorp/tracks/consul-l7-%e5%8f%af%e8%a7%82%e5%af%9f%e6%80%a7&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;演示&lt;/a&gt;提供了一个无需安装的实践操场。 如果您想了解更多关于Kulnetes上Consul Connect的L7可观察性的信息，请查看HashiCorp关于此主题的学习&lt;a href=&#34;https://learn.hashicorp.com/consul/getting-started-k8s/l7-observability-k8s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指南&lt;/a&gt; 。&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>

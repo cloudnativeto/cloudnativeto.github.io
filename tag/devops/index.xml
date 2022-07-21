@@ -2354,5 +2354,823 @@ docker push nuclearwu/hello-kubernetes:1.0.1
 </description>
     </item>
     
+    <item>
+      <title>Prow 快速入门向导</title>
+      <link>https://cloudnative.to/blog/prow-quick-start-guide/</link>
+      <pubDate>Mon, 01 Jul 2019 03:13:13 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/prow-quick-start-guide/</guid>
+      <description>&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
+&lt;p&gt;Prow 是 Google 发起的适应云原生开源项目的 ChatOps 系统。Kubernetes、Istio 等项目都使用 Prow 实现开源协同。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;K8s 的 Prow 系统：&lt;a href=&#34;https://prow.k8s.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://prow.k8s.io/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Prow 开源仓库：&lt;a href=&#34;https://github.com/kubernetes/test-infra/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/test-infra/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Prow 官方文档：&lt;a href=&#34;https://github.com/kubernetes/test-infra/blob/master/prow/README.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/test-infra/blob/master/prow/README.md&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;我们将以我的 Github 测试仓库 &lt;a href=&#34;https://github.com/zhangsean/prow-test&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangsean/prow-test&lt;/a&gt; 为例，来演示在一个本地k8s集群上使用 Prow 来实现CI/CD的诸多效果。&lt;/p&gt;
+&lt;h2 id=&#34;准备一个k8s集群&#34;&gt;准备一个k8s集群&lt;/h2&gt;
+&lt;p&gt;Prow 运行在 k8s 集群中，最好运行在有公网IP地址的k8s集群，可以免去 Webhook 转发的麻烦。临时测试可以使用本地集群。我使用 kind 创建一个本地 k8s 集群，使用 minikube 等其他工具都可以。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 创建一个本地集群&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kind create cluster
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;KUBECONFIG&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kind get kubeconfig-path&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 确认k8s启动成功&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl version
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get po -A
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 部署 Ingress 控制器会使访问更方便，如果你的 k8s 集群已经有 Ingress 或者想用 NodePort 则可以跳过&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 以下 Traefik Ingress Controller 中启用了默认 https 协议，替换111.22.3.4成你的主机IP即可访问 http://traefik.主机IP.nip.io 查看 Traefik 控制界面&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -sSL https://github.com/zhangsean/prow-quickstart/blob/master/traefik-ds.yaml?raw&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sed &lt;span class=&#34;s1&#34;&gt;&amp;#39;s|192.168.64.10|111.22.3.4|g&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;准备一个-github-机器人账号&#34;&gt;准备一个 Github 机器人账号&lt;/h2&gt;
+&lt;blockquote&gt;
+&lt;p&gt;说明：体验 Prow 效果并不需要额外注册一个 Github 机器人账号，用个人账号完全不影响 Prow 的效果，给 Prow 配置机器人账号只是可以在 PR 中清楚区分哪些是人为和机器人的操作。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;如果你还没有机器人账号，请在 Github 注册一个机器人账号，我注册了 &lt;code&gt;zhangsean-bot&lt;/code&gt;。&lt;br&gt;
+在你的项目仓库中把机器人账号加入合作者中，复制邀请链接，用机器人账号登录 Github 打开邀请链接并接受邀请，这样机器人就有权限读取和操作你的仓库了。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-tokens&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github Tokens&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-collaborators_hue2dc180e1630485170fbc097d1f7e922_203366_58a415d2241b231987dd323a2b856927.webp 400w,
+               /blog/prow-quick-start-guide/img-github-collaborators_hue2dc180e1630485170fbc097d1f7e922_203366_448fa1aa6ec46a2c8592f0bbd43fb00e.webp 760w,
+               /blog/prow-quick-start-guide/img-github-collaborators_hue2dc180e1630485170fbc097d1f7e922_203366_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-collaborators_hue2dc180e1630485170fbc097d1f7e922_203366_58a415d2241b231987dd323a2b856927.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;373&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github Tokens
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;准备-github-认证令牌&#34;&gt;准备 Github 认证令牌&lt;/h2&gt;
+&lt;p&gt;为了授权 Prow 访问 Github 项目动态，用机器人或个人账号登录 Github 并在 &lt;a href=&#34;https://github.com/settings/tokens&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Github Tokens&lt;/a&gt; 中添加一个含有 &lt;code&gt;repo:status&lt;/code&gt; 和 &lt;code&gt;public_repo&lt;/code&gt; 权限的令牌。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-tokens&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github Tokens&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-token_hu7566921953ed07eb247b92c197c9b75c_211837_da016a8bba1fb722d5a43f4a43ec1b11.webp 400w,
+               /blog/prow-quick-start-guide/img-github-token_hu7566921953ed07eb247b92c197c9b75c_211837_f1c9e6046c16869e4e10ab0c852d604b.webp 760w,
+               /blog/prow-quick-start-guide/img-github-token_hu7566921953ed07eb247b92c197c9b75c_211837_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-token_hu7566921953ed07eb247b92c197c9b75c_211837_da016a8bba1fb722d5a43f4a43ec1b11.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;376&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github Tokens
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+添加成功后把生成的令牌字符串写入到 &lt;code&gt;oauth-token&lt;/code&gt; 文件并保存到 k8s 中。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;f192f1277d47aff3eb60e99530b1cdc6639fda3c&amp;#34;&lt;/span&gt; &amp;gt; oauth-token
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic oauth-token --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;oauth&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./oauth-token
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;再生成一个用于 Github Webhook 认证的 hmac 令牌，并保存到 k8s 中：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl rand -hex &lt;span class=&#34;m&#34;&gt;20&lt;/span&gt; &amp;gt; hmac-token
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic hmac-token --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;hmac&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./hmac-token
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;部署-prow&#34;&gt;部署 Prow&lt;/h2&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 部署 Prow starter 集群，默认部署到 default 命名空间&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://github.com/kubernetes/test-infra/blob/master/prow/cluster/starter.yaml?raw&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 等待所有 pods 状态都变成 Running&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get po
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 查看 Prow 默认部署的 ingress&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 查看 deck 和 hook 服务的 NodePort 端口&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get svc
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;服务列表如下所示，&lt;code&gt;deck&lt;/code&gt;的 NodePort 端口是&lt;code&gt;31920&lt;/code&gt;，&lt;code&gt;hook&lt;/code&gt;的 NodePort 端口是&lt;code&gt;30868&lt;/code&gt;。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME         TYPE        CLUSTER-IP    EXTERNAL-IP   PORT&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;          AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deck         NodePort    10.0.13.133   &amp;lt;none&amp;gt;        80:31920/TCP     85s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;hook         NodePort    10.0.2.190    &amp;lt;none&amp;gt;        8888:30868/TCP   85s
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubernetes   ClusterIP   10.0.0.1      &amp;lt;none&amp;gt;        443/TCP          28m
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tide         NodePort    10.0.86.177   &amp;lt;none&amp;gt;        80:31254/TCP     85s
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;注意：由于 Prow 配置 PR Status 时必须使用 https 访问，所以如果考虑启用 PR Status 功能，请为 deck 配置 https 访问地址（不要求SSL可信证书）。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;如果你的 k8s 集群有公网接入，可以配置 SLB 将流量转发到 &lt;code&gt;deck&lt;/code&gt; 和 &lt;code&gt;hook&lt;/code&gt; 服务，应该得到两个类似这样的网址：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;deck&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://prow.example.com/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hook&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://hook.example.com/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果直接通过有公网IP的节点IP:NodePort 访问，那么访问网址应该类似这样：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;deck&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://111.2.3.4:31920/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hook&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://111.2.3.4:30868/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果你的 k8s 集群已经有 Ingress 控制器，可以修改 Prow 默认的 Ingress 来配置访问地址：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get ingress
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME   HOSTS   ADDRESS   PORTS   AGE
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ing    *                 &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;      21h
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl describe ingress ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name:             ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Namespace:        default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Address:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Default backend:  default-http-backend:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&amp;lt;none&amp;gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Rules:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Host  Path  Backends
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ----  ----  --------
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  *
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        /*      deck:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.32:8080,10.244.0.33:8080&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        /hook   hook:8888 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.16:8888&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 必须把 deck 针对GKE配置的路径 /* 改成 / 才能适配普通 Ingress 控制器&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get ingress ing -o yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sed &lt;span class=&#34;s1&#34;&gt;&amp;#39;s|path: /\*|path: /|g&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 验证 ingress 中 deck 服务路径是否调整为 /&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl describe ingress ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name:             ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Namespace:        default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Address:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Default backend:  default-http-backend:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&amp;lt;none&amp;gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Rules:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Host  Path  Backends
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ----  ----  --------
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  *
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        /       deck:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.32:8080,10.244.0.33:8080&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        /hook   hook:8888 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.16:8888&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 如果 ingress 需要绑定域名，比如 prow.example.com，以下是Mac的命令&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get ingress ing -o yaml &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sed &lt;span class=&#34;s2&#34;&gt;&amp;#34;/\/hook/a\\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;\    host: prow.example.com\\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 验证 ingress 中域名配置&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl describe ingress ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name:             ing
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Namespace:        default
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Address:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Default backend:  default-http-backend:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&amp;lt;none&amp;gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Rules:
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  Host              Path  Backends
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  ----              ----  --------
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  prow.example.com
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    /       deck:80 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.32:8080,10.244.0.33:8080&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;                    /hook   hook:8888 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.244.0.16:8888&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;那么通过ingress访问时的网址应该类似这样：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;deck&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://prow.example.com/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hook&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://prow.example.com/hook/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果你使用 &lt;code&gt;minikube&lt;/code&gt; 启动本地 k8s 集群，通过 &lt;code&gt;minikube ip&lt;/code&gt; 得到 k8s 的 node IP，则访问地址应该类似如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;deck&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://192.168.64.10:31920/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hook&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://192.168.64.10:30868/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果你使用 &lt;code&gt;kind&lt;/code&gt; 启动本地 k8s 集群，则必须将以上2个端口映射到本地才能访问：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 查看 kind 集群的节点名称，也就是容器名称&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kind get nodes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kind-control-plane
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将 deck 服务的 NodePort 31920 端口映射到本地 8080 端口&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker run -itd --name prow-deck -p 8080:80 --link kind-control-plane zhangsean/nginx-port-proxy kind-control-plane:31920
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将 hook 服务的 NodePort 30868 端口映射到本地 8088 端口&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker run -itd --name prow-hook -p 8088:80 --link kind-control-plane zhangsean/nginx-port-proxy kind-control-plane:30868
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;访问-prow-界面&#34;&gt;访问 Prow 界面&lt;/h2&gt;
+&lt;p&gt;打开 &lt;code&gt;deck&lt;/code&gt; 的访问地址（比如 &lt;a href=&#34;http://prow.example.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://prow.example.com&lt;/a&gt;） 即可看到 Prow Status 界面。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-prow-status&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Prow Status&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-prow-status_hu124acd866b7453ed6a215ca774ed1490_101058_dd732feb2ca7401d89191d66ee00ecf3.webp 400w,
+               /blog/prow-quick-start-guide/img-prow-status_hu124acd866b7453ed6a215ca774ed1490_101058_5fa0359d215409900c24aee6256a02e9.webp 760w,
+               /blog/prow-quick-start-guide/img-prow-status_hu124acd866b7453ed6a215ca774ed1490_101058_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-prow-status_hu124acd866b7453ed6a215ca774ed1490_101058_dd732feb2ca7401d89191d66ee00ecf3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;165&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Prow Status
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+发送一个空的 POST 请求给 &lt;code&gt;hook&lt;/code&gt; 访问地址的 &lt;code&gt;/hook&lt;/code&gt; 目录（比如 &lt;a href=&#34;http://prow.example.com/hook&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://prow.example.com/hook&lt;/a&gt; ）应该看到如下 &lt;code&gt;400&lt;/code&gt; 的返回结果。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl -i -d &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; http://localhost:8088/hook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;400&lt;/span&gt; Bad Request
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;charset&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;utf-8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;X-Content-Type-Options: nosniff
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Wed, &lt;span class=&#34;m&#34;&gt;12&lt;/span&gt; Jun &lt;span class=&#34;m&#34;&gt;2019&lt;/span&gt; 04:37:12 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Length: &lt;span class=&#34;m&#34;&gt;47&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;m&#34;&gt;400&lt;/span&gt; Bad Request: Missing X-GitHub-Event Header
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;给本地-k8s-集群接入公网-webhook-访问&#34;&gt;给本地 k8s 集群接入公网 Webhook 访问&lt;/h2&gt;
+&lt;p&gt;如果你是本地 k8s 集群，必须给 &lt;code&gt;hook&lt;/code&gt; 服务接入可被 Github 访问的公网访问地址，如果是公网 k8s 集群可以跳过这一步。&lt;/p&gt;
+&lt;p&gt;先去 &lt;a href=&#34;http://www.ultrahook.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;www.ultrahook.com&lt;/a&gt; 首页点击 &lt;code&gt;Get Start Now!&lt;/code&gt; 注册完成即可免费获得 API Key，然后按提示安装 UltraHook 启动代理。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 本地安装 UltraHook 客户端&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sudo gem install ultrahook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 将申请到的API Key 保存到 UltraHook 配置文件&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;api_key: nYKv6q6X9lJUbDCGXIRQfJ6yNuip1234&amp;#34;&lt;/span&gt; &amp;gt; ~/.ultrahook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 新开一个窗口启动 UltraHook 代理，因为期间不能结束 ultrahook 进程，转发 Webhook 请求到已经转发到 hook 服务的本地8088端口&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ultrahook prow &lt;span class=&#34;m&#34;&gt;8088&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;UltraHook 代理启动后会输出一个公网地址，复制这个地址用于在 Github 中添加 Webhook。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Authenticated as seanz
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Forwarding activated...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;http://prow.seanz.ultrahook.com -&amp;gt; http://localhost:8088
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试发送一个空的 POST 请求到 Webhook 地址，ultrahook 应该输出一个日志返回400，如果没有日志输出则说明没有代理成功，请检查 ultrahook。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意：不管 hook 后端是否实际接受成功或者验证失败，ultrahook 请求的返回码都是200，所以我们只能通过 ultrahook 日志来查看 hook 后端的实际处理结果。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -i -d &lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt; http://prow.seanz.ultrahook.com/hook
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2019-06-12 13:30:36&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; POST http://localhost:8088/hook - &lt;span class=&#34;m&#34;&gt;400&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;给-github-仓库添加-webhook&#34;&gt;给 Github 仓库添加 Webhook&lt;/h2&gt;
+&lt;p&gt;以仓库 &lt;code&gt;zhangsean/prow-test&lt;/code&gt; 为例，在项目 Settings → Webhooks 配置中点击 &lt;code&gt;Add webhook&lt;/code&gt; 按钮，按如下提示填写相关信息并保存 webhook：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;Payload URL&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://prow.seanz.ultrahook.com/hook &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 上一步 UltraHook 生成的外网地址，加上 /hook 路径，这个路径是重点&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;Content type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;application/json&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;Secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;`68f58d2dd9aa4ecd5fae8c0c0ac8cb8057e123456`&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 通过 `cat hmac-token` 命令查看 hmac-token 的值&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;Which events would you like to trigger this webhook?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Send me everything.&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-webhook&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github Webhook&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-webhook_hued444a5926e92a8b06196b4f40f32d51_325721_630f458a39a355a9b3e39327c04361fb.webp 400w,
+               /blog/prow-quick-start-guide/img-github-webhook_hued444a5926e92a8b06196b4f40f32d51_325721_e1a6fb524f4c945fd5fd38e9308e4c0d.webp 760w,
+               /blog/prow-quick-start-guide/img-github-webhook_hued444a5926e92a8b06196b4f40f32d51_325721_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-webhook_hued444a5926e92a8b06196b4f40f32d51_325721_630f458a39a355a9b3e39327c04361fb.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;591&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github Webhook
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+添加 webhook 成功后，新添加的 webhook 地址前会显示一个图标显示 webhook 接收端状态是否正常，确保状态为绿色的&lt;code&gt;√&lt;/code&gt;。&lt;br&gt;
+如果状态为&lt;code&gt;×&lt;/code&gt;说明 webhook 地址配置不正确，点击 webhook 地址进入 webhook 管理界面，下方&lt;code&gt;Recent Deliveries&lt;/code&gt;会显示最近事件列表，点击事件UUID可以查看当前事件的推送请求和返回结果。在每个请求的 &lt;code&gt;Reponse&lt;/code&gt; 标签中能查看Webhook请求返回的状态码和返回内容，有助于定位问题。&lt;br&gt;
+这里还可以通过点击 &lt;code&gt;Redeliver&lt;/code&gt; 按钮重复推送这个事件，可以测试 webhook 接收端能否正常接收事件。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-webhook2&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github Webhook2&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-webhook2_hu111415debfff8d4737153a9895d2f343_437597_4a777dccb8b0a1d281afbe3d52c1a45f.webp 400w,
+               /blog/prow-quick-start-guide/img-github-webhook2_hu111415debfff8d4737153a9895d2f343_437597_23356e00bd8195c9371810260d7bde51.webp 760w,
+               /blog/prow-quick-start-guide/img-github-webhook2_hu111415debfff8d4737153a9895d2f343_437597_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-webhook2_hu111415debfff8d4737153a9895d2f343_437597_4a777dccb8b0a1d281afbe3d52c1a45f.webp&#34;
+               width=&#34;667&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github Webhook2
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;启用插件&#34;&gt;启用插件&lt;/h2&gt;
+&lt;p&gt;Prow 自带了丰富的插件，可以通过 &lt;code&gt;Prow Status&lt;/code&gt; 界面，左上角选择 &lt;code&gt;Plugins&lt;/code&gt; 界面查看插件列表，点击某个插件的 &lt;code&gt;DETAILS&lt;/code&gt; 按钮可以查看插件详情、适用场景、交互命令等。&lt;br&gt;
+插件仓库上方切换仓库列表即可过滤指定仓库启用了哪些插件，这里可以检查仓库的插件配置是否生效。&lt;/p&gt;
+&lt;p&gt;默认部署是没有启用任何插件的，需要通过修改k8s的 &lt;code&gt;plugins.yaml&lt;/code&gt; 配置为指定的项目仓库启用所需插件。&lt;br&gt;
+创建一个名为 &lt;code&gt;plugins.yaml&lt;/code&gt; 的文件并参照如下内容配置需要的插件。&lt;br&gt;
+我已经列出了几个便于测试的常用插件，注释后面是交互命令格式。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;plugins&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;zhangsean/prow-test&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 项目仓库名，只填写组织则可以应用到组织下的所有仓库&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;size&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;welcome&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;owners-label&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;wip&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;cat&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /meow&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;dog&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /woof&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;pony&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /pony&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;yuks&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /joke&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;help&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /help&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;label&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /key value, /kind bug, /language zh&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;skip&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /skip&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;lgtm&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /lgtm&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;assign&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /assign @user, /cc @user&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;approve&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# /approve&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;官方建议通过 &lt;code&gt;checkconfig&lt;/code&gt; 命令来验证配置文件是否正确。如果你没有大的改动，可以跳过。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 安装 checkconfig&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;go get k8s.io/test-infra/prow/cmd/checkconfig
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 检查配置是否有语法错误&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;checkconfig --plugin-config&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./plugins.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;保存 &lt;code&gt;plugins&lt;/code&gt; 配置到 k8s：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create configmap plugins &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;plugins.yaml&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./plugins.yaml --dry-run -o yaml &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl replace configmap plugins -f -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 验证配置是否保存成功&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get cm plugins -o yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;插件配置保存成功后，要过一会儿才能在 &lt;code&gt;Prow Plugin Catalog&lt;/code&gt; 界面看到配置生效。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-prow-plugs&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Prow Plugs&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-prow-plugins_hu68e8ac598c37ce71046b5994a6082b10_389421_ae0c37ffb89bf95cefbda950240b60fa.webp 400w,
+               /blog/prow-quick-start-guide/img-prow-plugins_hu68e8ac598c37ce71046b5994a6082b10_389421_0834122ef205a1cc4720cad0c6898a53.webp 760w,
+               /blog/prow-quick-start-guide/img-prow-plugins_hu68e8ac598c37ce71046b5994a6082b10_389421_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-prow-plugins_hu68e8ac598c37ce71046b5994a6082b10_389421_ae0c37ffb89bf95cefbda950240b60fa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;522&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Prow Plugs
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;测试-prow&#34;&gt;测试 Prow&lt;/h2&gt;
+&lt;p&gt;插件配置生效以后就可以测试Prow效果了，在 Github 仓库中发起一个PR，稍后就会看到&lt;code&gt;size&lt;/code&gt;，&lt;code&gt;approve&lt;/code&gt;这几个插件的效果。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意：如果没有创建机器人账号，直接在个人账号下添加的 Github Token，那么 Prow 的响应都会显示为个人账号的动作。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-pr&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github PR&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-pr_hu43ab8f18a0d905ded37e1158f177a736_453274_060814ddccee210f814bb063cad10b27.webp 400w,
+               /blog/prow-quick-start-guide/img-github-pr_hu43ab8f18a0d905ded37e1158f177a736_453274_0d0e6ad4ca831e362c4c48a66b463a90.webp 760w,
+               /blog/prow-quick-start-guide/img-github-pr_hu43ab8f18a0d905ded37e1158f177a736_453274_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-pr_hu43ab8f18a0d905ded37e1158f177a736_453274_060814ddccee210f814bb063cad10b27.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;640&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github PR
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 PR 中回复命令即可触发相关插件，比如回复 &lt;code&gt;/pony&lt;/code&gt; 会自动插入一个马的图片。&lt;br&gt;
+管理员在满足合并要求的情况下回复 &lt;code&gt;/lgtm&lt;/code&gt; 会触发 Prow 自动合并PR，其他命令交互效果请查看插件详情。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-pr2&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github PR2&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-pr2_hu269925925ca5b76aea3b60ad49c30e0a_109162_71e585985d13386059c7957c5c07b08e.webp 400w,
+               /blog/prow-quick-start-guide/img-github-pr2_hu269925925ca5b76aea3b60ad49c30e0a_109162_31b0bd4e7571cd0790c3d77479d3f4de.webp 760w,
+               /blog/prow-quick-start-guide/img-github-pr2_hu269925925ca5b76aea3b60ad49c30e0a_109162_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-pr2_hu269925925ca5b76aea3b60ad49c30e0a_109162_71e585985d13386059c7957c5c07b08e.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;473&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github PR2
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;配置-prow-job&#34;&gt;配置 Prow Job&lt;/h2&gt;
+&lt;p&gt;配置 Prow Job 用于定时执行一些事务，比如定时执行 CI/CD 自动发布项目。&lt;br&gt;
+Prow 默认部署了一个 &lt;code&gt;echo-test&lt;/code&gt; 测试任务，每隔10分钟显示当前时间。&lt;/p&gt;
+&lt;p&gt;通过查看k8s中 &lt;code&gt;config&lt;/code&gt; 配置的 &lt;code&gt;config.yaml&lt;/code&gt; 文件即可看到这个Job的配置内容:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get configmap config -o yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们把 &lt;code&gt;config.yaml&lt;/code&gt; 文件的内容提取出来，通过修改这个文件并应用到 k8s 集群来配置 Prow Job：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;prowjob_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;pod_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;test-pods&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;periodics&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;10m&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;agent&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;echo-test&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;alpine&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/bin/date&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果暂时不需要 Prow Job，可以把 &lt;code&gt;periodics&lt;/code&gt; 配置清空，比如：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;prowjob_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;pod_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;test-pods&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;periodics&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;官方建议通过 &lt;code&gt;checkconfig&lt;/code&gt; 命令来验证配置文件是否正确，暂时可以跳过。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;checkconfig --config-path&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;保存 &lt;code&gt;config&lt;/code&gt; 配置到 k8s 让 Prow Job 生效：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create configmap config &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;config.yaml&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;./config.yaml --dry-run -o yaml &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; kubectl replace configmap config -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Prow Job 应用后可以在 &lt;code&gt;Prow Status&lt;/code&gt; 界面查看到执行记录：
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-prow-job&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Prow Job&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-prow-job_huc6148aebb0a9bae52a4613709291fb61_180223_de7c3baeb78df4ba43d4cd55445d12aa.webp 400w,
+               /blog/prow-quick-start-guide/img-prow-job_huc6148aebb0a9bae52a4613709291fb61_180223_e7d83d9713556f5bd2cafdebcb8b1962.webp 760w,
+               /blog/prow-quick-start-guide/img-prow-job_huc6148aebb0a9bae52a4613709291fb61_180223_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-prow-job_huc6148aebb0a9bae52a4613709291fb61_180223_de7c3baeb78df4ba43d4cd55445d12aa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;430&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Prow Job
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;启用-prow-pr-status-功能&#34;&gt;启用 Prow PR Status 功能&lt;/h2&gt;
+&lt;p&gt;Prow PR Status 功能可以在 Prow 中查看个人相关的 PR 处于什么状态。Prow Starter集群默认没有启用 PR Status 功能，Prow 左侧看不到相关菜单，必须启用以后才会出现 &lt;code&gt;PR Status&lt;/code&gt; 菜单。&lt;/p&gt;
+&lt;p&gt;由于 PR Status 是针对项目的所有贡献者的，所以当贡献者访问 Prow 的 PR Status 功能时，浏览器会跳转到 Github 使用 OAuth 认证获得用户的授权后，浏览器会自动跳转回 PR Status 界面显示该贡献者相关的 PR 列表。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意：Prow 必须使用 https 访问才能正常使用 PR Status 功能。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在 Github 个人账号 Settings → Developer settings → &lt;a href=&#34;https://github.com/settings/developers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;OAuth Apps&lt;/a&gt; 中点击&lt;code&gt;New OAuth App&lt;/code&gt;，参照如下信息添加一个 OAuth App.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;Application name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Prow PR Status&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;Homepage URL&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https://localhost:8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;Authorization callback URL&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https://localhost:8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-oauth&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github OAuth&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-oauth_hu05387e99b4650b8a69458dd95d20558a_221984_9b946f201865ad50584e009911326d68.webp 400w,
+               /blog/prow-quick-start-guide/img-github-oauth_hu05387e99b4650b8a69458dd95d20558a_221984_feeb76d00616fbc6caaf90ba55fe1f70.webp 760w,
+               /blog/prow-quick-start-guide/img-github-oauth_hu05387e99b4650b8a69458dd95d20558a_221984_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-oauth_hu05387e99b4650b8a69458dd95d20558a_221984_9b946f201865ad50584e009911326d68.webp&#34;
+               width=&#34;653&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github OAuth
+    &lt;/figcaption&gt;&lt;/figure&gt;
+
+OAuth App 保存成功后，把生成的客户端ID和密钥填入 &lt;code&gt;github-oauth-config.yaml&lt;/code&gt; 文件.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;client_id&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;e6403c9b594929axxxxx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;client_secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;933edc0ed4f91db12ebc26165f40cd49b02xxxxx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;redirect_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https://localhost:8080/github-login/redirect&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;final_redirect_url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https://localhost:8080/pr&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-github-oauth&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Github OAuth&#34; srcset=&#34;
+               /blog/prow-quick-start-guide/img-github-oauth-secret_hu961f84d8e047afb49238ed09aac6dd7b_211563_492c96cdc11aad0ae89edde5da000b8d.webp 400w,
+               /blog/prow-quick-start-guide/img-github-oauth-secret_hu961f84d8e047afb49238ed09aac6dd7b_211563_be33f9490c18faaf3fd0edafe8579ec6.webp 760w,
+               /blog/prow-quick-start-guide/img-github-oauth-secret_hu961f84d8e047afb49238ed09aac6dd7b_211563_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/prow-quick-start-guide/img-github-oauth-secret_hu961f84d8e047afb49238ed09aac6dd7b_211563_492c96cdc11aad0ae89edde5da000b8d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;679&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Github OAuth
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;再创建一个用于保存 cookie 的 &lt;code&gt;cookie.txt&lt;/code&gt; 文件。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl rand -out cookie.txt -base64 &lt;span class=&#34;m&#34;&gt;64&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;把以上2个配置文件保存到 k8s 集群。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic github-oauth-config --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;github-oauth-config.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic cookie --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;cookie.txt
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;获取当前 deck 部署并添加配置以便启用 &lt;code&gt;PR Status&lt;/code&gt; 功能。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get deploy deck -o yaml &amp;gt; deck_deployment.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 &lt;code&gt;args&lt;/code&gt; 中添加1个参数，务必注意缩进:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- --&lt;span class=&#34;l&#34;&gt;oauth-url=https://cloudnative.to/github-login&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 &lt;code&gt;volumeMounts&lt;/code&gt; 下面添加2个挂载路径，务必注意缩进:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;oauth-config&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/etc/github&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;readOnly&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cookie-secret&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mountPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/etc/cookie&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;readOnly&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 &lt;code&gt;volumes&lt;/code&gt; 下面添加2个卷引用，务必注意缩进:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;oauth-config&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;github-oauth-config&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cookie-secret&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cookie&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在 k8s 集群中更新 deck 部署：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f deck_deployment.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 检查 deck 的 pod 状态，直到所有 pod 都是 Running&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get po
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;等 deck 的所有 pod 都重建以后，刷新 &lt;code&gt;Prow Status&lt;/code&gt; 界面，左侧菜单会多出一个 &lt;code&gt;PR Status&lt;/code&gt; 菜单。&lt;br&gt;
+点击这个菜单会执行 OAuth 认证过程，跳转到 Github 中根据提示授权 Prow 读取 Github 的信息，授权成功后会回到 &lt;code&gt;PR Status&lt;/code&gt; 界面显示当前用户开启的 PR 列表及其状态。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Serverless vs Container——开发人员向左，DevOps向右</title>
+      <link>https://cloudnative.to/blog/serverless-vs-containers/</link>
+      <pubDate>Sun, 16 Sep 2018 16:49:58 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/serverless-vs-containers/</guid>
+      <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://dzone.com/articles/serverless-vs-containers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;让我们来看看Serverless与容器的采用率、工具支持以及围绕Serverless和容器化的其他争论。&lt;/p&gt;
+&lt;p&gt;在Serverless和容器中，我们有两种令人惊叹的技术，可以为工程师提供高效的，与机器无关的抽象。然而，两个阵营之间似乎存在着不可逾越的鸿沟。&lt;/p&gt;
+&lt;p&gt;如果你读过我在过去两年写的任何内容，你就会知道我坚定地站在Serverless阵营。但我也是容器的早期采用者。在Docker达到1.0里程碑后不久，2015年初我的第一个容器化项目问世。&lt;/p&gt;
+&lt;p&gt;这篇文章不是为了再次引发阵营战争或宣布某个阵营的胜利。相反，我将尝试客观地看待Serverless和容器的状态，根据它们提供的利弊权衡，并对未来的情况给出诚实的看法。&lt;/p&gt;
+&lt;p&gt;鉴于Serverless和FaaS函数即服务（FAAS）通常已经可以互换使用，为了本文的目的，我将限制Serverless的定义为FAAS产品，例如AWS Lambda。&lt;/p&gt;
+&lt;h2 id=&#34;容器状态&#34;&gt;容器状态&lt;/h2&gt;
+&lt;p&gt;自从Docker早期可用以来已经走过了漫长的道路。随着我们在容器上运行的系统越来越复杂，我们的需求已经催生了丰富的工具生态系统。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/serverless-vs-containers/61411417ly1fv92pcoc59j218c0wwtb6_hu774a294c126b2afe916cdd566aa32f7f_184993_406319a42e2443ab7c0d786d6c8163bd.webp 400w,
+               /blog/serverless-vs-containers/61411417ly1fv92pcoc59j218c0wwtb6_hu774a294c126b2afe916cdd566aa32f7f_184993_dce95d429b04eee09c78e4d154f9baec.webp 760w,
+               /blog/serverless-vs-containers/61411417ly1fv92pcoc59j218c0wwtb6_hu774a294c126b2afe916cdd566aa32f7f_184993_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/serverless-vs-containers/61411417ly1fv92pcoc59j218c0wwtb6_hu774a294c126b2afe916cdd566aa32f7f_184993_406319a42e2443ab7c0d786d6c8163bd.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;564&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;AWS还拥有自己的托管容器服务ECS。这提供了与AWS生态系统其他部分更紧密的集成。&lt;/p&gt;
+&lt;p&gt;如服务网格也正在获得可见性和被采用。它们将常见的交叉问题（例如跟踪和断路器）移出应用层。通过解决基础架构层中的这些问题，它们为这些挑战提供了语言和运行时无关的解决方案。这使它们非常适合现代IT组织，即使用各种不同语言的构建微服务。&lt;/p&gt;
+&lt;h2 id=&#34;serverless现状&#34;&gt;Serverless现状&lt;/h2&gt;
+&lt;p&gt;虽然围绕Serverless的炒作并没有和容器一样长。值得记住的是，在Lamber达到1.0之后仅一个月，AWS Lambda就在 2014年发布了。它随附了CloudWatch的基本日志记录和监视支持，即使我们现在依赖的许多事件源（例如API Gateway）都是在之后引入的。&lt;/p&gt;
+&lt;p&gt;除了这些托管服务之外，还有一些解决方案可以让您在自己的Kubernetes集群上运行Serverless。其中包括谷歌和合作公司最近宣布的Knative。虽然这些解决方案试图满足许多开发人员的需求，但我感到他们放弃了Serverless的最佳功能——不必担心服务器！&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/serverless-vs-containers/61411417ly1fv92pv9fp4j20y60pw43y_hu3a909cb150f995851a8d7503c77ba48e_377559_5a9c3f7220c35a40dd3bcb946bdfc726.webp 400w,
+               /blog/serverless-vs-containers/61411417ly1fv92pv9fp4j20y60pw43y_hu3a909cb150f995851a8d7503c77ba48e_377559_ca3f43d4c0b0d05c3499ff3b4147fee2.webp 760w,
+               /blog/serverless-vs-containers/61411417ly1fv92pv9fp4j20y60pw43y_hu3a909cb150f995851a8d7503c77ba48e_377559_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/serverless-vs-containers/61411417ly1fv92pv9fp4j20y60pw43y_hu3a909cb150f995851a8d7503c77ba48e_377559_5a9c3f7220c35a40dd3bcb946bdfc726.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;576&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;采用趋势&#34;&gt;采用趋势&lt;/h2&gt;
+&lt;p&gt;根据一些调查和研究，Serverless和容器的采用正在快速增长。以下是我认为的一些亮点。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;A Cloudability发现，2017年第四季度AWS用户的容器采用量增长了246％，高于第三季度的206％。同时，同一项研究发现，2017年第四季度AWS用户Serverless采用量增长了667％，高于第三季度的321％。&lt;/li&gt;
+&lt;li&gt;Serverless公司最近发现，2018年有82％的接受调查的人员使用Serverless，高于2017年的45％。超过53.2％的人表示他们使用Serverless技术对他们的工作至关重要。&lt;/li&gt;
+&lt;li&gt;Serverless公司的调查还报告说，在采用Serverless之前，24％的接受调查的人员对公共云的使用经验有限或为零。20.2％的为拥有1000多名员工的大型企业工作。&lt;/li&gt;
+&lt;li&gt;Logz.io的 &lt;a href=&#34;https://logz.io/devops-pulse-insights-2018/#pulse_section_ten&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DevOps Pulse&lt;/a&gt; 调查发现，在2018年，60.71％的接受调查的人员采用了容器编排，高于2017年的42.11％。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;有趣的是，DevOps Pulse调查显示，Serverless采用率比其他报告小得多。从2018年的30.55％（2017年）上升到42.58％。这可能与其接受调查的人员的分布有关。其中28.54％认为自己是开发者，而44.26％认定为DevOps、DevSecOps、SysAdmin或SRE。&lt;/p&gt;
+&lt;p&gt;这与我在容器和Serverless阵营之间的上述鸿沟的经验一致。那些认为自己是开发人员的人更倾向于Serverless，而那些被认为是DevOps的人更有可能选择容器。&lt;/p&gt;
+&lt;h2 id=&#34;控制与责任&#34;&gt;控制与责任&lt;/h2&gt;
+&lt;p&gt;关于Serverless与容器的争论通常始于控制，或者在Serverless的情况下缺乏控制。这不是新的。事实上，我清楚地记得当AWS在2009年开始获得牵引力时围绕控制的相同辩论。现在10年后，尘埃落定于原始辩论，但我们未能吸取教训。&lt;/p&gt;
+&lt;p&gt;想要控制是人的本性，但你愿意为此付出多少钱？ 您知道您将承担的总体拥有成本（TCO）吗？&lt;/p&gt;
+&lt;p&gt;控制自己的基础设施的能力带来了很多责任。要承担这些责任，您需要拥有组织中的相关技能。这意味着工资（很容易成为大多数组织的最大开支），代理费以及从工程师和经理那里抽出时间进行招聘和入职。&lt;/p&gt;
+&lt;p&gt;考虑到所涉及的TCO，具有该控制的目标必须是针对某些事物进行优化（例如，为业务关键工作流程实现可预测的性能），并且不为其自身控制。&lt;/p&gt;
+&lt;p&gt;构建基于容器的通用计算平台需要大量的工程专业知识和投资，该平台与AWS Lambda等Serverless产品一样高效，可扩展且具有弹性。大多数组织根本没有能力解决这个问题。尽管有大量的时间和金钱投入，但我知道一些大企业在他们的尝试中惨遭失败。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/serverless-vs-containers/61411417ly1fv92q5mvy7j20y01061kx_huaa6548db4278d7f7eb03f75ab386aa8c_701661_ed433b7b542bdce8331c85aa93286169.webp 400w,
+               /blog/serverless-vs-containers/61411417ly1fv92q5mvy7j20y01061kx_huaa6548db4278d7f7eb03f75ab386aa8c_701661_2b7aaabe715af185d28f25babbd4c785.webp 760w,
+               /blog/serverless-vs-containers/61411417ly1fv92q5mvy7j20y01061kx_huaa6548db4278d7f7eb03f75ab386aa8c_701661_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/serverless-vs-containers/61411417ly1fv92q5mvy7j20y01061kx_huaa6548db4278d7f7eb03f75ab386aa8c_701661_ed433b7b542bdce8331c85aa93286169.webp&#34;
+               width=&#34;714&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;工具支持&#34;&gt;工具支持&lt;/h2&gt;
+&lt;p&gt;使用Serverless，您可以从box-logging，指标和跟踪中获得基本的可观察性工具。尽管有这些警告，但一开始它们通常就足够了。&lt;/p&gt;
+&lt;p&gt;传统上迎合IAAS或容器市场的供应商也开始为Serverless应用程序提供支持。但是，他们需要调整自己的方法，因为Serverless无法再使用基于代理的方法。&lt;/p&gt;
+&lt;p&gt;还有越来越多的供应商专注于解决Serverless应用程序的可观察性和安全性问题。但是，大多数仍处于开发的早期阶段，尚未准备好进行严肃的生产使用。&lt;/p&gt;
+&lt;p&gt;与Serverless相比，容器空间具有更成熟和多样化的工具生态系统。事实上，我发现使用容器的挑战之一是处理绝大多数的选择！&lt;/p&gt;
+&lt;p&gt;有充足的修补机会，我也发现团队可能会忽略奖品（即为我们的客户建立更好的产品），并陷入过度工程的陷阱。&lt;/p&gt;
+&lt;p&gt;Serverless的工具支持将会越来越好，但至少目前，仍然远远落后于容器。在容器领域工作的人面临的挑战是抵制修补和追求简单的冲动。&lt;/p&gt;
+&lt;h2 id=&#34;供应商锁定风险与奖励&#34;&gt;供应商锁定：风险与奖励&lt;/h2&gt;
+&lt;p&gt;Serverless的批评者通常使用供应商锁定作为他们的论据。与此同时，大多数AWS客户实际上都在要求更紧密的集成，以便他们可以从平台中获取更多价值。&lt;/p&gt;
+&lt;p&gt;可以肯定的是，供应商锁定是一种风险。但正如任何投资者都会告诉你的那样，如果你不承担风险，你就永远不会赚钱。诀窍是采取能够带来最佳回报的计算风险。&lt;/p&gt;
+&lt;p&gt;对于它所获得的所有关注，供应商锁定对于少数人来说是一种危险。相反，您更有可能找到过度设计的解决方案来阻止供应商锁定，而不是创建其他形式的锁定，无论是内部团队还是其他私有云供应商。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/serverless-vs-containers/61411417ly1fv92qged6ej20y80fijuh_hucf933693d1883bf39f67468977c1f46f_206773_2285168a9da40e791eeaef8d9a8017b5.webp 400w,
+               /blog/serverless-vs-containers/61411417ly1fv92qged6ej20y80fijuh_hucf933693d1883bf39f67468977c1f46f_206773_279d4e7ff825a1c1baafdb74e2e1d337.webp 760w,
+               /blog/serverless-vs-containers/61411417ly1fv92qged6ej20y80fijuh_hucf933693d1883bf39f67468977c1f46f_206773_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/serverless-vs-containers/61411417ly1fv92qged6ej20y80fijuh_hucf933693d1883bf39f67468977c1f46f_206773_2285168a9da40e791eeaef8d9a8017b5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;345&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;同样，这不是新的。几年前我们与ORM进行了同样的辩论。我们创建了所有这些抽象来防止供应商锁定，除了风险从未实现为我们大多数人的问题。所发生的一切都是我们花费了大量精力和时间，并推迟了我们的产品上市时间，因为这些产品从未成为问题。&lt;/p&gt;
+&lt;p&gt;更糟糕的是，ORM引入了他们自己的问题和复杂性，并持续阻碍了发展。它成为开发团队的一项税收，并在可预见的未来减缓了功能交付。&lt;/p&gt;
+&lt;p&gt;对于那些必须进行数据库迁移的人来说，ORM并没有让事情变得更好。除了其他一切之外，这只是你必须处理的另一个问题。&lt;/p&gt;
+&lt;p&gt;看到历史重演，这次，甚至更高的层次可能会影响整个组织，这是痛苦的！&lt;/p&gt;
+&lt;p&gt;公司发现Serverless团队的工作量越来越多，工程师也越来越多。所以，就像一个明智的投资者一样，我们应该问的问题是：“重要的生产力回报是否值得锁定风险，实现问题的可能性很小？”&lt;/p&gt;
+&lt;h2 id=&#34;未来是serverless还是容器&#34;&gt;未来是Serverless还是容器？&lt;/h2&gt;
+&lt;p&gt;Serverless为您提供了大量的生产力提升，但却以控制基础架构为代价。&lt;/p&gt;
+&lt;p&gt;对于我们的许多工作流程 - 网络API，流处理，cron作业等 - 实际上我们不需要这些所有的控制，我们应该祝福为我们处理管道的人。&lt;/p&gt;
+&lt;p&gt;但总会出现这样的情况：我们需要保持对基础架构的控制，以便优化性能，成本或更高的可用性。或者，我们的工作量可能不利于Serverless的当前限制，例如最长执行时间。&lt;/p&gt;
+&lt;p&gt;我认为Serverless和容器应该混合使用，而不是选择其中一个。实际上，许多公司都成功的采用了混合方法。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;对Serverless满足其需求的工作负载使用Serverless&lt;/li&gt;
+&lt;li&gt;例如，对于以下工作负载，请使用容器;
+&lt;ul&gt;
+&lt;li&gt;长期运行&lt;/li&gt;
+&lt;li&gt;需要可预测的性能&lt;/li&gt;
+&lt;li&gt;需要比Serverless更容易实现的弹性&lt;/li&gt;
+&lt;li&gt;不断地以大规模运行，并且按次付费定价模型变得过于昂贵&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这也是Netflix前云架构师兼现任AWS云计算副总裁Adrian Cockcroft的建议。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  &gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;&#34; srcset=&#34;
+               /blog/serverless-vs-containers/61411417ly1fv92qojnw5j20yc0ue15k_hud6f4901b1968abab3b88a89c6dfe9add_426193_89367a6eee71815cb7a9edf3f232a01d.webp 400w,
+               /blog/serverless-vs-containers/61411417ly1fv92qojnw5j20yc0ue15k_hud6f4901b1968abab3b88a89c6dfe9add_426193_1218a07c34332401941b8a60d0d84253.webp 760w,
+               /blog/serverless-vs-containers/61411417ly1fv92qojnw5j20yc0ue15k_hud6f4901b1968abab3b88a89c6dfe9add_426193_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/serverless-vs-containers/61411417ly1fv92qojnw5j20yc0ue15k_hud6f4901b1968abab3b88a89c6dfe9add_426193_89367a6eee71815cb7a9edf3f232a01d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;673&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我相信我们最终会看到这两种范式的趋同。容器技术最终将成为Serverless - 想想Fargate，加上每次调用定价模型和毫秒计费。同时，Serverless平台将开放并允许您携带自己的容器。高级用户可以通过提供符合API的子组件进行日志记录等来保留对其基础架构的一些控制。&lt;/p&gt;
+&lt;p&gt;随着容器和Serverless之间的界限被打破，我们终于可以废除派系并停止谈论底层技术。我想谈的是如何构建客户想要使用的产品，以及如何更快地构建它们。&lt;/p&gt;
+</description>
+    </item>
+    
   </channel>
 </rss>
