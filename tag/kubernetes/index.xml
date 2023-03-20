@@ -5,12 +5,503 @@
     <link>https://cloudnative.to/tag/kubernetes/</link>
       <atom:link href="https://cloudnative.to/tag/kubernetes/index.xml" rel="self" type="application/rss+xml" />
     <description>kubernetes</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Tue, 27 Dec 2022 12:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Tue, 14 Mar 2023 12:00:00 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/media/sharing.png</url>
       <title>kubernetes</title>
       <link>https://cloudnative.to/tag/kubernetes/</link>
     </image>
+    
+    <item>
+      <title>利用vxlan打通多集群网络</title>
+      <link>https://cloudnative.to/blog/calico/</link>
+      <pubDate>Tue, 14 Mar 2023 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/calico/</guid>
+      <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
+&lt;p&gt;近期由于产品需求需要打通多个K8s集群的容器网络，要求在一个集群的容器内，通过podip直接访问另外一个集群的容器，因此笔者对相关网络技术进行了一番学习。本文将解释整体的组网思路，简单分析数据包的流转过程，最后给出详细的实验步骤。&lt;/p&gt;
+&lt;h2 id=&#34;整体思路&#34;&gt;整体思路&lt;/h2&gt;
+&lt;p&gt;Kubernetes中常见的网络插件如cni, fannel等的实现中每个宿主机管理一个特定的容器网段，如主机A管理容器223.17.8.0/24网段，主机B管理223.17.9.0/24网段，将每个宿主机作为其上运行的容器的网关，并通过vxlan，ipip等隧道技术，将包直接发往宿主机，再通过对应主机的路由到达容器中。因此我们也可以使用这种思路，将多个K8s集群的网络打通。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-整体架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;整体架构图&#34; srcset=&#34;
+               /blog/calico/image1_hu425b9713f4fc9a4c2de148449df1e171_288201_9837f4d646d92d61be0eb4dd9b748f20.webp 400w,
+               /blog/calico/image1_hu425b9713f4fc9a4c2de148449df1e171_288201_5aa0135144f28789c533815219c6f52a.webp 760w,
+               /blog/calico/image1_hu425b9713f4fc9a4c2de148449df1e171_288201_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/calico/image1_hu425b9713f4fc9a4c2de148449df1e171_288201_9837f4d646d92d61be0eb4dd9b748f20.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;462&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      整体架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;上图以安装calico网络插件的集群为例子，展示了如何利用vxlan打通多集群网络，我们需要做的是：为所有节点创建vxlan虚拟网卡，将其它集群每个节点管理Pod网段的路由信息添加到当前集群节点中，并且指定下一跳地址为其它集群节点的vxlan虚拟网卡的ip地址。为每个节点的vxlan网卡配置FDB表，FDB表的内容是除当前节点外，其他节点vxlan网卡的mac地址以及他们的原生网络的ip地址映射。当数据包从容器出来，经过路由表转发到vxlan虚拟机网卡中，vxlan虚拟网卡对数据包进行封包操作，以便在宿主机网络中传输。远端机器接收到数据后进行拆包，取出原始数据包，经过宿主机路由到达目标容器。&lt;/p&gt;
+&lt;h2 id=&#34;vxlan&#34;&gt;VXLAN&lt;/h2&gt;
+&lt;p&gt;VXLAN是linux内核支持的一种隧道技术，通过隧道技术可以在宿主机网络上构建一个二层的虚拟网络。VXLAN通过将二层的数据帧封装成四层的UDP数据包，然后在三层的网络中传输，效果就像在同一个网段中传包一样，在宿主机网络的层面看实际上是跨网段的，但却感知不到。经过VXLAN封装后的数据格式如下。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-vxlan数据包格式&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;vxlan数据包格式&#34; srcset=&#34;
+               /blog/calico/image2_hu9107041f9793321ea93db0046a530e24_134526_bdd2a12b5f24c8a32c3dc29558b89e3d.webp 400w,
+               /blog/calico/image2_hu9107041f9793321ea93db0046a530e24_134526_c41a169a6e6798bcf066bacc4a1ebf27.webp 760w,
+               /blog/calico/image2_hu9107041f9793321ea93db0046a530e24_134526_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/calico/image2_hu9107041f9793321ea93db0046a530e24_134526_bdd2a12b5f24c8a32c3dc29558b89e3d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;94&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      vxlan数据包格式
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;笔者以集群1中的容器A访问集群2中容器D为例子，介绍VXLAN是怎么工作的。容器A发往容器D的包经过calico网卡出现在宿主机内核中。访问的目标地址是223.18.10.11，因此内层IP包的目标地址就是223.18.10.11，然后会被这条路由规则处理。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;223.18.10.0/24 via 241.119.2.100 dev vxlan
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这条规则的含义是访问223.18.10.0/24网段的IP包应该经过本机的vxlan网卡出去，下一跳地址是241.119.2.100，即目标节点的vxlan网卡的地址。因为下一跳地址是241.119.2.100，NodA会通过ARP协议查询到241.119.2.100的mac地址c6:c3:41:15:32:c8，然后作为到内层mac头目标地址。VXLAN Header中有一个重要标志VNI，用于做二层网络隔离用的，创建vxlan网卡时会指定该值。然后将数据包加上UDP头封装成一个四层的包，UDP的端口创建VXLAN虚拟网卡时会设置。接下来会通过内层mac地址查找vxlan网卡的FDB表，可以查到&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ bridge fdb show dev vxlan &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep c6:c3:41:15:32:c8
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;c6:c3:41:15:32:c8 dst 10.71.11.46
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;宿主机将外层IP头的目的地址填写为10.71.11.46，即容器D宿主机的ip地址。由于NodeA和NodeC不再同一个网段，因此目标主机的MAC地址填写的就是NodeA网络中网关节点的MAC地址。完成数据包封装后，包经过宿主机网络传输最终到达了NodeC。NodeC收到包后发现是一个VXLAN协议的包，内核进行拆包以后，取出内部数据帧，然后根据VNI的值交给vxlan网卡处理，vxlan网卡拆包以后，取出原始的ip包，最后经过宿主机的路由到达目标容器。&lt;/p&gt;
+&lt;h2 id=&#34;配置过程&#34;&gt;配置过程&lt;/h2&gt;
+&lt;h3 id=&#34;环境信息&#34;&gt;环境信息&lt;/h3&gt;
+&lt;p&gt;笔者在移动云订购了6台2核4G的虚拟机，通过kubekey部署了3个集群每个集群2个节点，集群信息如下。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;test-cluster1&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;集群版本：1.23.10&lt;br&gt;
+集群pod网段：10.234.64.0/18&lt;br&gt;
+集群service网段：10.234.0.0/18&lt;br&gt;
+网络插件：calico&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;节点名称&lt;/th&gt;
+&lt;th&gt;节点ip&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡IP(规划)&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡mac(规划)&lt;/th&gt;
+&lt;th&gt;节点管理pod网段&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-001&lt;/td&gt;
+&lt;td&gt;192.168.0.21&lt;/td&gt;
+&lt;td&gt;179.17.1.21&lt;/td&gt;
+&lt;td&gt;c2:6a:9b:e5:39:8d&lt;/td&gt;
+&lt;td&gt;10.234.111.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-002&lt;/td&gt;
+&lt;td&gt;192.168.0.31&lt;/td&gt;
+&lt;td&gt;179.17.1.31&lt;/td&gt;
+&lt;td&gt;7a:3a:fe:45:a3:76&lt;/td&gt;
+&lt;td&gt;10.234.118.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;test-cluster2&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;集群版本：1.23.10&lt;br&gt;
+集群pod网段：10.235.64.0/18&lt;br&gt;
+集群service网段：10.235.0.0/18&lt;br&gt;
+网络插件：calico&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;节点名称&lt;/th&gt;
+&lt;th&gt;节点ip&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡IP(规划)&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡mac(规划)&lt;/th&gt;
+&lt;th&gt;节点管理pod网段&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-003&lt;/td&gt;
+&lt;td&gt;192.168.0.16&lt;/td&gt;
+&lt;td&gt;179.17.1.16&lt;/td&gt;
+&lt;td&gt;36:f9:67:c0:70:1c&lt;/td&gt;
+&lt;td&gt;10.235.88.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-004&lt;/td&gt;
+&lt;td&gt;192.168.0.44&lt;/td&gt;
+&lt;td&gt;179.17.1.44&lt;/td&gt;
+&lt;td&gt;12:d1:df:44:3d:aa&lt;/td&gt;
+&lt;td&gt;10.235.113.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;strong&gt;test-cluster3&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;集群版本：1.23.10&lt;br&gt;
+集群pod网段：10.236.64.0/18&lt;br&gt;
+集群service网段：10.236.0.0/18&lt;br&gt;
+网络插件：calico&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;节点名称&lt;/th&gt;
+&lt;th&gt;节点ip&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡IP(规划)&lt;/th&gt;
+&lt;th&gt;vxlan-test虚拟网卡mac(规划)&lt;/th&gt;
+&lt;th&gt;节点管理pod网段&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-005&lt;/td&gt;
+&lt;td&gt;192.168.0.15&lt;/td&gt;
+&lt;td&gt;179.17.1.15&lt;/td&gt;
+&lt;td&gt;ba:a7:54:aa:bc:ce&lt;/td&gt;
+&lt;td&gt;10.236.115.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;multicluster-test-006&lt;/td&gt;
+&lt;td&gt;192.168.0.13&lt;/td&gt;
+&lt;td&gt;179.17.1.13&lt;/td&gt;
+&lt;td&gt;4e:ac:f5:6f:4e:76&lt;/td&gt;
+&lt;td&gt;10.236.106.0/24&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h3 id=&#34;calico配置&#34;&gt;calico配置&lt;/h3&gt;
+&lt;p&gt;calico为了实现容器访问外部网络，会添加一条iptable规则，当源地址是calico管理的ip且目标地址不是calico管理的ip地址，会将源ip地址snat为宿主机的ip地址，这样包发出去以后，才能够根据宿主机的ip地址发回来。calico的进程会确保这条规则永远是最高优先级。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;Chain&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cali&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;nat&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;outgoing&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;1&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;references&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;target&lt;/span&gt;     &lt;span class=&#34;n&#34;&gt;prot&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;opt&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;source&lt;/span&gt;               &lt;span class=&#34;n&#34;&gt;destination&lt;/span&gt;         
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;MASQUERADE&lt;/span&gt;  &lt;span class=&#34;n&#34;&gt;all&lt;/span&gt;  &lt;span class=&#34;o&#34;&gt;--&lt;/span&gt;  &lt;span class=&#34;n&#34;&gt;anywhere&lt;/span&gt;             &lt;span class=&#34;n&#34;&gt;anywhere&lt;/span&gt;             &lt;span class=&#34;cm&#34;&gt;/* cali:flqWnvo8yq4ULQLa */&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;set&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cali40masq&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ipam&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;pools&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;src&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;match&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;set&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cali40all&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ipam&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;pools&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;dst&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;random&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;fully&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;为了防止容器访问其他集群容器的包不被snat，我们需要将其他集群的pod网段，加入到calico的IPool中。具体的配置方法如下：&lt;/p&gt;
+&lt;p&gt;test-cluster1&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.235.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.235.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.236.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.236.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;test-cluster2&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.234.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.234.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.236.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster3
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.236.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;test-cluster3&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.234.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.234.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: svc-test-cluster2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.235.0.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;---
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: crd.projectcalico.org/v1
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: IPPool
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;metadata:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: pod-test-cluster2
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;spec:
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  cidr: 10.235.64.0/18
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  natOutgoing: false
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  disabled: true
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;利用vxlan构建二层虚拟机网络&#34;&gt;利用vxlan构建二层虚拟机网络&lt;/h3&gt;
+&lt;p&gt;利用vxlan建立隧道使得它们在一个二层虚拟机网络中。首先为每台机器配置vxlan网卡，以及ip地址，所有节点vxlan-test网卡的地址必须是同一个网段。&lt;/p&gt;
+&lt;p&gt;登陆multicluster-test-001执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.21 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.21/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test  up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-002执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.31 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.31/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-003执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.16 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.16/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-004执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.44 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.44/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-005执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.15 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.15/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-006执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link add vxlan-test &lt;span class=&#34;nb&#34;&gt;type&lt;/span&gt; vxlan id &lt;span class=&#34;m&#34;&gt;10001&lt;/span&gt; dstport &lt;span class=&#34;m&#34;&gt;4899&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;local&lt;/span&gt; 192.168.0.13 dev eth0 nolearning
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; dev vxlan-test address 4e:ac:f5:6f:4e:76 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip addr add 179.17.1.13/24 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ip link &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; vxlan-test up
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;接下来配置ARP表和FDB表，使得所有节点的vxlan-test网卡之间可以互通。&lt;/p&gt;
+&lt;p&gt;登陆multicluster-test-001执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.31 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.16 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.44 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.15 ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.13 4e:ac:f5:6f:4e:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 7a:3a:fe:45:a3:76 dst 192.168.0.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 36:f9:67:c0:70:1c dst 192.168.0.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 12:d1:df:44:3d:aa dst 192.168.0.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append ba:a7:54:aa:bc:ce dst 192.168.0.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 4e:ac:f5:6f:4e:76 dst 192.168.0.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-002执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.21 c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.16 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.44 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.15 ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.13 4e:ac:f5:6f:4e:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append c2:6a:9b:e5:39:8d dst 192.168.0.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 36:f9:67:c0:70:1c dst 192.168.0.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 12:d1:df:44:3d:aa dst 192.168.0.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append ba:a7:54:aa:bc:ce dst 192.168.0.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 4e:ac:f5:6f:4e:76 dst 192.168.0.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-003执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.21 c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.31 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.44 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.15 ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.13 4e:ac:f5:6f:4e:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append c2:6a:9b:e5:39:8d dst 192.168.0.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 7a:3a:fe:45:a3:76 dst 192.168.0.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 12:d1:df:44:3d:aa dst 192.168.0.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append ba:a7:54:aa:bc:ce dst 192.168.0.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 4e:ac:f5:6f:4e:76 dst 192.168.0.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-004执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.21 c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.31 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.16 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.15 ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.13 4e:ac:f5:6f:4e:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append c2:6a:9b:e5:39:8d dst 192.168.0.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 7a:3a:fe:45:a3:76 dst 192.168.0.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 36:f9:67:c0:70:1c dst 192.168.0.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append ba:a7:54:aa:bc:ce dst 192.168.0.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 4e:ac:f5:6f:4e:76 dst 192.168.0.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-005执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.21 c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.31 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.16 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.44 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.13 4e:ac:f5:6f:4e:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append c2:6a:9b:e5:39:8d dst 192.168.0.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 7a:3a:fe:45:a3:76 dst 192.168.0.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 36:f9:67:c0:70:1c dst 192.168.0.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 12:d1:df:44:3d:aa dst 192.168.0.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 4e:ac:f5:6f:4e:76 dst 192.168.0.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;登陆multicluster-test-006执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置ARP表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.21 c2:6a:9b:e5:39:8d
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.31 7a:3a:fe:45:a3:76
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.16 36:f9:67:c0:70:1c
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.44 12:d1:df:44:3d:aa
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;arp -s 179.17.1.15 ba:a7:54:aa:bc:ce
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#配置FDB表&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append c2:6a:9b:e5:39:8d dst 192.168.0.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 7a:3a:fe:45:a3:76 dst 192.168.0.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 36:f9:67:c0:70:1c dst 192.168.0.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append 12:d1:df:44:3d:aa dst 192.168.0.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;bridge fdb append ba:a7:54:aa:bc:ce dst 192.168.0.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;配置路由规则打通多集群pod网络&#34;&gt;配置路由规则打通多集群pod网络&lt;/h3&gt;
+&lt;p&gt;为每个节点，添加到其他集群节点管理pod网段的路由信息，不同CNI网络插件查询集群节点管理的pod网段的方式不同，Calico可以通过&lt;code&gt;kubectl get blockaffinity -o yaml&lt;/code&gt;  命令查询。&lt;/p&gt;
+&lt;p&gt;在test-cluster1的所有节点执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.235.88.0/24 gw 179.17.1.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.235.113.0/24 gw 179.17.1.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.236.115.0/24 gw 179.17.1.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.236.106.0/24 gw 179.17.1.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在test-cluster2的所有节点执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.234.111.0/24 gw 179.17.1.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.234.118.0/24 gw 179.17.1.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.236.115.0/24 gw 179.17.1.15 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.236.106.0/24 gw 179.17.1.13 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在test-cluster2的所有节点执行&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.234.111.0/24 gw 179.17.1.21 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.234.118.0/24 gw 179.17.1.31 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.235.88.0/24 gw 179.17.1.16 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;route add -net 10.235.113.0/24 gw 179.17.1.44 dev vxlan-test
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;网络联通测试&#34;&gt;网络联通测试&lt;/h3&gt;
+&lt;p&gt;测试从集群test-cluster1中的容器访问test-cluster2中的容器&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#查看test-cluster2中容器ip地址&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;root@multicluster-test-003 ~&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;#  kubectl get pod -n test -o wide&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                     READY   STATUS    RESTARTS   AGE   IP             NODE                        NOMINATED NODE   READINESS GATES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;nginx-65f6dd9c98-8ffmt   1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          21d   10.235.113.5   multicluster-test-004   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;nginx-65f6dd9c98-ljgzn   1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          21d   10.235.88.2    multicluster-test-003   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#从tesst-cluster1中测试访问10.235.113.5&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;root@multicluster-test-001 ~&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;#  kubectl get pod -n test -owide&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                     READY   STATUS    RESTARTS   AGE   IP             NODE                        NOMINATED NODE   READINESS GATES
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;nginx-6d488455cf-n5gc4   1/1     Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          19d   10.234.118.9   multicluster-test-002   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;root@multicluster-test-001 ~&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;#  kubectl exec -it nginx-6d488455cf-n5gc4 /bin/sh -n test&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;POD&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;COMMAND&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; is DEPRECATED and will be removed in a future version. Use kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;POD&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; -- &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;COMMAND&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; instead.
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# curl 10.235.113.5 -v&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;*   Trying 10.235.113.5:80...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;* Connected to 10.235.113.5 &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;10.235.113.5&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; port &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;#0)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; GET / HTTP/1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; Host: 10.235.113.5
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; User-Agent: curl/7.74.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; Accept: */*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;* Mark bundle as not supporting multiuse
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; HTTP/1.1 &lt;span class=&#34;m&#34;&gt;200&lt;/span&gt; OK
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Server: nginx/1.23.3
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Date: Wed, &lt;span class=&#34;m&#34;&gt;22&lt;/span&gt; Feb &lt;span class=&#34;m&#34;&gt;2023&lt;/span&gt; 14:09:58 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Content-Type: text/html
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Content-Length: &lt;span class=&#34;m&#34;&gt;615&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Last-Modified: Tue, &lt;span class=&#34;m&#34;&gt;13&lt;/span&gt; Dec &lt;span class=&#34;m&#34;&gt;2022&lt;/span&gt; 15:53:53 GMT
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Connection: keep-alive
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; ETag: &lt;span class=&#34;s2&#34;&gt;&amp;#34;6398a011-267&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt; Accept-Ranges: bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;.....
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从集群test-cluster1中的容器访问test-cluster3中的容器&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;#查看test-cluster3中容器ip地址
+[root@multicluster-test-005 ~]#  kubectl get pod -n test -o wide
+NAME                     READY   STATUS    RESTARTS   AGE   IP             NODE                        NOMINATED NODE   READINESS GATES
+nginx-65f6dd9c98-bqp88   1/1     Running   0          21d   10.236.115.1   multicluster-test-005   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+nginx-65f6dd9c98-nv9c9   1/1     Running   0          21d   10.236.106.4   multicluster-test-006   &amp;lt;none&amp;gt;           &amp;lt;none&amp;gt;
+#从test-cluster的容器中测试访问10.236.115.1
+[root@multicluster-test-001 ~]#  kubectl exec -it nginx-6d488455cf-n5gc4 /bin/sh -n test
+kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+# curl -v 10.236.115.1
+*   Trying 10.236.115.1:80...
+* Connected to 10.236.115.1 (10.236.115.1) port 80 (#0)
+&amp;gt; GET / HTTP/1.1
+&amp;gt; Host: 10.236.115.1
+&amp;gt; User-Agent: curl/7.74.0
+&amp;gt; Accept: */*
+&amp;gt; 
+* Mark bundle as not supporting multiuse
+&amp;lt; HTTP/1.1 200 OK
+&amp;lt; Server: nginx/1.23.3
+&amp;lt; Date: Wed, 22 Feb 2023 14:14:25 GMT
+&amp;lt; Content-Type: text/html
+&amp;lt; Content-Length: 615
+&amp;lt; Last-Modified: Tue, 13 Dec 2022 15:53:53 GMT
+&amp;lt; Connection: keep-alive
+&amp;lt; ETag: &amp;#34;6398a011-267&amp;#34;
+&amp;lt; Accept-Ranges: bytes
+&amp;lt;
+...
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;本文介绍了利用vxlan打通多个K8s集群网络的思路，并对包对流转做了简单分析。从流转过程可以看出，利用vxlan进行组网，并不会比单集群网络性能损失太多，主要体现在vxlan隧道和ipip隧道的性能差异。最后本文给出了在6节点3个集群的详细组网步骤，主要涉及创建vxlan网卡，配置路由表以及FDB表和ARP表。实际上如果在一个二层互通的环境下，直接配置路由表就可以完成网络的拉通，只有三层互通的环境才需要用到vxlan隧道。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>是时候思考 Kubernetes 出向流量安全了</title>
