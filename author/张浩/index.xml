@@ -18,8 +18,8 @@
       <pubDate>Wed, 29 Sep 2021 00:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/create-a-ipvs-svc-without-container/</guid>
       <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP ，然后 NGINX 根据 &lt;code&gt;server_name&lt;/code&gt; 去 proxy 不同的 upstream 。 开始还是能用的，但是后面结果后面很多服务依赖 &lt;code&gt;host&lt;/code&gt; 这个 header ，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 &lt;code&gt;ClusterIP&lt;/code&gt; 的 SVC 扣到非 K8S 环境上使用。&lt;/p&gt;
-&lt;p&gt;kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 &lt;code&gt;SVC IP:SVC PORT&lt;/code&gt; 会被 dnat 成 &lt;code&gt;endpoint&lt;/code&gt; ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP 。在 K8S 里，endpoint 的 ip 无非就是 &lt;code&gt;POD IP&lt;/code&gt;，&lt;code&gt;host IP&lt;/code&gt;。前者就是 SVC 选中 POD ，后者例如 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC ，会 DNAT 成每个 &lt;code&gt;kube-apiserver&lt;/code&gt; 的 &lt;code&gt;host IP:6443&lt;/code&gt; 端口，也可能是 &lt;code&gt;ExternalName&lt;/code&gt; 或者手动创建的 endpoint 。既然 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。&lt;/p&gt;
+&lt;p&gt;内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP，然后 NGINX 根据 &lt;code&gt;server_name&lt;/code&gt; 去 proxy 不同的 upstream。开始还是能用的，但是后面结果后面很多服务依赖 &lt;code&gt;host&lt;/code&gt; 这个 header，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 &lt;code&gt;ClusterIP&lt;/code&gt; 的 SVC 扣到非 K8S 环境上使用。&lt;/p&gt;
+&lt;p&gt;kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 &lt;code&gt;SVC IP:SVC PORT&lt;/code&gt; 会被 dnat 成 &lt;code&gt;endpoint&lt;/code&gt; ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP。在 K8S 里，endpoint 的 ip 无非就是 &lt;code&gt;POD IP&lt;/code&gt;，&lt;code&gt;host IP&lt;/code&gt;。前者就是 SVC 选中 POD，后者例如 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC，会 DNAT 成每个 &lt;code&gt;kube-apiserver&lt;/code&gt; 的 &lt;code&gt;host IP:6443&lt;/code&gt; 端口，也可能是 &lt;code&gt;ExternalName&lt;/code&gt; 或者手动创建的 endpoint。既然 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。&lt;/p&gt;
 &lt;h2 id=&#34;环境信息&#34;&gt;环境信息&lt;/h2&gt;
 &lt;p&gt;前面说的 SVC 现象是和 &lt;code&gt;kube-proxy&lt;/code&gt; 的模式无关的。&lt;code&gt;iptables&lt;/code&gt; 模式排查不直观，我更倾向于 &lt;code&gt;IPVS&lt;/code&gt; 去搞，它更直观，而且支持更多的调度算法。管理 IPVS 规则的话我们需要安装 &lt;code&gt;ipvsadm&lt;/code&gt; ，这里我是两台干净的 CentOS 7.8 来做环境。&lt;/p&gt;
 &lt;table&gt;
@@ -55,7 +55,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P OUTPUT ACCEPT
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P POSTROUTING ACCEPT
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;过程&#34;&gt;过程&lt;/h2&gt;
-&lt;p&gt;先思考下 kube-proxy 的 IPVS ，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 &lt;code&gt;nat&lt;/code&gt; 模式。暂且打算添加一个下面类似的 SVC ：&lt;/p&gt;
+&lt;p&gt;先思考下 kube-proxy 的 IPVS，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 &lt;code&gt;nat&lt;/code&gt; 模式。暂且打算添加一个下面类似的 SVC：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;IP:                169.254.11.2
 Port:              https  80/TCP
 TargetPort:        6443/TCP
@@ -74,9 +74,9 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./ran_linux_amd64 -port &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt; -listdir www
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;两个机器的这个 web 都起来后我们开个窗口去 &lt;code&gt;192.168.2.111&lt;/code&gt; 上继续后面的操作。&lt;/p&gt;
 &lt;h3 id=&#34;lvs-nat&#34;&gt;lvs nat&lt;/h3&gt;
-&lt;p&gt;kube-proxy 并没有像 lvs nat 那样有单独的机器做 &lt;code&gt;NAT GW&lt;/code&gt;，或者认为每个 node 都是自己的 &lt;code&gt;NAT GW&lt;/code&gt;。现在来添加 &lt;code&gt;169.254.11.2:80&lt;/code&gt; 这个 SVC ，使用 ipvsadm 添加：&lt;/p&gt;
+&lt;p&gt;kube-proxy 并没有像 lvs nat 那样有单独的机器做 &lt;code&gt;NAT GW&lt;/code&gt;，或者认为每个 node 都是自己的 &lt;code&gt;NAT GW&lt;/code&gt;。现在来添加 &lt;code&gt;169.254.11.2:80&lt;/code&gt; 这个 SVC，使用 ipvsadm 添加：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-service --tcp-service 169.254.11.2:80 --scheduler rr
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先添加本地的 web 作为 real server ，下面含义是添加为一个 nat 类型的 real server ：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先添加本地的 web 作为 real server，下面含义是添加为一个 nat 类型的 real server：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-server --tcp-service 169.254.11.2:80 &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --real-server 192.168.2.111:8080 --masquerading --weight &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看下当前列表：&lt;/p&gt;
@@ -104,7 +104,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; 192.168.2.222:8080           Masq    &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下访问看看：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现 curl 在卡住和能访问返回 &lt;code&gt;192.168.2.111&lt;/code&gt; 之间切换，没有返回 &lt;code&gt;192.168.2.222&lt;/code&gt; 的。查看下 IPVS 的 connection ，发现调度到非本机才会卡住：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现 curl 在卡住和能访问返回 &lt;code&gt;192.168.2.111&lt;/code&gt; 之间切换，没有返回 &lt;code&gt;192.168.2.222&lt;/code&gt; 的。查看下 IPVS 的 connection，发现调度到非本机才会卡住：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -lnc
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IPVS connection entries
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pro expire state       &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;             virtual            destination
@@ -124,7 +124,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376829 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12283200&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376869 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676525160&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:37.562632 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676529346&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从 &lt;code&gt;Flags&lt;/code&gt; 看，就是 tcp 重传，并且 &lt;code&gt;SRC IP&lt;/code&gt; 是 VIP 。节点 &lt;code&gt;192.168.2.222.8080&lt;/code&gt; 给 &lt;code&gt;169.254.11.2.50710&lt;/code&gt; 回包会走到网关上去。网关上抓包也看到确实如此：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从 &lt;code&gt;Flags&lt;/code&gt; 看，就是 tcp 重传，并且 &lt;code&gt;SRC IP&lt;/code&gt; 是 VIP。节点 &lt;code&gt;192.168.2.222.8080&lt;/code&gt; 给 &lt;code&gt;169.254.11.2.50710&lt;/code&gt; 回包会走到网关上去。网关上抓包也看到确实如此：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i eth0 host 169.254.11.2
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Ethernet&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;, capture size &lt;span class=&#34;m&#34;&gt;262144&lt;/span&gt; bytes
@@ -135,7 +135,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569667 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569699 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;lvs-和-netfilter&#34;&gt;lvs 和 netfilter&lt;/h4&gt;
-&lt;p&gt;在介绍 lvs 的实现之前，我们需要了解 netfilter ，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。&lt;/p&gt;
+&lt;p&gt;在介绍 lvs 的实现之前，我们需要了解 netfilter，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。&lt;/p&gt;
 &lt;p&gt;下面是 IPVS 在 netfilter 里的模型图，IPVS 也是基于 netfilter 框架的，但只工作在 &lt;code&gt;INPUT&lt;/code&gt; 链上，通过注册 &lt;code&gt;ip_vs_in&lt;/code&gt; 钩子函数来处理请求。因为 VIP 我们配置在机器上（常规的 lvs nat 的 VIP 是在 NAT GW 上，我们这里是自己），我们 curl 的时候就会进到 &lt;code&gt;INPUT&lt;/code&gt; 链，&lt;code&gt;ip_vs_in&lt;/code&gt; 会匹配然后直接跳转触发 &lt;code&gt;POSTROUTING&lt;/code&gt; 链，跳过 iptables 规则。&lt;/p&gt;
 &lt;p&gt;
 
@@ -182,7 +182,7 @@ Session Affinity:  None
 	   | CIP:CPORT -&amp;gt; RIP:RPORT
 	   +
 	REAL SERVER
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;lvs 做了 DNAT 并没有做 SNAT ，所以我们利用 iptables 做 SNAT ：&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;lvs 做了 DNAT 并没有做 SNAT，所以我们利用 iptables 做 SNAT：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ iptables -t nat -A POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
 &lt;/code&gt;&lt;/pre&gt;&lt;p&gt;访问看看还是不通，抓包看还是没生效，nat 是依赖 &lt;code&gt;conntrack&lt;/code&gt; 的，而 IPVS 默认不会记录 conntrack，我们需要开启 IPVS 的 conntrack 才可以让 MASQUERADE 生效。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 让 Netfilter 的 conntrack 状态管理功能也能应用于 IPVS 模块&lt;/span&gt;
@@ -233,7 +233,7 @@ Session Affinity:  None
 &lt;/p&gt;
 &lt;p&gt;iptables 的五链四表如上图所示，我们先删掉原有的规则：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -D POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; -j MASQUERADE
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;平时自己家里使用了 openwrt ，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 &lt;code&gt;INPUT&lt;/code&gt; 规则：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;平时自己家里使用了 openwrt，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 &lt;code&gt;INPUT&lt;/code&gt; 规则：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A INPUT -i eth0 -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3&amp;#34;&lt;/span&gt; -j zone_lan_input
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A zone_lan_input -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3: Custom lan input rule chain&amp;#34;&lt;/span&gt; -j input_lan_rule
@@ -323,7 +323,7 @@ Session Affinity:  None
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 &lt;code&gt;OUTPUT&lt;/code&gt; 链，不会过 &lt;code&gt;PREROUTING&lt;/code&gt; ，不过我们上面的 &lt;code&gt;PREROUTING&lt;/code&gt; 链可以处理后续的 docker 容器。 调试了下发现确实会走 &lt;code&gt;OUTPUT&lt;/code&gt; 链：&lt;/p&gt;
+&lt;p&gt;然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 &lt;code&gt;OUTPUT&lt;/code&gt; 链，不会过 &lt;code&gt;PREROUTING&lt;/code&gt; ，不过我们上面的 &lt;code&gt;PREROUTING&lt;/code&gt; 链可以处理后续的 docker 容器。调试了下发现确实会走 &lt;code&gt;OUTPUT&lt;/code&gt; 链：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;kern.warning /var/log/iptables.log&amp;#39;&lt;/span&gt; &amp;gt;&amp;gt; /etc/rsyslog.conf
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl restart rsyslog
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -I OUTPUT -m &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; --match-set ZGZ-CLUSTER-IP dst,dst  -j LOG --log-prefix &lt;span class=&#34;s1&#34;&gt;&amp;#39;**log-test**&amp;#39;&lt;/span&gt;
@@ -342,7 +342,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 备份下自带的配置文件&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cp /etc/keepalived/keepalived.conf&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;,.bak&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;配置-keepalived&#34;&gt;配置 keepalived&lt;/h4&gt;
-&lt;p&gt;我们需要配置下 keepalived ，修改之前先看下默认相关的：&lt;/p&gt;
+&lt;p&gt;我们需要配置下 keepalived，修改之前先看下默认相关的：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl cat keepalived
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# /usr/lib/systemd/system/keepalived.service&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Unit&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
@@ -375,7 +375,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;KEEPALIVED_OPTIONS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;-D&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;/etc/sysconfig/keepalived&lt;/code&gt; 里修改为下面：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-conf&#34; data-lang=&#34;conf&#34;&gt;KEEPALIVED_OPTIONS=&amp;#34;-D --log-console --log-detail --use-file=/etc/keepalived/keepalived.conf&amp;#34;
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 &lt;code&gt;kill -HUP&lt;/code&gt; 信号触发 reload ，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 &lt;code&gt;kill -HUP&lt;/code&gt; 信号触发 reload，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /etc/keepalived/keepalived.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;! Configuration File for keepalived
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
@@ -543,7 +543,7 @@ $ ip a s SVC
     link/ether e6:a3:29:07:fa:57 brd ff:ff:ff:ff:ff:ff
     inet 169.254.11.2/32 scope global SVC
        valid_lft forever preferred_lft forever
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs ：&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;7&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; Failed connect to 169.254.11.2:80&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; Connection refused
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
@@ -675,7 +675,7 @@ $ ip a s SVC
 &lt;p&gt;命令都是在 &lt;code&gt;172.18.27.252&lt;/code&gt; 上执行的，用 &lt;code&gt;dig @coredns_svc_ip +short kubernetes.default.svc.cluster1.local&lt;/code&gt; 测发现时而能解析，时而不能解析，然后发现是跨节点的问题。&lt;/p&gt;
 &lt;p&gt;在 &lt;code&gt;172.18.27.252&lt;/code&gt; 上去请求 &lt;code&gt;172.18.27.253&lt;/code&gt; 上的 coredns 的 metrics 接口：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -I 10.187.0.5:9153/metrics
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在 &lt;code&gt;172.18.27.253&lt;/code&gt; 上抓包:&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后在 &lt;code&gt;172.18.27.253&lt;/code&gt; 上抓包：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i flannel.1 host 10.187.0.5 and port &lt;span class=&#34;m&#34;&gt;9153&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;dropped privs to tcpdump
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
@@ -878,15 +878,15 @@ $ ip a s SVC
       <pubDate>Thu, 28 May 2020 15:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/kubernetes-1-17-vxlan-63s-delay/</guid>
       <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的 A 记录 UDP 下查询可能有问题。原因是 &lt;code&gt;v1.17+&lt;/code&gt; 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面， WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是 &lt;code&gt;05/28&lt;/code&gt;，最开始发现是上周五也就是 &lt;code&gt;05/23&lt;/code&gt; 号，文章从时间线写起，因为很多时候想发文章但是没空。&lt;/p&gt;
+&lt;p&gt;这个问题 flannel 和 calico 的 VXLAN 模式下都会发生，部分人的集群的 A 记录 UDP 下查询可能有问题。原因是 &lt;code&gt;v1.17+&lt;/code&gt; 的 kubernetes 某部分会引起内核的某个 UDP 相关的 BUG 而不是 CNI 的软件层面，WEAVE 没有这个问题，原因后面会说到。写这篇文章的日期是 &lt;code&gt;05/28&lt;/code&gt;，最开始发现是上周五也就是 &lt;code&gt;05/23&lt;/code&gt; 号，文章从时间线写起，因为很多时候想发文章但是没空。&lt;/p&gt;
 &lt;p&gt;2020-07-19 官方版本 v1.18.6, v1.16.13, v1.17.9+ 已经修复这个问题，可以同版本内升级，或者只切 kube-proxy 版本。&lt;/p&gt;
 &lt;h2 id=&#34;由来&#34;&gt;由来&lt;/h2&gt;
-&lt;p&gt;上周五我经过同事的工位看到同事的桌面是 &lt;code&gt;kubectl get po&lt;/code&gt; 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套 &lt;code&gt;1.18.2&lt;/code&gt; 的集群。1.18 的 kube-proxy 的 ipvs 包的 parseIP 有 bug ，我推荐他换 &lt;code&gt;v1.17.5&lt;/code&gt;。他当时在部署一个入门的 SVC 实验，无法解析域名。使用 dig 命令排查了下，下面是对照：&lt;/p&gt;
+&lt;p&gt;上周五我经过同事的工位看到同事的桌面是 &lt;code&gt;kubectl get po&lt;/code&gt; 的输出，问他咋开始学 Kubernetes 了，他说跟着视频学下。看了下用的 kubeadm 部署了一套 &lt;code&gt;1.18.2&lt;/code&gt; 的集群。1.18 的 kube-proxy 的 ipvs 包的 parseIP 有 bug，我推荐他换 &lt;code&gt;v1.17.5&lt;/code&gt;。他当时在部署一个入门的 SVC 实验，无法解析域名。使用 dig 命令排查了下，下面是对照：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;dig @&amp;lt;podIP&amp;gt; +short kubernetes.default.svc.cluster.local&lt;/code&gt; 能解析&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;dig @10.96.0.10 +short kubernetes.default.svc.cluster.local&lt;/code&gt; 超时&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;很多市面上的 kubeadm 部署教程都是直接命令 &lt;code&gt;kubeadm init&lt;/code&gt; 的，所以我推荐同事去按照我文章的 &lt;a href=&#34;https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubeadm 部署&lt;/a&gt; 一套后再试试，叫他用&lt;code&gt;v1.17&lt;/code&gt;的最新版本&lt;code&gt;v1.17.5&lt;/code&gt;，结果还是上面一样。 coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：&lt;/p&gt;
+&lt;p&gt;很多市面上的 kubeadm 部署教程都是直接命令 &lt;code&gt;kubeadm init&lt;/code&gt; 的，所以我推荐同事去按照我文章的 &lt;a href=&#34;https://zhangguanzhang.github.io/2019/11/24/kubeadm-base-use/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;kubeadm 部署&lt;/a&gt; 一套后再试试，叫他用&lt;code&gt;v1.17&lt;/code&gt;的最新版本&lt;code&gt;v1.17.5&lt;/code&gt;，结果还是上面一样。coredns 实际上还有 metrics 的 http 接口，从 http 层测了下：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;curl -I 10.96.0.10:9153/metrics&lt;/code&gt; 超时，很久之后才有返回&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;curl -I &amp;lt;podIP&amp;gt;:9153/metrics&lt;/code&gt; 能直接返回&lt;/li&gt;
@@ -911,11 +911,11 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;real	1m3.091s
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;user	0m0.002s
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sys	0m0.007s
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;proxyMode 是 ipvs ，用 ipvsadm 看下超时的时候的状态，一直是 &lt;code&gt;SYN_RECV&lt;/code&gt;，也就是发送了 SYN ，没收到回包。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;proxyMode 是 ipvs，用 ipvsadm 看下超时的时候的状态，一直是 &lt;code&gt;SYN_RECV&lt;/code&gt;，也就是发送了 SYN，没收到回包。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -lnc &lt;span class=&#34;p&#34;&gt;|&amp;amp;&lt;/span&gt; grep &lt;span class=&#34;m&#34;&gt;9153&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;TCP 00:59  SYN_RECV    10.96.0.10:41282   10.96.0.10:9153    10.244.2.73:9153
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;抓包&#34;&gt;抓包&lt;/h3&gt;
-&lt;p&gt;因为 CNI 使用的 flannel ，用的 VXLAN 模式。master 上抓 9153 和 &lt;code&gt;flannel.1&lt;/code&gt; 的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的：&lt;/p&gt;
+&lt;p&gt;因为 CNI 使用的 flannel，用的 VXLAN 模式。master 上抓 9153 和 &lt;code&gt;flannel.1&lt;/code&gt; 的 8472 端口，coredns 的 POD 所在 node 上抓 flannel 的 VXLAN 包，下面三个是对应的：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-txt&#34; data-lang=&#34;txt&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;[root@master /root]# tcpdump -nn -i flannel.1 port 9153
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv for full protocol decode
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on flannel.1, link-type EN10MB (Ethernet), capture size 262144 bytes
@@ -994,10 +994,10 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;16:31:59.838836 IP 10.0.100.3.56618 &amp;gt; 10.0.100.15.8472: OTV, flags [I] (0x08), overlay 0, instance 1
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IP 10.244.0.0.2201 &amp;gt; 10.244.2.73.9153: Flags [.], ack 114, win 342, options [nop,nop,TS val 17212035 ecr 17212069], length 0
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先看上面的第一部分，搜了下资料，得知 TCP 默认 SYN 报文最大 retry 5 次，每次超时了翻倍，&lt;code&gt;1s -&amp;gt; 3s -&amp;gt; 7s -&amp;gt; 15s -&amp;gt; 31s -&amp;gt; 63s&lt;/code&gt;。只有 63 秒的时候 node 的机器上才收到了 VXLAN 的报文。说明 POD 所在  node 压根没收到 63 秒之前的。&lt;/p&gt;
-&lt;p&gt;一般 LVS 的 dr 模式下 TCP 的时间戳混乱或者其他几个 ARP 的内核参数不对下 &lt;code&gt;SYN&lt;/code&gt; 是一直收不到的而不是63秒后有结果，所以和内核相关参数无关。于是同样上面的步骤 tcpdump 抓包，加上&lt;code&gt;-w filename.pcap&lt;/code&gt;选项把抓的包导出下来导入到 wireshark 里准备看看。&lt;/p&gt;
+&lt;p&gt;一般 LVS 的 dr 模式下 TCP 的时间戳混乱或者其他几个 ARP 的内核参数不对下 &lt;code&gt;SYN&lt;/code&gt; 是一直收不到的而不是 63 秒后有结果，所以和内核相关参数无关。于是同样上面的步骤 tcpdump 抓包，加上&lt;code&gt;-w filename.pcap&lt;/code&gt;选项把抓的包导出下来导入到 wireshark 里准备看看。&lt;/p&gt;
 &lt;h3 id=&#34;报文分析&#34;&gt;报文分析&lt;/h3&gt;
 &lt;p&gt;9153 的包 wireshark 里看 63 秒前面都是 TCP 的 SYN 重传，看到了 master 上向外发送的 VXLAN 报文的时候有了发现。&lt;/p&gt;
-&lt;p&gt;可以看到 UDP 的 checksum 是&lt;code&gt;0xffff&lt;/code&gt;，我对 UDP 报文不太熟悉， UDP 的 header 的 Checksum 没记错的话 &lt;code&gt;CRC32&lt;/code&gt; 校验的，不可能是这种两个字节都置 1 的 &lt;code&gt;0xffff&lt;/code&gt; ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。&lt;/p&gt;
+&lt;p&gt;可以看到 UDP 的 checksum 是&lt;code&gt;0xffff&lt;/code&gt;，我对 UDP 报文不太熟悉，UDP 的 header 的 Checksum 没记错的话 &lt;code&gt;CRC32&lt;/code&gt; 校验的，不可能是这种两个字节都置 1 的 &lt;code&gt;0xffff&lt;/code&gt; ，明显就是 UDP 的 header 的校验出错了。后面几个正常包的 Checksum 都是 missing 的。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1060,7 +1060,7 @@ $ ip a s SVC
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h3 id=&#34;不是根本的解决方法&#34;&gt;不是根本的解决方法&lt;/h3&gt;
-&lt;p&gt;搜了下 &lt;code&gt;wireshark linux udp checksum incorrect&lt;/code&gt;，都是推荐把 &lt;code&gt;Checksum Offload&lt;/code&gt; disable 掉就行了，例如我这里是 flannel ，则是：&lt;/p&gt;
+&lt;p&gt;搜了下 &lt;code&gt;wireshark linux udp checksum incorrect&lt;/code&gt;，都是推荐把 &lt;code&gt;Checksum Offload&lt;/code&gt; disable 掉就行了，例如我这里是 flannel，则是：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ /sbin/ethtool -K flannel.1 tx-checksum-ip-generic off
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Actual changes:
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tx-checksumming: off
@@ -1088,7 +1088,7 @@ $ ip a s SVC
 &lt;p&gt;Checksum Offload 是网卡的一个功能选项。如果该选项开启，则网卡层面会计算需要发送或者接收到的消息的校验和，从而节省 CPU 的计算开销。此时，在需要发送的消息到达网卡前，系统会在报头的校验和字段填充一个随机值。但是，尽管校验和卸载能够降低 CPU 的计算开销，但受到计算能力的限制，某些环境下的一些网络卡计算速度不如主频超过 400MHz 的 CPU 快。&lt;/p&gt;
 &lt;h2 id=&#34;正文&#34;&gt;正文&lt;/h2&gt;
 &lt;h3 id=&#34;对照组&#34;&gt;对照组&lt;/h3&gt;
-&lt;p&gt;很奇怪的就是为啥就是我的 ansible 部署的二进制就正常没这个问题，而 kubeadm 部署的就不正常，后面我花时间整了以下几个对照组(期间同事也帮我做了几个条件下的测试，但是不是系统用错了就是版本整错了。。。)，终于找到了问题的范围，下面是我自己统计的对照组信息， kubeadm 和 ansible 版本均为&lt;code&gt;1.17.5&lt;/code&gt;测试。os 不重要，因为最终排查出和 os 无关：&lt;/p&gt;
+&lt;p&gt;很奇怪的就是为啥就是我的 ansible 部署的二进制就正常没这个问题，而 kubeadm 部署的就不正常，后面我花时间整了以下几个对照组 (期间同事也帮我做了几个条件下的测试，但是不是系统用错了就是版本整错了。。。)，终于找到了问题的范围，下面是我自己统计的对照组信息，kubeadm 和 ansible 版本均为&lt;code&gt;1.17.5&lt;/code&gt;测试。os 不重要，因为最终排查出和 os 无关：&lt;/p&gt;
 &lt;table&gt;
 &lt;thead&gt;
 &lt;tr&gt;
@@ -1214,8 +1214,8 @@ $ ip a s SVC
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;可以看出就是 1.17 以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会， 在 github 上 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;compare 了下 v1.17.0 和 v1.16.3 &lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;发现了 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile 的改动&lt;/a&gt;，&lt;code&gt;1.17.0&lt;/code&gt; 里的 Dockerfile 的 BASEIMAGE 是用  &lt;a href=&#34;https://github.com/coreos/flannel/pull/1282#issuecomment-635273081&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指定了一个源安装了最新的 iptables&lt;/a&gt;，然后利用 &lt;code&gt;update-alternatives&lt;/code&gt; 把脚本 &lt;code&gt;/usr/sbin/iptables-wrapper&lt;/code&gt; 去替代 &lt;code&gt;iptables&lt;/code&gt; 来检测应该使用 &lt;code&gt;nft&lt;/code&gt; 还是 &lt;code&gt;legacy&lt;/code&gt;， hack 下镜像回自带源里的 iptables 验证下。&lt;/p&gt;
+&lt;p&gt;可以看出就是 1.17 以上的 kube-proxy 如果使用 POD 则会有这个问题，而非 POD 则不会，在 github 上 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/compare/v1.16.3...v1.17.0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;compare 了下 v1.17.0 和 v1.16.3 &lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;发现了 &lt;a href=&#34;https://github.com/kubernetes/kubernetes/commit/fed582333f639dc22e879f4bbb258e403c210c30&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Dockerfile 的改动&lt;/a&gt;，&lt;code&gt;1.17.0&lt;/code&gt; 里的 Dockerfile 的 BASEIMAGE 是用  &lt;a href=&#34;https://github.com/coreos/flannel/pull/1282#issuecomment-635273081&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;指定了一个源安装了最新的 iptables&lt;/a&gt;，然后利用 &lt;code&gt;update-alternatives&lt;/code&gt; 把脚本 &lt;code&gt;/usr/sbin/iptables-wrapper&lt;/code&gt; 去替代 &lt;code&gt;iptables&lt;/code&gt; 来检测应该使用 &lt;code&gt;nft&lt;/code&gt; 还是 &lt;code&gt;legacy&lt;/code&gt;，hack 下镜像回自带源里的 iptables 验证下。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-Dockerfile&#34; data-lang=&#34;Dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; registry.aliyuncs.com/google_containers/kube-proxy:v1.17.5&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;RUN&lt;/span&gt; rm -f /usr/sbin/iptables &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&#34;err&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;    clean-install iptables&lt;span class=&#34;err&#34;&gt;
@@ -1253,34 +1253,34 @@ $ ip a s SVC
     </item>
     
     <item>
-      <title>kubernetes dashboard在ssl的各种场景下的手动部署</title>
+      <title>kubernetes dashboard 在 ssl 的各种场景下的手动部署</title>
       <link>https://cloudnative.to/blog/general-kubernetes-dashboard/</link>
       <pubDate>Wed, 17 Apr 2019 11:23:34 +0800</pubDate>
       <guid>https://cloudnative.to/blog/general-kubernetes-dashboard/</guid>
       <description>&lt;blockquote&gt;
-&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2019/02/12/dashboard/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang的博客&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2019/02/12/dashboard/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang 的博客&lt;/a&gt;。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;旨在面向新手讲解手动部署过程，本文dashboard的暴露不会用nodePort（不喜欢使用它）和apiserver的web proxy代理也就是&lt;code&gt;/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/&lt;/code&gt;这种。&lt;/p&gt;
+&lt;p&gt;旨在面向新手讲解手动部署过程，本文 dashboard 的暴露不会用 nodePort（不喜欢使用它）和 apiserver 的 web proxy 代理也就是&lt;code&gt;/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/&lt;/code&gt;这种。&lt;/p&gt;
 &lt;p&gt;主要讲下四种场景方式：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;纯dashboard http和https不惨合外部证书&lt;/li&gt;
-&lt;li&gt;openssl 证书给dashboard当https&lt;/li&gt;
-&lt;li&gt;个人向域名使用https小绿锁&lt;/li&gt;
-&lt;li&gt;ingress tls 代理http[s]的dashboard
-以及最后讲解的如何定义带权限的token去利用token登陆dashboard。&lt;/li&gt;
+&lt;li&gt;纯 dashboard http 和 https 不惨合外部证书&lt;/li&gt;
+&lt;li&gt;openssl 证书给 dashboard 当 https&lt;/li&gt;
+&lt;li&gt;个人向域名使用 https 小绿锁&lt;/li&gt;
+&lt;li&gt;ingress tls 代理 http[s]的 dashboard
+以及最后讲解的如何定义带权限的 token 去利用 token 登陆 dashboard。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;先要理解的一点就是JWT（JSON Web Tokens）思想，k8s的很多addon都是pod形式跑的，addon的pod都是要连接kube-apiserver来操作集群来减少运维的工作量和提供方便。addon都是pod，pod操作和查看集群信息需要鉴权。&lt;/p&gt;
-&lt;p&gt;为此k8s使用了RBAC的思想（RBAC思想不是k8s独有的），资源对象和对声明的资源对象的操作权限组合最终落实到&lt;code&gt;ServiceAccount&lt;/code&gt;上，而每个名为&lt;code&gt;name&lt;/code&gt;的sa会关联着一个名为&lt;code&gt;name-token-xxxxx&lt;/code&gt;的secret。&lt;/p&gt;
-&lt;p&gt;可以通过kubectl describe命令或者api看这个secret实际上就是个token和一个ca.crt。下列命令列出缺省sa default的token和整个集群的ca.crt（jsonpath打印的时候敏感信息是base64编码需要自己解码）:&lt;/p&gt;
+&lt;p&gt;先要理解的一点就是 JWT（JSON Web Tokens）思想，k8s 的很多 addon 都是 pod 形式跑的，addon 的 pod 都是要连接 kube-apiserver 来操作集群来减少运维的工作量和提供方便。addon 都是 pod，pod 操作和查看集群信息需要鉴权。&lt;/p&gt;
+&lt;p&gt;为此 k8s 使用了 RBAC 的思想（RBAC 思想不是 k8s 独有的），资源对象和对声明的资源对象的操作权限组合最终落实到&lt;code&gt;ServiceAccount&lt;/code&gt;上，而每个名为&lt;code&gt;name&lt;/code&gt;的 sa 会关联着一个名为&lt;code&gt;name-token-xxxxx&lt;/code&gt;的 secret。&lt;/p&gt;
+&lt;p&gt;可以通过 kubectl describe 命令或者 api 看这个 secret 实际上就是个 token 和一个 ca.crt。下列命令列出缺省 sa default 的 token 和整个集群的 ca.crt（jsonpath 打印的时候敏感信息是 base64 编码需要自己解码）:&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl get secret -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{range .items[?(@.metadata.annotations.kubernetes\.io/service-account\.name==&amp;#34;default&amp;#34;)].data}{&amp;#34;token: &amp;#34;}{.token}{&amp;#34;\n\n&amp;#34;}{&amp;#34;ca.crt: &amp;#34;}{.ca\.crt}{&amp;#34;\n&amp;#34;}{end}&amp;#39;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;token: ZXlKaGJHY2lPaUpGVXpVeE1pSXNJbXR................
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ca.crt: LS0tLS1CRUdJTiBDRVJUS..........................
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;每个pod都会被kubelet挂载pod声明的ServiceAccount关联的secret的里的ca.crt和token到容器里路径&lt;code&gt;/var/run/secrets/kubernetes.io/serviceaccount&lt;/code&gt;。&lt;/p&gt;
-&lt;p&gt;部署的yaml的话不推荐直接使用官方的yaml，我们需要看场景修改或者删减一些东西，这里先放下官方的yaml链接，后面以文件讲解。同时也推荐把本文看完了后再开始部署。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;每个 pod 都会被 kubelet 挂载 pod 声明的 ServiceAccount 关联的 secret 的里的 ca.crt 和 token 到容器里路径&lt;code&gt;/var/run/secrets/kubernetes.io/serviceaccount&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;部署的 yaml 的话不推荐直接使用官方的 yaml，我们需要看场景修改或者删减一些东西，这里先放下官方的 yaml 链接，后面以文件讲解。同时也推荐把本文看完了后再开始部署。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.1/src/deploy/recommended/kubernetes-dashboard.yaml&lt;/code&gt;&lt;/p&gt;
-&lt;p&gt;全文我基本都是用的&lt;code&gt;hostNetwork&lt;/code&gt;和&lt;code&gt;nodeName&lt;/code&gt;固定在一台上，如果对k8s的几种svc和&lt;code&gt;hostNetwork&lt;/code&gt;以及&lt;code&gt;hostPort&lt;/code&gt;以及&lt;code&gt;Ingress&lt;/code&gt;熟悉的话可以自己决定暴露方式。
-这里我是使用的下面这种方式暴露出去，也就意味着我们不需要svc可以删掉官方yaml里最后那段&lt;code&gt;Dashboard Service&lt;/code&gt;，访问的话用node的ip带上端口访问即可，改成大概下面这样：&lt;/p&gt;
+&lt;p&gt;全文我基本都是用的&lt;code&gt;hostNetwork&lt;/code&gt;和&lt;code&gt;nodeName&lt;/code&gt;固定在一台上，如果对 k8s 的几种 svc 和&lt;code&gt;hostNetwork&lt;/code&gt;以及&lt;code&gt;hostPort&lt;/code&gt;以及&lt;code&gt;Ingress&lt;/code&gt;熟悉的话可以自己决定暴露方式。
+这里我是使用的下面这种方式暴露出去，也就意味着我们不需要 svc 可以删掉官方 yaml 里最后那段&lt;code&gt;Dashboard Service&lt;/code&gt;，访问的话用 node 的 ip 带上端口访问即可，改成大概下面这样：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hostNetwork&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1293,10 +1293,10 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;nodeName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;k8s-m1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;volumes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;纯dashboard&#34;&gt;纯dashboard&lt;/h2&gt;
-&lt;p&gt;分为两种: http和开https，其中开https又分为使用自带的cert和openssl生成的。&lt;/p&gt;
-&lt;h3 id=&#34;默认自带的https&#34;&gt;默认自带的https&lt;/h3&gt;
-&lt;p&gt;首先说说自带的https，镜像默认的&lt;code&gt;entrypoint&lt;/code&gt;是这样：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;纯-dashboard&#34;&gt;纯 dashboard&lt;/h2&gt;
+&lt;p&gt;分为两种：http 和开 https，其中开 https 又分为使用自带的 cert 和 openssl 生成的。&lt;/p&gt;
+&lt;h3 id=&#34;默认自带的-https&#34;&gt;默认自带的 https&lt;/h3&gt;
+&lt;p&gt;首先说说自带的 https，镜像默认的&lt;code&gt;entrypoint&lt;/code&gt;是这样：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;&amp;#34;Entrypoint&amp;#34;: &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/dashboard&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1309,7 +1309,7 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;auto-generate-certificates&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里我宿主机的8443被占用了，我修改了下dashboard的端口，后面同理：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里我宿主机的 8443 被占用了，我修改了下 dashboard 的端口，后面同理：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1328,7 +1328,7 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;--auto-generate-certificates&lt;/code&gt;从字面意思看是dashboard自己生成https的证书，但是实际上如下面的图这个证书chrome浏览器是不认的其他浏览器不清楚，chrome打开后在网页上是没有无视警告继续的选项，可以自行去试试看，网上也没找到添加例外只找到了全局关闭非权威SSL警告。不推荐这种（或者说这种完全行不通？）&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;--auto-generate-certificates&lt;/code&gt;从字面意思看是 dashboard 自己生成 https 的证书，但是实际上如下面的图这个证书 chrome 浏览器是不认的其他浏览器不清楚，chrome 打开后在网页上是没有无视警告继续的选项，可以自行去试试看，网上也没找到添加例外只找到了全局关闭非权威 SSL 警告。不推荐这种（或者说这种完全行不通？）&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1352,9 +1352,9 @@ $ ip a s SVC
       browser-cannot-continue
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h3 id=&#34;使用http&#34;&gt;使用http&lt;/h3&gt;
-&lt;p&gt;使用http我们要小心有几个坑！
-使用http我们只要使用选项&lt;code&gt;--insecure-port&lt;/code&gt;修改成下面即可端口不一定需要和我一样，pod的健康检查记得把``HTTPS&lt;code&gt;改成&lt;/code&gt;HTTP`：&lt;/p&gt;
+&lt;h3 id=&#34;使用-http&#34;&gt;使用 http&lt;/h3&gt;
+&lt;p&gt;使用 http 我们要小心有几个坑！
+使用 http 我们只要使用选项&lt;code&gt;--insecure-port&lt;/code&gt;修改成下面即可端口不一定需要和我一样，pod 的健康检查记得把``HTTPS&lt;code&gt;改成&lt;/code&gt;HTTP`：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1369,7 +1369,7 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scheme&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;默认http是不需要登陆的，所有人进去都是可以的，我们可以注意到dashboard默认带了一个sa以及一个Role：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;默认 http 是不需要登陆的，所有人进去都是可以的，我们可以注意到 dashboard 默认带了一个 sa 以及一个 Role：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# ------------------- Dashboard Role &amp;amp; Role Binding ------------------- #&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Role&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1418,25 +1418,25 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceAccount&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes-dashboard&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kube-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样绕过登陆的话所有人都是上面的权限了，所以我们得使用选项&lt;code&gt;--enable-insecure-login&lt;/code&gt;开启登陆界面，最终的args为下面：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样绕过登陆的话所有人都是上面的权限了，所以我们得使用选项&lt;code&gt;--enable-insecure-login&lt;/code&gt;开启登陆界面，最终的 args 为下面：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;args&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;insecure-port=5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;enable-insecure-login=true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样下进去是强制让登录了，但是token的话（后面说这个token如何创建和获取）是无法登陆的，找到issue说通过kubectl proxy出去的http和直接暴露的http将无法登陆（但是实际上我测了下百度浏览器可以登录）。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这样下进去是强制让登录了，但是 token 的话（后面说这个 token 如何创建和获取）是无法登陆的，找到 issue 说通过 kubectl proxy 出去的 http 和直接暴露的 http 将无法登陆（但是实际上我测了下百度浏览器可以登录）。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/dashboard/issues/3216&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/dashboard/issues/3216&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/dashboard/issues/2735&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/dashboard/issues/2735&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;但是也不是意味着完全不能用这种方法，可以sa kubernetes-dashboard绑定到集群角色cluster-admin然后外面套层nginx的auth到它，然后配置iptables或者网络设备ACL让dashboard只收到来源ip是nginx。&lt;/p&gt;
-&lt;h2 id=&#34;openssl生成证书给dashboard当https证书&#34;&gt;openssl生成证书给dashboard当https证书&lt;/h2&gt;
-&lt;p&gt;如果我们使用openssl生成证书给dashboard使用的话，浏览器会有跳过继续前往页面的选项，能够在内网没域名下使用，我们内网给研发搭建dashboard目前就是这样使用的。具体就是openssl命令生成证书并根据证书生成tls类型的secret：&lt;/p&gt;
+&lt;p&gt;但是也不是意味着完全不能用这种方法，可以 sa kubernetes-dashboard 绑定到集群角色 cluster-admin 然后外面套层 nginx 的 auth 到它，然后配置 iptables 或者网络设备 ACL 让 dashboard 只收到来源 ip 是 nginx。&lt;/p&gt;
+&lt;h2 id=&#34;openssl-生成证书给-dashboard-当-https-证书&#34;&gt;openssl 生成证书给 dashboard 当 https 证书&lt;/h2&gt;
+&lt;p&gt;如果我们使用 openssl 生成证书给 dashboard 使用的话，浏览器会有跳过继续前往页面的选项，能够在内网没域名下使用，我们内网给研发搭建 dashboard 目前就是这样使用的。具体就是 openssl 命令生成证书并根据证书生成 tls 类型的 secret：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir certs
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -nodes -newkey rsa:2048 -keyout certs/dashboard.key -out certs/dashboard.csr -subj &lt;span class=&#34;s2&#34;&gt;&amp;#34;/C=/ST=/L=/O=/OU=/CN=kubernetes-dashboard&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl x509 -req -sha256 -days &lt;span class=&#34;m&#34;&gt;10000&lt;/span&gt; -in certs/dashboard.csr -signkey certs/dashboard.key -out certs/dashboard.crt
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create secret generic kubernetes-dashboard-certs --from-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;certs -n kube-system
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里生成secret后我们先分析下官方的yaml，我们可以用命令帮助&lt;code&gt;--help&lt;/code&gt;查看到dashboard的默认cert-dir是&lt;code&gt;/certs&lt;/code&gt;：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里生成 secret 后我们先分析下官方的 yaml，我们可以用命令帮助&lt;code&gt;--help&lt;/code&gt;查看到 dashboard 的默认 cert-dir 是&lt;code&gt;/certs&lt;/code&gt;：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ docker run --rm -ti --entrypoint /dashboard registry.cn-hangzhou.aliyuncs.com/google_containers/kubernetes-dashboard-amd64:v1.10.1 --help &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep cert-dir
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;      --default-cert-dir string          Directory path containing &lt;span class=&#34;s1&#34;&gt;&amp;#39;--tls-cert-file&amp;#39;&lt;/span&gt; and &lt;span class=&#34;s1&#34;&gt;&amp;#39;--tls-key-file&amp;#39;&lt;/span&gt; files. Used also when auto-generating certificates flag is set. &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;default &lt;span class=&#34;s2&#34;&gt;&amp;#34;/certs&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;而且可以注意到他有个挂载：&lt;/p&gt;
@@ -1451,7 +1451,7 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secret&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;secretName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes-dashboard-certs&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面挂载的secret也是来源于官方yaml里的secret，也就说默认情况下这个secret是给选项&lt;code&gt;--auto-generate-certificates&lt;/code&gt;使用的：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面挂载的 secret 也是来源于官方 yaml 里的 secret，也就说默认情况下这个 secret 是给选项&lt;code&gt;--auto-generate-certificates&lt;/code&gt;使用的：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Secret&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1460,7 +1460,7 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes-dashboard-certs&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kube-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Opaque&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;所以我们使用openssl部署dashboard的步骤是先上面openssl生成证书然后导入生成secret，然后yaml里删掉&lt;code&gt;Dashboard Secret&lt;/code&gt;然后修改dashboard的运行选项：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;所以我们使用 openssl 部署 dashboard 的步骤是先上面 openssl 生成证书然后导入生成 secret，然后 yaml 里删掉&lt;code&gt;Dashboard Secret&lt;/code&gt;然后修改 dashboard 的运行选项：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;/dashboard&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1469,22 +1469,22 @@ $ ip a s SVC
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;auto-generate-certificates&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;port=5443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面为啥我开了自动生成证书的选项呢，这个选项开启时不会覆盖我们的挂载的certs文件的同时它还是全局https的开关- -坑了我好久。&lt;/p&gt;
-&lt;h2 id=&#34;个人向域名使用https小绿锁有单点故障风险&#34;&gt;个人向域名使用https小绿锁(有单点故障风险)&lt;/h2&gt;
-&lt;p&gt;这里是通过域名+https访问，证书的话可以买的也可以免费签署的SSL证书都行。
-我使用的是&lt;code&gt;acme.sh + token&lt;/code&gt;使用&lt;code&gt;Let’s Encrypt&lt;/code&gt;签署免费的SSL证书，也是我个人用的。另外acme申请证书的时候不一定非得通配符域名
-安装acme.sh脚本：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面为啥我开了自动生成证书的选项呢，这个选项开启时不会覆盖我们的挂载的 certs 文件的同时它还是全局 https 的开关 - -坑了我好久。&lt;/p&gt;
+&lt;h2 id=&#34;个人向域名使用-https-小绿锁-有单点故障风险&#34;&gt;个人向域名使用 https 小绿锁 (有单点故障风险)&lt;/h2&gt;
+&lt;p&gt;这里是通过域名+https 访问，证书的话可以买的也可以免费签署的 SSL 证书都行。
+我使用的是&lt;code&gt;acme.sh + token&lt;/code&gt;使用&lt;code&gt;Let’s Encrypt&lt;/code&gt;签署免费的 SSL 证书，也是我个人用的。另外 acme 申请证书的时候不一定非得通配符域名
+安装 acme.sh 脚本：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl  -s https://get.acme.sh &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; sh
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 设置别名方便使用命令&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;alias&lt;/span&gt; acme.sh&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;~/.acme.sh/acme.sh
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;DNS API ，阿里云需要设置 RAM 策略对应为 AliyunDNSFullAccess，然后在控制台获取API的token，腾讯的话确保域名解析是dnspod，其他的域名提供商请查看 &lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/dnsapi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/Neilpang/acme.sh/wiki/dnsapi&lt;/a&gt; 。
-例如阿里的话去阿里云上生成token然后下面执行：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;DNS API，阿里云需要设置 RAM 策略对应为 AliyunDNSFullAccess，然后在控制台获取 API 的 token，腾讯的话确保域名解析是 dnspod，其他的域名提供商请查看 &lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/dnsapi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/Neilpang/acme.sh/wiki/dnsapi&lt;/a&gt;。
+例如阿里的话去阿里云上生成 token 然后下面执行：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;Ali_Key&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;yourkey&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;Ali_Secret&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;yoursecret&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 申请证书&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;acme.sh --issue --dns dns_ali -d *.k8s.youdomain.com
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;域名在腾讯云的话确保nameserver设置的是dnspod（好像默认就是这个），我们去dnspod的官网上使用登陆腾讯云的账号（例如我是qq登陆）后在开发者api里开启dnspod的api token。
-注意token在创建的时候只显示一次，记得截图发给自己的时候别点错地方关了，不然得再创建个。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;域名在腾讯云的话确保 nameserver 设置的是 dnspod（好像默认就是这个），我们去 dnspod 的官网上使用登陆腾讯云的账号（例如我是 qq 登陆）后在开发者 api 里开启 dnspod 的 api token。
+注意 token 在创建的时候只显示一次，记得截图发给自己的时候别点错地方关了，不然得再创建个。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1558,19 +1558,19 @@ $ ip a s SVC
       scriptOutput
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;前面证书生成以后， 接下来需要把证书 copy 到真正需要用它的地方。
-注意， 默认生成的证书都放在安装目录下: &lt;code&gt;~/.acme.sh/&lt;/code&gt;， 请不要直接使用此目录下的文件， 例如: 不要直接让 nginx/apache 的配置文件使用这下面的文件. 这里面的文件都是内部使用， 而且目录结构可能会变化。
-正确的使用方法是使用&lt;code&gt;--installcert&lt;/code&gt;命令，并指定目标位置， 然后证书文件会被copy到相应的位置。
-COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书使用的是 fullchain cert， keyfile和fullchain的证书名字随意，自己记住就行了。&lt;/p&gt;
+&lt;p&gt;前面证书生成以后，接下来需要把证书 copy 到真正需要用它的地方。
+注意，默认生成的证书都放在安装目录下：&lt;code&gt;~/.acme.sh/&lt;/code&gt;，请不要直接使用此目录下的文件，例如：不要直接让 nginx/apache 的配置文件使用这下面的文件。这里面的文件都是内部使用，而且目录结构可能会变化。
+正确的使用方法是使用&lt;code&gt;--installcert&lt;/code&gt;命令，并指定目标位置，然后证书文件会被 copy 到相应的位置。
+COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书使用的是 fullchain cert，keyfile 和 fullchain 的证书名字随意，自己记住就行了。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;mkdir -p ~/cert
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;acme.sh  --installcert  -d  *.zhangguanzhang.com   &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;        --key-file           ~/cert/zhangguanzhang.com.key &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;        --fullchain-file     ~/cert/zhangguanzhang.com.crt
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后从证书创建tls类型的secret：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后从证书创建 tls 类型的 secret：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n kube-system create secret tls kubernetes-dashboard-certs &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --key ~/cert/zhangguanzhang.com.key &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --cert ~/cert/zhangguanzhang.com.crt
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;删掉官方yaml文件里的&lt;code&gt;Dashboard Secret&lt;/code&gt;，我们发现tls的secret是下面俩文件名：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;删掉官方 yaml 文件里的&lt;code&gt;Dashboard Secret&lt;/code&gt;，我们发现 tls 的 secret 是下面俩文件名：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n kube-system get secrets kubernetes-dashboard-certs -o yaml
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;apiVersion: v1
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;data:
@@ -1581,7 +1581,7 @@ COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  name: kubernetes-dashboard-certs
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  namespace: kube-system
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;type: kubernetes.io/tls
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们修改运行参数关闭insecure和指定使用证书文件，这里用5443是因为我公网ip没备案，如果ip备案了可以5443改成443（记得yaml其他地方端口也修改下）：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们修改运行参数关闭 insecure 和指定使用证书文件，这里用 5443 是因为我公网 ip 没备案，如果 ip 备案了可以 5443 改成 443（记得 yaml 其他地方端口也修改下）：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;command&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;/dashboard&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1592,7 +1592,7 @@ COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;tls-cert-file=tls.crt&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;tls-key-file=tls.key&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建dashboard后在云上的域名控制台设置解析过来，通过https的域名访问。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建 dashboard 后在云上的域名控制台设置解析过来，通过 https 的域名访问。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1616,16 +1616,16 @@ COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书�
       results
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h2 id=&#34;ingress-controller使用域名证书代理dashboard&#34;&gt;Ingress Controller使用域名证书代理dashboard&lt;/h2&gt;
-&lt;p&gt;上面直接dashboard使用域名证书会有单点故障，所以实际应用我们可以用高可用的ingress nginx（详见之前的文章）来代理集群内部的dashboard
+&lt;h2 id=&#34;ingress-controller-使用域名证书代理-dashboard&#34;&gt;Ingress Controller 使用域名证书代理 dashboard&lt;/h2&gt;
+&lt;p&gt;上面直接 dashboard 使用域名证书会有单点故障，所以实际应用我们可以用高可用的 ingress nginx（详见之前的文章）来代理集群内部的 dashboard
 这里我使用的是&lt;code&gt;Ingress nginx&lt;/code&gt;。
-如果没域名的话可以使用openssl生成证书:&lt;/p&gt;
+如果没域名的话可以使用 openssl 生成证书：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req -x509 -nodes -days &lt;span class=&#34;m&#34;&gt;10000&lt;/span&gt; -newkey rsa:2048 -keyout tls.key -out tls.crt -subj &lt;span class=&#34;s2&#34;&gt;&amp;#34;/CN=dashboard.example.com/O=dashboard.example.com&amp;#34;&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从证书创建tls类型的secret：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从证书创建 tls 类型的 secret：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n kube-system create secret tls dashboard-tls &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --key ~/cert/zhangguanzhang.com.key &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --cert ~/cert/zhangguanzhang.com.crt
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;官方yaml的deploy数量改多个后直接使用创建即可，然后创建下面ingress：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;官方 yaml 的 deploy 数量改多个后直接使用创建即可，然后创建下面 ingress：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1648,15 +1648,15 @@ COPY 证书，安装到 &lt;code&gt;~/cert&lt;/code&gt; 目录中，cert 证书�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes-dashboard&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果ingress是tls的，dashboard是http的可以去掉上面三个annotations（这种情况我未测试，有兴趣可以自己试试）。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果 ingress 是 tls 的，dashboard 是 http 的可以去掉上面三个 annotations（这种情况我未测试，有兴趣可以自己试试）。&lt;/p&gt;
 &lt;h2 id=&#34;token&#34;&gt;token&lt;/h2&gt;
-&lt;p&gt;dashboard登陆的话可以选择kubeconfig和token，kubeconfig一般是集群外使用的，例如管理组件之间想和apiserver tls下通信都得使用kubeconfig，里面实际上就是ca签署的客户端证书+各自CN和O签署的证书。而token里的ca.crt也是客户端证书和kubeconfig里&lt;code&gt;client-certificate-data&lt;/code&gt;的是一样的，RBAC落实在它那个token字段。
-很多addon可以看到他们的&lt;code&gt;--help&lt;/code&gt;选项看到也支持kubeconfig的，他们的默认逻辑是没有用kubeconfig选项下起来的时候会去查看secret路径&lt;code&gt;/var/run/secrets/kubernetes.io/serviceaccount&lt;/code&gt;获取token（也就是在pod里运行的请求逻辑），当然也并不意味着token一定在集群内用可以把secret的token获取到后制作成kubeconfig。
-dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管理员角色，这也是最常见的使用方法，像kubectl拥有集群管理员那样。如果对RBAC熟悉可以单独给不用部门生成不同权限的RBAC取token给人员登陆。&lt;/p&gt;
+&lt;p&gt;dashboard 登陆的话可以选择 kubeconfig 和 token，kubeconfig 一般是集群外使用的，例如管理组件之间想和 apiserver tls 下通信都得使用 kubeconfig，里面实际上就是 ca 签署的客户端证书 + 各自 CN 和 O 签署的证书。而 token 里的 ca.crt 也是客户端证书和 kubeconfig 里&lt;code&gt;client-certificate-data&lt;/code&gt;的是一样的，RBAC 落实在它那个 token 字段。
+很多 addon 可以看到他们的&lt;code&gt;--help&lt;/code&gt;选项看到也支持 kubeconfig 的，他们的默认逻辑是没有用 kubeconfig 选项下起来的时候会去查看 secret 路径&lt;code&gt;/var/run/secrets/kubernetes.io/serviceaccount&lt;/code&gt;获取 token（也就是在 pod 里运行的请求逻辑），当然也并不意味着 token 一定在集群内用可以把 secret 的 token 获取到后制作成 kubeconfig。
+dashboard 登陆的 token 如果使用管理员的话可以用 rbac 绑定集群管理员角色，这也是最常见的使用方法，像 kubectl 拥有集群管理员那样。如果对 RBAC 熟悉可以单独给不用部门生成不同权限的 RBAC 取 token 给人员登陆。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceAccount&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dashboard    &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# sa名字随意&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dashboard    &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# sa 名字随意&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kube-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;k8s-app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kubernetes-dashboard&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1674,12 +1674,12 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceAccount&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dashboard   &lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 和上面名字一样&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;kube-system&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;取它token用于登陆dashboard，你在dashboard web上操作集群的时候实际上是拿着你登陆的token的去以api调用kube-apiserver。&lt;/p&gt;
-&lt;p&gt;使用下面命令取上面创建的sa的token：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;取它 token 用于登陆 dashboard，你在 dashboard web 上操作集群的时候实际上是拿着你登陆的 token 的去以 api 调用 kube-apiserver。&lt;/p&gt;
+&lt;p&gt;使用下面命令取上面创建的 sa 的 token：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n kube-system get secret -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;{range .items[?(@.metadata.annotations.kubernetes\.io/service-account\.name==&amp;#34;dashboard&amp;#34;)].data}{.token}{end}&amp;#39;&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; base64 -d
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;xxxxxxxxxxxxxx
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最后&lt;code&gt;Let’s Encrypt&lt;/code&gt;的证书是一次3个月，可以看脚本官方文档去定时获取新的证书然后导入 &lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/%E8%AF%B4%E6%98%8E&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/Neilpang/acme.sh/wiki/%E8%AF%B4%E6%98%8E&lt;/a&gt; certmanager和acme.sh一样的原理去调用api签署域名证书，有兴趣可以去试试&lt;/p&gt;
-&lt;h2 id=&#34;参考&#34;&gt;参考:&lt;/h2&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;最后&lt;code&gt;Let’s Encrypt&lt;/code&gt;的证书是一次 3 个月，可以看脚本官方文档去定时获取新的证书然后导入 &lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/%E8%AF%B4%E6%98%8E&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/Neilpang/acme.sh/wiki/%E8%AF%B4%E6%98%8E&lt;/a&gt; certmanager 和 acme.sh 一样的原理去调用 api 签署域名证书，有兴趣可以去试试&lt;/p&gt;
+&lt;h2 id=&#34;参考&#34;&gt;参考：&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TLS termination - github.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/Neilpang/acme.sh/wiki/dnsapi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;acme.sh wiki - github.com&lt;/a&gt;&lt;/li&gt;
@@ -1689,23 +1689,23 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
     </item>
     
     <item>
-      <title>Kubernetes Ingress Controller的使用介绍及高可用落地</title>
+      <title>Kubernetes Ingress Controller 的使用介绍及高可用落地</title>
       <link>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</link>
       <pubDate>Wed, 17 Apr 2019 11:23:34 +0800</pubDate>
       <guid>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</guid>
       <description>&lt;blockquote&gt;
-&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang的博客&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang 的博客&lt;/a&gt;。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;从之前对ingress controller到现在了解架构和一些经验总结下，顺带给人科普少走弯路
+&lt;p&gt;从之前对 ingress controller 到现在了解架构和一些经验总结下，顺带给人科普少走弯路
 需要看懂本文要具备一下知识点：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Service实现原理和会应用&lt;/li&gt;
-&lt;li&gt;知道反向代理原理，了解nginx和apache的vhost概念&lt;/li&gt;
-&lt;li&gt;了解service的几种类型（Nodeport、clusterip、LB）&lt;/li&gt;
-&lt;li&gt;四层和七层区别（不明白就这样去理解，七层最常见就是应用层的http，也就是url，四层是传输层，为tcp/udp端口）&lt;/li&gt;
-&lt;li&gt;域名解析，/etc/hosts等基础知识&lt;/li&gt;
+&lt;li&gt;Service 实现原理和会应用&lt;/li&gt;
+&lt;li&gt;知道反向代理原理，了解 nginx 和 apache 的 vhost 概念&lt;/li&gt;
+&lt;li&gt;了解 service 的几种类型（Nodeport、clusterip、LB）&lt;/li&gt;
+&lt;li&gt;四层和七层区别（不明白就这样去理解，七层最常见就是应用层的 http，也就是 url，四层是传输层，为 tcp/udp 端口）&lt;/li&gt;
+&lt;li&gt;域名解析，/etc/hosts 等基础知识&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;ingress-controller介绍&#34;&gt;Ingress Controller介绍&lt;/h2&gt;
+&lt;h2 id=&#34;ingress-controller-介绍&#34;&gt;Ingress Controller 介绍&lt;/h2&gt;
 &lt;p&gt;&lt;code&gt;Ingress Controller&lt;/code&gt;是一个统称，并不是只有一个，有如下这些：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress NGINX&lt;/a&gt;: Kubernetes 官方维护的方案，也是本次安装使用的 Controller。&lt;/li&gt;
@@ -1717,8 +1717,8 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;blockquote&gt;
 &lt;p&gt;Ingress Controller 的实现不只上面这些方案，还有很多可以在网络上找到这里不一一列出来了。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;我们部署在集群里的服务的svc想暴露出来的时候，从长久眼光看和易于管理维护都是用的&lt;code&gt;Ingress Controller&lt;/code&gt;来处理，clusterip非集群主机无法访问，Nodeport不方便长久管理和效率，LB服务多了不方便因为需要花费额外的钱，externalIPS不好用（后面有空写文章会说它）。&lt;/p&gt;
-&lt;p&gt;我们跑的大多服务都是应用层http（s），Ingress Controller使用service或者pod的网络将它暴露在集群外，然后它反向代理集群内的七层服务，通过vhost子域名那样路由到后端的服务，&lt;code&gt;Ingress Controller&lt;/code&gt;工作架构如下，借用traefik官方的图。&lt;/p&gt;
+&lt;p&gt;我们部署在集群里的服务的 svc 想暴露出来的时候，从长久眼光看和易于管理维护都是用的&lt;code&gt;Ingress Controller&lt;/code&gt;来处理，clusterip 非集群主机无法访问，Nodeport 不方便长久管理和效率，LB 服务多了不方便因为需要花费额外的钱，externalIPS 不好用（后面有空写文章会说它）。&lt;/p&gt;
+&lt;p&gt;我们跑的大多服务都是应用层 http（s），Ingress Controller 使用 service 或者 pod 的网络将它暴露在集群外，然后它反向代理集群内的七层服务，通过 vhost 子域名那样路由到后端的服务，&lt;code&gt;Ingress Controller&lt;/code&gt;工作架构如下，借用 traefik 官方的图。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1749,9 +1749,9 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
       traefik
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;你可以将&lt;code&gt;api.domain.com&lt;/code&gt;进来的流量路由到集群里api的pod，你可以将&lt;code&gt;backoffice.domain.com&lt;/code&gt;流量路由到backoffice的一组pod上，虽说我们可以自己搭建一个nginx来代替掉&lt;code&gt;Ingress Controller&lt;/code&gt;，但是要增加代理的service长期来看维护很不方便，在使用上&lt;code&gt;Ingress Controller&lt;/code&gt;后可以用一种抽象的对象告诉controller添加对应的代理，也就是&lt;code&gt;kind: Ingress&lt;/code&gt;。它里面描述了从Ingress Controller访问进来的ServerName和web的url要代理到集群里哪个service（以及service的port）等等具体信息。&lt;/p&gt;
-&lt;p&gt;而官方的&lt;code&gt;Ingress Nginx&lt;/code&gt;可以视为一个魔改的nginx，拥有集群赋予的RBAC权限后，能够有监听集群Ingress相关的变化能力，用户创建了&lt;code&gt;kind: Ingress&lt;/code&gt;，
-例如上面trafik图里的Ingress大致就是下面这样：&lt;/p&gt;
+&lt;p&gt;你可以将&lt;code&gt;api.domain.com&lt;/code&gt;进来的流量路由到集群里 api 的 pod，你可以将&lt;code&gt;backoffice.domain.com&lt;/code&gt;流量路由到 backoffice 的一组 pod 上，虽说我们可以自己搭建一个 nginx 来代替掉&lt;code&gt;Ingress Controller&lt;/code&gt;，但是要增加代理的 service 长期来看维护很不方便，在使用上&lt;code&gt;Ingress Controller&lt;/code&gt;后可以用一种抽象的对象告诉 controller 添加对应的代理，也就是&lt;code&gt;kind: Ingress&lt;/code&gt;。它里面描述了从 Ingress Controller 访问进来的 ServerName 和 web 的 url 要代理到集群里哪个 service（以及 service 的 port）等等具体信息。&lt;/p&gt;
+&lt;p&gt;而官方的&lt;code&gt;Ingress Nginx&lt;/code&gt;可以视为一个魔改的 nginx，拥有集群赋予的 RBAC 权限后，能够有监听集群 Ingress 相关的变化能力，用户创建了&lt;code&gt;kind: Ingress&lt;/code&gt;，
+例如上面 trafik 图里的 Ingress 大致就是下面这样：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1779,12 +1779,12 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;backoffice&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要创建了上面的Ingress后，ingress controller里会监听到从而生成对应的配置段后动态reload配置文件。&lt;/p&gt;
-&lt;h2 id=&#34;ingress-controller部署&#34;&gt;Ingress Controller部署&lt;/h2&gt;
-&lt;p&gt;部署非常简单，一条命令创建即可，yml来源于 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&lt;/a&gt;。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要创建了上面的 Ingress 后，ingress controller 里会监听到从而生成对应的配置段后动态 reload 配置文件。&lt;/p&gt;
+&lt;h2 id=&#34;ingress-controller-部署&#34;&gt;Ingress Controller 部署&lt;/h2&gt;
+&lt;p&gt;部署非常简单，一条命令创建即可，yml 来源于 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&lt;/a&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/mandatory.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该yaml缺少向群外暴露的方式，我们先使用externalIPs方式创建svc来让它能从集群外面访问（此处先学工作原理，后面再讲高可用）。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;$INGRESS_VIP&lt;/code&gt;选取一个和宿主机同一个段没使用过的IP即可（实际上Ingress Nginx bind的端口不止80和443，这里不讨论，有兴趣的同学可以看容器里的默认配置文件）。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该 yaml 缺少向群外暴露的方式，我们先使用 externalIPs 方式创建 svc 来让它能从集群外面访问（此处先学工作原理，后面再讲高可用）。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;$INGRESS_VIP&lt;/code&gt;选取一个和宿主机同一个段没使用过的 IP 即可（实际上 Ingress Nginx bind 的端口不止 80 和 443，这里不讨论，有兴趣的同学可以看容器里的默认配置文件）。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1801,9 +1801,9 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的yaml里后面详细解释我们需要关注的配置项，先来创建ingress对象试试。&lt;/p&gt;
-&lt;h3 id=&#34;测试http-7层负载&#34;&gt;测试http 7层负载&lt;/h3&gt;
-&lt;p&gt;部署了官方的ingress nginx后，我部署了一个nginx的pod，为它创建了一个名为nginx的service：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的 yaml 里后面详细解释我们需要关注的配置项，先来创建 ingress 对象试试。&lt;/p&gt;
+&lt;h3 id=&#34;测试-http-7-层负载&#34;&gt;测试 http 7 层负载&lt;/h3&gt;
+&lt;p&gt;部署了官方的 ingress nginx 后，我部署了一个 nginx 的 pod，为它创建了一个名为 nginx 的 service：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1831,7 +1831,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后创建对应的一个ingress对象来暴露集群里这个nginx的http服务：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后创建对应的一个 ingress 对象来暴露集群里这个 nginx 的 http 服务：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1844,7 +1844,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找到ingress nginx的pod名字后通过命令查看里面nginx配置文件能找到有对应的配置段生成：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找到 ingress nginx 的 pod 名字后通过命令查看里面 nginx 配置文件能找到有对应的配置段生成：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;$ kubectl -n ingress-nginx exec nginx-ingress-controller-6cdcfd8ff9-t5sxl -- cat /etc/nginx/nginx.conf&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## start server nginx.testdomain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1865,10 +1865,10 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;........&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## end server nginx.testdomain.com      &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找一台非集群的Windows机器（也可以mac，主要是有图形界面且非集群内机器），设置hosts文件把域名&lt;code&gt;nginx.testdomain.com&lt;/code&gt;设置到对service的那个externalIPs的ip上，打开浏览器访问&lt;code&gt;nginx.testdomain.com&lt;/code&gt;即可发现集群内的nginx已经暴露在集群外。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：Ingress Controller虽然调用的是service，看起来按照nginx来理解转发是client–nginx–svc–pod; 实际上转发是client–nginx–pod，因为已经魔改了不能按照nginx的来理解，是直接负载到svc的endpoint上面的。&lt;/p&gt;
-&lt;p&gt;另外低版本的ingress nginx的args参数&lt;code&gt;--default-backend-service=$(POD_NAMESPACE)/default-http-backend&lt;/code&gt;，该参数指定ingress nginx的同namespace下名为&lt;code&gt;default-http-backend&lt;/code&gt;的service作为默认访问的时候页面，通常那个时候是创建一个404页面的的pod和对应service，如果ingress nginx启动的时候没找到这个service会无法启动，新版本不是必须了，好像也自带404页面了。&lt;/p&gt;
-&lt;p&gt;另外ingress也能多路径，如下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找一台非集群的 Windows 机器（也可以 mac，主要是有图形界面且非集群内机器），设置 hosts 文件把域名&lt;code&gt;nginx.testdomain.com&lt;/code&gt;设置到对 service 的那个 externalIPs 的 ip 上，打开浏览器访问&lt;code&gt;nginx.testdomain.com&lt;/code&gt;即可发现集群内的 nginx 已经暴露在集群外。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：Ingress Controller 虽然调用的是 service，看起来按照 nginx 来理解转发是 client–nginx–svc–pod; 实际上转发是 client–nginx–pod，因为已经魔改了不能按照 nginx 的来理解，是直接负载到 svc 的 endpoint 上面的。&lt;/p&gt;
+&lt;p&gt;另外低版本的 ingress nginx 的 args 参数&lt;code&gt;--default-backend-service=$(POD_NAMESPACE)/default-http-backend&lt;/code&gt;，该参数指定 ingress nginx 的同 namespace 下名为&lt;code&gt;default-http-backend&lt;/code&gt;的 service 作为默认访问的时候页面，通常那个时候是创建一个 404 页面的的 pod 和对应 service，如果 ingress nginx 启动的时候没找到这个 service 会无法启动，新版本不是必须了，好像也自带 404 页面了。&lt;/p&gt;
+&lt;p&gt;另外 ingress 也能多路径，如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xxxx.xxxx.xxx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1882,12 +1882,12 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service-test-api&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;如何来4层负载&#34;&gt;如何来4层负载&lt;/h3&gt;
-&lt;p&gt;我们可以看到ingress nginx的args里有这两行：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;如何来-4-层负载&#34;&gt;如何来 4 层负载&lt;/h3&gt;
+&lt;p&gt;我们可以看到 ingress nginx 的 args 里有这两行：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- --&lt;span class=&#34;l&#34;&gt;tcp-services-configmap=$(POD_NAMESPACE)/tcp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;udp-services-configmap=$(POD_NAMESPACE)/udp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从选项和值可以猜测出，要想代理四层（tcp/udp），得写同namespace里一个名为&lt;code&gt;tcp-service&lt;/code&gt;和&lt;code&gt;udp-service&lt;/code&gt;的两个configmap的数据
-四层的话这边我们创建一个mysql的pod，来代理3306端口到集群外面，则需要写tcp-services这个configmap：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从选项和值可以猜测出，要想代理四层（tcp/udp），得写同 namespace 里一个名为&lt;code&gt;tcp-service&lt;/code&gt;和&lt;code&gt;udp-service&lt;/code&gt;的两个 configmap 的数据
+四层的话这边我们创建一个 mysql 的 pod，来代理 3306 端口到集群外面，则需要写 tcp-services 这个 configmap：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1895,28 +1895,28 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;3306&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;default/mysql:3306&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;四层写这两个ConfigMap的data即可，按照这样去写即可&lt;code&gt;out_port: namespaces/svc_name:port&lt;/code&gt;，要给每个ingress加一些nginx里的配置可以查看官方的annotation字段以及值（traefik同理）。&lt;/p&gt;
-&lt;h3 id=&#34;ingress-controller高可用&#34;&gt;Ingress Controller高可用&lt;/h3&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;四层写这两个 ConfigMap 的 data 即可，按照这样去写即可&lt;code&gt;out_port: namespaces/svc_name:port&lt;/code&gt;，要给每个 ingress 加一些 nginx 里的配置可以查看官方的 annotation 字段以及值（traefik 同理）。&lt;/p&gt;
+&lt;h3 id=&#34;ingress-controller-高可用&#34;&gt;Ingress Controller 高可用&lt;/h3&gt;
 &lt;p&gt;这里来讨论下&lt;code&gt;Ingress Controller&lt;/code&gt;的高可用。&lt;/p&gt;
-&lt;p&gt;Ingress Controller到集群内的路径这部分都有负载均衡了，我们比较关注部署了Ingress Controller后，外部到它这段路怎么高可用?&lt;/p&gt;
-&lt;p&gt;上面的例子里service我使用的externalIPs，但是代理四层的时候会新加端口，需要每次人为去介入增加暴露端口?&lt;/p&gt;
-&lt;p&gt;流量从入口到&lt;code&gt;Ingress Controller&lt;/code&gt;的pod有下面几种方式：&lt;/p&gt;
+&lt;p&gt;Ingress Controller 到集群内的路径这部分都有负载均衡了，我们比较关注部署了 Ingress Controller 后，外部到它这段路怎么高可用？&lt;/p&gt;
+&lt;p&gt;上面的例子里 service 我使用的 externalIPs，但是代理四层的时候会新加端口，需要每次人为去介入增加暴露端口？&lt;/p&gt;
+&lt;p&gt;流量从入口到&lt;code&gt;Ingress Controller&lt;/code&gt;的 pod 有下面几种方式：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候手写&lt;code&gt;externalIPs&lt;/code&gt;很鸡肋，后面会再写文章去讲它&lt;/li&gt;
-&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候只有云厂商支持分配公网ip来负载均衡，LoadBalancer 公开的每项服务都将获得自己的 IP 地址，但是需要收费，且自己建立集群无法使用&lt;/li&gt;
-&lt;li&gt;不创建service，pod直接用hostport，效率等同于&lt;code&gt;hostNetwork&lt;/code&gt;，如果不代理四层端口还好，代理了需要修改pod的template来滚动更新来让nginx bind的四层端口能映射到宿主机上&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;Nodeport&lt;/code&gt;，端口不是web端口（但是可以修改Nodeport的范围改成web端口），如果进来流量负载到Nodeport上可能某个流量路线到某个node上的时候因为&lt;code&gt;Ingress Controller&lt;/code&gt;的pod不在这个node上，会走这个node的kube-proxy转发到Ingress Controller的pod上，多走一趟路&lt;/li&gt;
-&lt;li&gt;不创建service，效率最高，也能四层负载的时候不修改pod的template，唯一要注意的是&lt;code&gt;hostNetwork&lt;/code&gt;下pod会继承宿主机的网络协议，也就是使用了主机的dns，会导致svc的请求直接走宿主机的上到公网的dns服务器而非集群里的dns server，需要设置pod的&lt;code&gt;dnsPolicy: ClusterFirstWithHostNet&lt;/code&gt;即可解决&lt;/li&gt;
+&lt;li&gt;type 为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候手写&lt;code&gt;externalIPs&lt;/code&gt;很鸡肋，后面会再写文章去讲它&lt;/li&gt;
+&lt;li&gt;type 为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候只有云厂商支持分配公网 ip 来负载均衡，LoadBalancer 公开的每项服务都将获得自己的 IP 地址，但是需要收费，且自己建立集群无法使用&lt;/li&gt;
+&lt;li&gt;不创建 service，pod 直接用 hostport，效率等同于&lt;code&gt;hostNetwork&lt;/code&gt;，如果不代理四层端口还好，代理了需要修改 pod 的 template 来滚动更新来让 nginx bind 的四层端口能映射到宿主机上&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Nodeport&lt;/code&gt;，端口不是 web 端口（但是可以修改 Nodeport 的范围改成 web 端口），如果进来流量负载到 Nodeport 上可能某个流量路线到某个 node 上的时候因为&lt;code&gt;Ingress Controller&lt;/code&gt;的 pod 不在这个 node 上，会走这个 node 的 kube-proxy 转发到 Ingress Controller 的 pod 上，多走一趟路&lt;/li&gt;
+&lt;li&gt;不创建 service，效率最高，也能四层负载的时候不修改 pod 的 template，唯一要注意的是&lt;code&gt;hostNetwork&lt;/code&gt;下 pod 会继承宿主机的网络协议，也就是使用了主机的 dns，会导致 svc 的请求直接走宿主机的上到公网的 dns 服务器而非集群里的 dns server，需要设置 pod 的&lt;code&gt;dnsPolicy: ClusterFirstWithHostNet&lt;/code&gt;即可解决&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;写在最后&#34;&gt;写在最后&lt;/h2&gt;
 &lt;p&gt;部署方式没多大区别开心就好。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;DaemonSet + nodeSeletor&lt;/li&gt;
-&lt;li&gt;deploy设置replicas数量 + nodeSeletor + pod互斥&lt;/li&gt;
-&lt;li&gt;所以可以一个vip飘在拥有存活的controller的宿主机上，云上的话就用slb来负载代替vip&lt;/li&gt;
-&lt;li&gt;最后说说域名请求指向它，如果部署在内网或者办公室啥的，内网有dns server的话把ing的域名全部解析到ingress controller的宿主机ip上，否则要有人访问每个人设置/etc/hosts才能把域名解析来贼麻烦，如果没有dns server可以跑一个external-dns，它的上游dns是公网的dns服务器，办公网内机器的dns server指向它即可，云上的话把域名请求解析到对应ip即可&lt;/li&gt;
-&lt;li&gt;traefik和ingress nginx类似，不过它用go实现的&lt;/li&gt;
-&lt;li&gt;在一些老版本的ingress nginx的log里会一直刷找不到ingress-nginx的svc，不处理的话会狂刷log导致机器load过高,创建一个同名的svc即可解决,例如创建一个不带选择器clusterip为null的即可。非要创建port的svc的话参照下面:&lt;/li&gt;
+&lt;li&gt;deploy 设置 replicas 数量 + nodeSeletor + pod 互斥&lt;/li&gt;
+&lt;li&gt;所以可以一个 vip 飘在拥有存活的 controller 的宿主机上，云上的话就用 slb 来负载代替 vip&lt;/li&gt;
+&lt;li&gt;最后说说域名请求指向它，如果部署在内网或者办公室啥的，内网有 dns server 的话把 ing 的域名全部解析到 ingress controller 的宿主机 ip 上，否则要有人访问每个人设置/etc/hosts 才能把域名解析来贼麻烦，如果没有 dns server 可以跑一个 external-dns，它的上游 dns 是公网的 dns 服务器，办公网内机器的 dns server 指向它即可，云上的话把域名请求解析到对应 ip 即可&lt;/li&gt;
+&lt;li&gt;traefik 和 ingress nginx 类似，不过它用 go 实现的&lt;/li&gt;
+&lt;li&gt;在一些老版本的 ingress nginx 的 log 里会一直刷找不到 ingress-nginx 的 svc，不处理的话会狂刷 log 导致机器 load 过高，创建一个同名的 svc 即可解决，例如创建一个不带选择器 clusterip 为 null 的即可。非要创建 port 的 svc 的话参照下面：&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1944,7 +1944,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/part-of&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考:&lt;/h2&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考：&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/blob/master/docs/deploy/index.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - github.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/deploy/baremetal/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - kubernetes.github.io&lt;/a&gt;&lt;/li&gt;
@@ -1953,37 +1953,37 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
     </item>
     
     <item>
-      <title>全手动部署prometheus-operator监控Kubernetes集群遇到的坑</title>
+      <title>全手动部署 prometheus-operator 监控 Kubernetes 集群遇到的坑</title>
       <link>https://cloudnative.to/blog/prometheus-operator-manual/</link>
       <pubDate>Tue, 08 Jan 2019 17:40:30 +0800</pubDate>
       <guid>https://cloudnative.to/blog/prometheus-operator-manual/</guid>
       <description>&lt;h2 id=&#34;写这篇文章原因&#34;&gt;写这篇文章原因&lt;/h2&gt;
 &lt;p&gt;所有监控的agent底层最终都是查询的/proc和/sys里的信息推送(如果错了轻喷)，因为在Kubernetes中收集宿主机信息方面也想用pod跑，会面临到问题。&lt;/p&gt;
 &lt;p&gt;常见的zabbix_agent默认读取fs的/proc和/sys，容器跑agent会导致读取的不是宿主机的/proc和/sys。&lt;/p&gt;
-&lt;p&gt;而prometheus的&lt;code&gt;node-exporter&lt;/code&gt;有选项&lt;code&gt;--path.procfs&lt;/code&gt;和&lt;code&gt;--path.sysfs&lt;/code&gt;来指定从这俩选项的值的proc和sys读取，容器跑&lt;code&gt;node-exporter&lt;/code&gt;只需要挂载宿主机的/proc和/sys到容器fs的某个路径挂载属性设置为readonly后用这两个选项指定即可，zabbix4.0看了文档和容器都找不到类似选项应该不支持。&lt;/p&gt;
-&lt;p&gt;虽说上prometheus但是Kubernetes监控这方面，经常看到如下问题:&lt;/p&gt;
+&lt;p&gt;而 prometheus 的&lt;code&gt;node-exporter&lt;/code&gt;有选项&lt;code&gt;--path.procfs&lt;/code&gt;和&lt;code&gt;--path.sysfs&lt;/code&gt;来指定从这俩选项的值的 proc 和 sys 读取，容器跑&lt;code&gt;node-exporter&lt;/code&gt;只需要挂载宿主机的/proc和/sys到容器fs的某个路径挂载属性设置为readonly后用这两个选项指定即可，zabbix4.0看了文档和容器都找不到类似选项应该不支持。&lt;/p&gt;
+&lt;p&gt;虽说上 prometheus 但是 Kubernetes 监控这方面，经常看到如下问题：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;如何部署&lt;/li&gt;
-&lt;li&gt;用prometheus的话pod ip会变咋整之类的&lt;/li&gt;
+&lt;li&gt;用 prometheus 的话 pod ip 会变咋整之类的&lt;/li&gt;
 &lt;li&gt;我的target怎么是0/0&lt;/li&gt;
-&lt;li&gt;官方yaml怎么用&lt;/li&gt;
-&lt;li&gt;operator和传统的prometheus有啥差异&lt;/li&gt;
-&lt;li&gt;operator相对手动部署的prometheus有啥优秀之处&lt;/li&gt;
+&lt;li&gt;官方 yaml 怎么用&lt;/li&gt;
+&lt;li&gt;operator 和传统的 prometheus 有啥差异&lt;/li&gt;
+&lt;li&gt;operator 相对手动部署的 prometheus 有啥优秀之处&lt;/li&gt;
 &lt;li&gt;&amp;hellip;..&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;上面问题里大多都是对prometheus-operator不了解的，也就是说大多不看官方文档的，这里我几个例子加介绍说说怎样部署&lt;code&gt;prometheus-operator&lt;/code&gt;，和一些常见的坑。
+&lt;p&gt;上面问题里大多都是对 prometheus-operator 不了解的，也就是说大多不看官方文档的，这里我几个例子加介绍说说怎样部署&lt;code&gt;prometheus-operator&lt;/code&gt;，和一些常见的坑。
 另外网上大多是helm部署的以及管理组件是二进制下有几个target是0/0发现不了的解决办法。&lt;/p&gt;
 &lt;p&gt;需要看懂本文要具备一下知识点：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;svc实现原理和会应用以及svc和endpoint关系&lt;/li&gt;
-&lt;li&gt;了解prometheus(不是operator的)工作机制&lt;/li&gt;
-&lt;li&gt;知道什么是metrics(不过有了prometheus-operator似乎不是必须)&lt;/li&gt;
+&lt;li&gt;svc 实现原理和会应用以及 svc 和 endpoint 关系&lt;/li&gt;
+&lt;li&gt;了解 prometheus(不是 operator 的) 工作机制&lt;/li&gt;
+&lt;li&gt;知道什么是 metrics(不过有了 prometheus-operator 似乎不是必须)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;速补基础&#34;&gt;速补基础&lt;/h2&gt;
-&lt;h3 id=&#34;什么是metrics&#34;&gt;什么是metrics&lt;/h3&gt;
-&lt;p&gt;前面知识点第一条都考虑到Kubernetes集群监控了想必都会了，第二条因为有operator的存在不太关心底层可能不太急需可以后面去稍微学学，第三条无论etcd还是k8s的管理组件基本都有metrics端口。&lt;/p&gt;
-&lt;p&gt;这里来介绍啥什么是metrics：&lt;/p&gt;
-&lt;p&gt;例如我们要查看etcd的metrics，先查看etcd的运行参数找到相关的值，这里我是所有参数写在一个yml文件里，非yml自行查看systemd文件或者运行参数找到相关参数和值即可。&lt;/p&gt;
+&lt;h3 id=&#34;什么是-metrics&#34;&gt;什么是 metrics&lt;/h3&gt;
+&lt;p&gt;前面知识点第一条都考虑到 Kubernetes 集群监控了想必都会了，第二条因为有 operator 的存在不太关心底层可能不太急需可以后面去稍微学学，第三条无论 etcd 还是 k8s 的管理组件基本都有 metrics 端口。&lt;/p&gt;
+&lt;p&gt;这里来介绍啥什么是 metrics：&lt;/p&gt;
+&lt;p&gt;例如我们要查看 etcd 的 metrics，先查看 etcd 的运行参数找到相关的值，这里我是所有参数写在一个 yml 文件里，非 yml 自行查看 systemd 文件或者运行参数找到相关参数和值即可。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;root@k8s-m1 ~&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;# ps aux | grep -P &amp;#39;/etc[d] &amp;#39;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;root      &lt;span class=&#34;m&#34;&gt;13531&lt;/span&gt;  2.8  0.8 &lt;span class=&#34;m&#34;&gt;10631072&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;140788&lt;/span&gt; ?     Ssl   &lt;span class=&#34;m&#34;&gt;2018&lt;/span&gt; 472:58 /usr/local/bin/etcd --config-file&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;/etc/etcd/etcd.config.yml
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;root@k8s-m1 ~&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;# cat /etc/etcd/etcd.config.yml&lt;/span&gt;
@@ -1997,12 +1997,12 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们需要两部分信息：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;listen-client-urls的httpsurl，我这里是&lt;code&gt;https://172.16.0.2:2379&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;listen-client-urls 的 httpsurl，我这里是&lt;code&gt;https://172.16.0.2:2379&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;允许客户端证书信息&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;然后使用下面的curl，带上各自证书路径访问https的url执行&lt;/p&gt;
+&lt;p&gt;然后使用下面的 curl，带上各自证书路径访问 https 的 url 执行&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl --cacert /etc/etcd/ssl/etcd-ca.pem --cert /etc/etcd/ssl/etcd.pem --key /etc/etcd/ssl/etcd-key.pem https://172.16.0.2:2379/metrics
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;也可以etcd用选项和值&lt;code&gt;--listen-metrics-urls http://interface_IP:port&lt;/code&gt;设置成非https的metrics端口可以不用证书即可访问，我们会看到etcd的metrics输出信息如下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;也可以 etcd 用选项和值&lt;code&gt;--listen-metrics-urls http://interface_IP:port&lt;/code&gt;设置成非 https 的 metrics 端口可以不用证书即可访问，我们会看到 etcd 的 metrics 输出信息如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;....
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;grpc_server_started_total&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;grpc_method&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;RoleList&amp;#34;&lt;/span&gt;，grpc_service&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;etcdserverpb.Auth&amp;#34;&lt;/span&gt;，grpc_type&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;unary&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;grpc_server_started_total&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;grpc_method&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;RoleRevokePermission&amp;#34;&lt;/span&gt;，grpc_service&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;etcdserverpb.Auth&amp;#34;&lt;/span&gt;，grpc_type&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;unary&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
@@ -2035,7 +2035,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# HELP process_virtual_memory_bytes Virtual memory size in bytes.&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# TYPE process_virtual_memory_bytes gauge&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;process_virtual_memory_bytes 1.0886217728e+10
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同理kube-apiserver也有metrics信息&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同理 kube-apiserver 也有 metrics 信息&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get --raw /metrics
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;rest_client_request_latency_seconds_bucket&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;https://[::1]:6443/apis?timeout=32s&amp;#34;&lt;/span&gt;，verb&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;GET&amp;#34;&lt;/span&gt;，le&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;0.512&amp;#34;&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;39423&lt;/span&gt;
@@ -2059,9 +2059,9 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# HELP ssh_tunnel_open_fail_count Counter of ssh tunnel failed open attempts&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# TYPE ssh_tunnel_open_fail_count counter&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ssh_tunnel_open_fail_count &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这种就是prometheus的定义的metrics格式规范，缺省是在http(s)的url的/metrics输出。
-而metrics要么程序定义输出(模块或者自定义开发)，要么用官方的各种exporter(node-exporter，mysqld-exporter，memcached_exporter&amp;hellip;)采集要监控的信息占用一个web端口然后输出成metrics格式的信息，prometheus server去收集各个target的metrics存储起来(tsdb)。
-用户可以在prometheus的http页面上用promQL(prometheus的查询语言)或者(grafana数据来源就是用)api去查询一些信息，也可以利用pushgateway去统一采集然后prometheus从pushgateway采集(所以pushgateway类似于zabbix的proxy)，prometheus的工作架构如下图：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这种就是 prometheus 的定义的 metrics 格式规范，缺省是在 http(s) 的 url 的/metrics 输出。
+而 metrics 要么程序定义输出 (模块或者自定义开发)，要么用官方的各种 exporter(node-exporter，mysqld-exporter，memcached_exporter&amp;hellip;) 采集要监控的信息占用一个 web 端口然后输出成 metrics 格式的信息，prometheus server 去收集各个 target 的 metrics 存储起来 (tsdb)。
+用户可以在 prometheus 的 http 页面上用 promQL(prometheus 的查询语言) 或者 (grafana 数据来源就是用)api 去查询一些信息，也可以利用 pushgateway 去统一采集然后 prometheus 从 pushgateway 采集 (所以 pushgateway 类似于 zabbix 的 proxy)，prometheus 的工作架构如下图：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2090,12 +2090,12 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h3 id=&#34;为什么需要prometheus-operator&#34;&gt;为什么需要prometheus-operator&lt;/h3&gt;
-&lt;p&gt;因为是prometheus主动去拉取的，所以在k8s里pod因为调度的原因导致pod的ip会发生变化，人工不可能去维持，自动发现有基于DNS的，但是新增还是有点麻烦。&lt;/p&gt;
-&lt;p&gt;Prometheus-operator的本职就是一组用户自定义的CRD资源以及Controller的实现，Prometheus Operator这个controller有BRAC权限下去负责监听这些自定义资源的变化，并且根据这些资源的定义自动化的完成如Prometheus Server自身以及配置的自动化管理工作。&lt;/p&gt;
-&lt;p&gt;在Kubernetes中我们使用Deployment、DamenSet、StatefulSet来管理应用Workload，使用Service、Ingress来管理应用的访问方式，使用ConfigMap和Secret来管理应用配置。我们在集群中对这些资源的创建，更新，删除的动作都会被转换为事件(Event)，Kubernetes的Controller Manager负责监听这些事件并触发相应的任务来满足用户的期望。这种方式我们成为声明式，用户只需要关心应用程序的最终状态，其它的都通过Kubernetes来帮助我们完成，通过这种方式可以大大简化应用的配置管理复杂度。&lt;/p&gt;
-&lt;p&gt;而除了这些原生的Resource资源以外，Kubernetes还允许用户添加自己的自定义资源(Custom Resource)。并且通过实现自定义Controller来实现对Kubernetes的扩展，不需要用户去二开k8s也能达到给k8s添加功能和对象。&lt;/p&gt;
-&lt;p&gt;因为svc的负载均衡，所以在K8S里监控metrics基本最小单位都是一个svc背后的pod为target，所以prometheus-operator创建了对应的CRD: &lt;code&gt;kind: ServiceMonitor&lt;/code&gt; ，创建的&lt;code&gt;ServiceMonitor&lt;/code&gt;里声明需要监控选中的svc的label以及metrics的url路径的和namespaces即可。&lt;/p&gt;
+&lt;h3 id=&#34;为什么需要-prometheus-operator&#34;&gt;为什么需要 prometheus-operator&lt;/h3&gt;
+&lt;p&gt;因为是 prometheus 主动去拉取的，所以在 k8s 里 pod 因为调度的原因导致 pod 的 ip 会发生变化，人工不可能去维持，自动发现有基于 DNS 的，但是新增还是有点麻烦。&lt;/p&gt;
+&lt;p&gt;Prometheus-operator 的本职就是一组用户自定义的 CRD 资源以及 Controller 的实现，Prometheus Operator 这个 controller 有 BRAC 权限下去负责监听这些自定义资源的变化，并且根据这些资源的定义自动化的完成如 Prometheus Server 自身以及配置的自动化管理工作。&lt;/p&gt;
+&lt;p&gt;在 Kubernetes 中我们使用 Deployment、DamenSet、StatefulSet 来管理应用 Workload，使用 Service、Ingress 来管理应用的访问方式，使用 ConfigMap 和 Secret 来管理应用配置。我们在集群中对这些资源的创建，更新，删除的动作都会被转换为事件 (Event)，Kubernetes 的 Controller Manager 负责监听这些事件并触发相应的任务来满足用户的期望。这种方式我们成为声明式，用户只需要关心应用程序的最终状态，其它的都通过 Kubernetes 来帮助我们完成，通过这种方式可以大大简化应用的配置管理复杂度。&lt;/p&gt;
+&lt;p&gt;而除了这些原生的 Resource 资源以外，Kubernetes 还允许用户添加自己的自定义资源 (Custom Resource)。并且通过实现自定义 Controller 来实现对 Kubernetes 的扩展，不需要用户去二开 k8s 也能达到给 k8s 添加功能和对象。&lt;/p&gt;
+&lt;p&gt;因为 svc 的负载均衡，所以在 K8S 里监控 metrics 基本最小单位都是一个 svc 背后的 pod 为 target，所以 prometheus-operator 创建了对应的 CRD: &lt;code&gt;kind: ServiceMonitor&lt;/code&gt; ，创建的&lt;code&gt;ServiceMonitor&lt;/code&gt;里声明需要监控选中的 svc 的 label 以及 metrics 的 url 路径的和 namespaces 即可。&lt;/p&gt;
 &lt;p&gt;工作架构如下图所示。&lt;/p&gt;
 &lt;p&gt;
 
@@ -2125,34 +2125,34 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h2 id=&#34;demo部署学习&#34;&gt;Demo部署学习&lt;/h2&gt;
+&lt;h2 id=&#34;demo-部署学习&#34;&gt;Demo 部署学习&lt;/h2&gt;
 &lt;h3 id=&#34;获取相关文件&#34;&gt;获取相关文件&lt;/h3&gt;
-&lt;p&gt;先获取相关文件后面跟着文件来讲，直接用git客户端拉取即可，不过文件大概30多M，没梯子基本拉不下来。&lt;/p&gt;
+&lt;p&gt;先获取相关文件后面跟着文件来讲，直接用 git 客户端拉取即可，不过文件大概 30 多 M，没梯子基本拉不下来。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;git clone https://github.com/coreos/prometheus-operator.git
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;拉取不下来可以在&lt;a href=&#34;https://www.katacoda.com/courses/kubernetes&#34;&gt;katacoda的网页&lt;/a&gt;上随便一个课程的机器都有docker客户端，可以git clone下来后把文件构建进一个alpine镜像然后推到dockerhub上，再在自己的机器docker run这个镜像的时候docker cp到宿主机上。&lt;/p&gt;
-&lt;p&gt;Prometheus Operator引入的自定义资源包括：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;拉取不下来可以在&lt;a href=&#34;https://www.katacoda.com/courses/kubernetes&#34;&gt;katacoda 的网页&lt;/a&gt;上随便一个课程的机器都有 docker 客户端，可以 git clone 下来后把文件构建进一个 alpine 镜像然后推到 dockerhub 上，再在自己的机器 docker run 这个镜像的时候 docker cp 到宿主机上。&lt;/p&gt;
+&lt;p&gt;Prometheus Operator 引入的自定义资源包括：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Prometheus&lt;/li&gt;
 &lt;li&gt;ServiceMonitor&lt;/li&gt;
 &lt;li&gt;Alertmanager&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;用户创建了prometheus-operator(也就是上面监听三个CRD的各种事件的controller)后，用户可以利用&lt;code&gt;kind: Prometheus&lt;/code&gt;这种声明式创建对应的资源。
-下面我们部署简单的例子学习prometheus-operator&lt;/p&gt;
-&lt;h3 id=&#34;创建prometheus-operator的pod&#34;&gt;创建prometheus-operator的pod&lt;/h3&gt;
-&lt;p&gt;拉取到文件后我们先创建prometheus-operator：&lt;/p&gt;
+&lt;p&gt;用户创建了 prometheus-operator(也就是上面监听三个 CRD 的各种事件的 controller) 后，用户可以利用&lt;code&gt;kind: Prometheus&lt;/code&gt;这种声明式创建对应的资源。
+下面我们部署简单的例子学习 prometheus-operator&lt;/p&gt;
+&lt;h3 id=&#34;创建-prometheus-operator-的-pod&#34;&gt;创建 prometheus-operator 的 pod&lt;/h3&gt;
+&lt;p&gt;拉取到文件后我们先创建 prometheus-operator：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; prometheus-operator
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f bundle.yaml
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrolebinding.rbac.authorization.k8s.io/prometheus-operator created
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;clusterrole.rbac.authorization.k8s.io/prometheus-operator created
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;deployment.apps/prometheus-operator created
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceaccount/prometheus-operator created
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认pod运行，以及我们可以发现operator的pod在有RBAC下创建了一个APIService：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认 pod 运行，以及我们可以发现 operator 的 pod 在有 RBAC 下创建了一个 APIService：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get pod
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                                   READY     STATUS    RESTARTS   AGE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prometheus-operator-6db8dbb7dd-djj6s   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          1m
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get APIService &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; grep monitor
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;v1.monitoring.coreos.com               2018-10-09T10:49:47Z
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看这个APISerivce&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看这个 APISerivce&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get --raw /apis/monitoring.coreos.com/v1
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s2&#34;&gt;&amp;#34;kind&amp;#34;&lt;/span&gt;: &lt;span class=&#34;s2&#34;&gt;&amp;#34;APIResourceList&amp;#34;&lt;/span&gt;，
@@ -2225,7 +2225,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个是因为bundle.yml里有如下的&lt;code&gt;CLusterRole&lt;/code&gt;和对应的&lt;code&gt;ClusterRoleBinding&lt;/code&gt;来让prometheus-operator有权限对&lt;code&gt;monitoring.coreos.com&lt;/code&gt;这个apiGroup里的这些CRD进行所有操作&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个是因为 bundle.yml 里有如下的&lt;code&gt;CLusterRole&lt;/code&gt;和对应的&lt;code&gt;ClusterRoleBinding&lt;/code&gt;来让 prometheus-operator 有权限对&lt;code&gt;monitoring.coreos.com&lt;/code&gt;这个 apiGroup 里的这些 CRD 进行所有操作&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterRole&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2248,7 +2248,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;prometheusrules&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;verbs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;s1&#34;&gt;&amp;#39;*&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同时我们查看到pod里的log发现operator也在集群里创建了对应的CRD&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;同时我们查看到 pod 里的 log 发现 operator 也在集群里创建了对应的 CRD&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl logs prometheus-operator-6db8dbb7dd-dkhxc
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ts&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;2018-10-09T11:21:09.389340424Z &lt;span class=&#34;nv&#34;&gt;caller&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;main.go:165 &lt;span class=&#34;nv&#34;&gt;msg&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;Starting Prometheus Operator version &amp;#39;0.26.0&amp;#39;.&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;level&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;info &lt;span class=&#34;nv&#34;&gt;ts&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;2018-10-09T11:21:09.491464524Z &lt;span class=&#34;nv&#34;&gt;caller&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;operator.go:377 &lt;span class=&#34;nv&#34;&gt;component&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;prometheusoperator &lt;span class=&#34;nv&#34;&gt;msg&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;connection established&amp;#34;&lt;/span&gt; cluster-version&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;v1.11.3
@@ -2265,16 +2265,16 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prometheuses.monitoring.coreos.com      2018-10-09T11:21:11Z
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prometheusrules.monitoring.coreos.com   2018-10-09T11:21:12Z
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;servicemonitors.monitoring.coreos.com   2018-10-09T11:21:12Z
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;相关crd介绍&#34;&gt;相关CRD介绍&lt;/h3&gt;
-&lt;p&gt;这四个CRD作用如下&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;相关-crd-介绍&#34;&gt;相关 CRD 介绍&lt;/h3&gt;
+&lt;p&gt;这四个 CRD 作用如下&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;Prometheus&lt;/span&gt;: 由 Operator 依据一个自定义资源&lt;code&gt;kind: Prometheus&lt;/code&gt;类型中，所描述的内容而部署的 Prometheus Server 集群，可以将这个自定义资源看作是一种特别用来管理Prometheus Server的StatefulSets资源。&lt;/li&gt;
-&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;ServiceMonitor&lt;/span&gt;: 一个Kubernetes自定义资源(和&lt;code&gt;kind: Prometheus&lt;/code&gt;一样是CRD)，该资源描述了Prometheus Server的Target列表，Operator 会监听这个资源的变化来动态的更新Prometheus Server的Scrape targets并让prometheus server去reload配置(prometheus有对应reload的http接口&lt;code&gt;/-/reload&lt;/code&gt;)。而该资源主要通过Selector来依据 Labels 选取对应的Service的endpoints，并让 Prometheus Server 通过 Service 进行拉取（拉）指标资料(也就是metrics信息)，metrics信息要在http的url输出符合metrics格式的信息，ServiceMonitor也可以定义目标的metrics的url。&lt;/li&gt;
+&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;Prometheus&lt;/span&gt;: 由 Operator 依据一个自定义资源&lt;code&gt;kind: Prometheus&lt;/code&gt;类型中，所描述的内容而部署的 Prometheus Server 集群，可以将这个自定义资源看作是一种特别用来管理 Prometheus Server 的 StatefulSets 资源。&lt;/li&gt;
+&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;ServiceMonitor&lt;/span&gt;: 一个 Kubernetes 自定义资源 (和&lt;code&gt;kind: Prometheus&lt;/code&gt;一样是 CRD)，该资源描述了 Prometheus Server 的 Target 列表，Operator 会监听这个资源的变化来动态的更新 Prometheus Server 的 Scrape targets 并让 prometheus server 去 reload 配置 (prometheus 有对应 reload 的 http 接口&lt;code&gt;/-/reload&lt;/code&gt;)。而该资源主要通过 Selector 来依据 Labels 选取对应的 Service 的 endpoints，并让 Prometheus Server 通过 Service 进行拉取（拉）指标资料 (也就是 metrics 信息)，metrics 信息要在 http 的 url 输出符合 metrics 格式的信息，ServiceMonitor 也可以定义目标的 metrics 的 url。&lt;/li&gt;
 &lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;Alertmanager&lt;/span&gt;：Prometheus Operator 不只是提供 Prometheus Server 管理与部署，也包含了 AlertManager，并且一样通过一个 &lt;code&gt;kind: Alertmanager&lt;/code&gt; 自定义资源来描述信息，再由 Operator 依据描述内容部署 Alertmanager 集群。&lt;/li&gt;
-&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;PrometheusRule&lt;/span&gt;:对于Prometheus而言，在原生的管理方式上，我们需要手动创建Prometheus的告警文件，并且通过在Prometheus配置中声明式的加载。而在Prometheus Operator模式中，告警规则也编程一个通过Kubernetes API 声明式创建的一个资源.告警规则创建成功后，通过在Prometheus中使用想servicemonitor那样用&lt;code&gt;ruleSelector&lt;/code&gt;通过label匹配选择需要关联的PrometheusRule即可。&lt;/li&gt;
+&lt;li&gt;&lt;span style=&#34;font-size: 1.2em;color: #333;font-weight:bold&#34;&gt;PrometheusRule&lt;/span&gt;:对于 Prometheus 而言，在原生的管理方式上，我们需要手动创建 Prometheus 的告警文件，并且通过在 Prometheus 配置中声明式的加载。而在 Prometheus Operator 模式中，告警规则也编程一个通过 Kubernetes API 声明式创建的一个资源。告警规则创建成功后，通过在 Prometheus 中使用想 servicemonitor 那样用&lt;code&gt;ruleSelector&lt;/code&gt;通过 label 匹配选择需要关联的 PrometheusRule 即可。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h3 id=&#34;部署kind-prometheus&#34;&gt;部署kind: Prometheus&lt;/h3&gt;
-&lt;p&gt;现在我们有了prometheus这个CRD，我们部署一个prometheus server只需要如下声明即可。&lt;/p&gt;
+&lt;h3 id=&#34;部署-kind-prometheus&#34;&gt;部署 kind: Prometheus&lt;/h3&gt;
+&lt;p&gt;现在我们有了 prometheus 这个 CRD，我们部署一个 prometheus server 只需要如下声明即可。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: ServiceAccount
@@ -2294,9 +2294,9 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    requests:
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;      memory: 400Mi
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因为负载均衡，一个svc下的一组pod是监控的最小单位，要监控一个svc的metrics就声明创建一个&lt;code&gt;servicemonitors&lt;/code&gt;即可。&lt;/p&gt;
-&lt;h3 id=&#34;部署一组pod及其svc&#34;&gt;部署一组pod及其svc&lt;/h3&gt;
-&lt;p&gt;首先，我们部署一个带metrics输出的简单程序的deploy，该镜像里的主进程会在8080端口上输出metrics信息。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;因为负载均衡，一个 svc 下的一组 pod 是监控的最小单位，要监控一个 svc 的 metrics 就声明创建一个&lt;code&gt;servicemonitors&lt;/code&gt;即可。&lt;/p&gt;
+&lt;h3 id=&#34;部署一组-pod-及其-svc&#34;&gt;部署一组 pod 及其 svc&lt;/h3&gt;
+&lt;p&gt;首先，我们部署一个带 metrics 输出的简单程序的 deploy，该镜像里的主进程会在 8080 端口上输出 metrics 信息。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: extensions/v1beta1
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Deployment
@@ -2316,7 +2316,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;        - name: web
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;          containerPort: 8080
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建对应的svc。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建对应的 svc。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Service
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
@@ -2331,8 +2331,8 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - name: web
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    port: 8080
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署kind-servicemonitor&#34;&gt;部署kind: ServiceMonitor&lt;/h3&gt;
-&lt;p&gt;现在创建一个&lt;code&gt;ServiceMonitor&lt;/code&gt;来告诉prometheus server需要监控带有label &lt;code&gt;app: example-app&lt;/code&gt;的svc背后的一组pod的metrics。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-kind-servicemonitor&#34;&gt;部署 kind: ServiceMonitor&lt;/h3&gt;
+&lt;p&gt;现在创建一个&lt;code&gt;ServiceMonitor&lt;/code&gt;来告诉 prometheus server 需要监控带有 label &lt;code&gt;app: example-app&lt;/code&gt;的 svc 背后的一组 pod 的 metrics。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: monitoring.coreos.com/v1
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: ServiceMonitor
@@ -2347,16 +2347,16 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  endpoints:
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  - port: web
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;默认情况下&lt;code&gt;ServiceMonitor&lt;/code&gt;和监控对象必须是在相同Namespace下的，如果要关联非同ns下需要下面这样设置值。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;默认情况下&lt;code&gt;ServiceMonitor&lt;/code&gt;和监控对象必须是在相同 Namespace 下的，如果要关联非同 ns 下需要下面这样设置值。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaceSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchNames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;target_ns_name&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果希望ServiceMonitor可以关联任意命名空间下的标签，则通过以下方式定义：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果希望 ServiceMonitor 可以关联任意命名空间下的标签，则通过以下方式定义：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespaceSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;any&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果需要监控的Target对象启用了BasicAuth认证，那在定义ServiceMonitor对象时，可以使用endpoints配置中定义basicAuth如下所示basicAuth中的&lt;code&gt;password&lt;/code&gt;和&lt;code&gt;username&lt;/code&gt;值来源于同ns下的一个名为&lt;code&gt;basic-auth&lt;/code&gt;的Secret。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果需要监控的 Target 对象启用了 BasicAuth 认证，那在定义 ServiceMonitor 对象时，可以使用 endpoints 配置中定义 basicAuth 如下所示 basicAuth 中的&lt;code&gt;password&lt;/code&gt;和&lt;code&gt;username&lt;/code&gt;值来源于同 ns 下的一个名为&lt;code&gt;basic-auth&lt;/code&gt;的 Secret。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;endpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;basicAuth&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2374,14 +2374,14 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;basic-auth&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Opaque&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;user&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dXNlcgo=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# base64编码后的用户名&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;password&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cGFzc3dkCg==&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# base64编码后的密码&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面要注意的是我创建prometheus server的时候有如下值。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;user&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;dXNlcgo=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# base64 编码后的用户名&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;password&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;cGFzc3dkCg==&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# base64 编码后的密码&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面要注意的是我创建 prometheus server 的时候有如下值。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceMonitorSelector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;team&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;frontend&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该值字面意思可以知道就是指定prometheus server去选择哪些&lt;code&gt;ServiceMonitor&lt;/code&gt;，这个概念和svc去选择pod一样，可能一个集群跑很多prometheus server来监控各自选中的&lt;code&gt;ServiceMonitor&lt;/code&gt;，如果想一个prometheus server监控所有的则&lt;code&gt;spec.serviceMonitorSelector: {}&lt;/code&gt;为空即可，而namespaces的范围同样的设置&lt;code&gt;spec.serviceMonitorSelector: {}&lt;/code&gt;，后面官方的prometheus实例里我们可以看到设置了这两个值。&lt;/p&gt;
-&lt;p&gt;给prometheus server设置相关的RBAC权限。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该值字面意思可以知道就是指定 prometheus server 去选择哪些&lt;code&gt;ServiceMonitor&lt;/code&gt;，这个概念和 svc 去选择 pod 一样，可能一个集群跑很多 prometheus server 来监控各自选中的&lt;code&gt;ServiceMonitor&lt;/code&gt;，如果想一个 prometheus server 监控所有的则&lt;code&gt;spec.serviceMonitorSelector: {}&lt;/code&gt;为空即可，而 namespaces 的范围同样的设置&lt;code&gt;spec.serviceMonitorSelector: {}&lt;/code&gt;，后面官方的 prometheus 实例里我们可以看到设置了这两个值。&lt;/p&gt;
+&lt;p&gt;给 prometheus server 设置相关的 RBAC 权限。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: rbac.authorization.k8s.io/v1beta1
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: ClusterRole
@@ -2415,7 +2415,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  name: prometheus
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  namespace: default
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建svc使用&lt;code&gt;NodePort&lt;/code&gt;方便我们访问prometheus的web页面，生产环境不建议使用&lt;code&gt;NodePort&lt;/code&gt;。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建 svc 使用&lt;code&gt;NodePort&lt;/code&gt;方便我们访问 prometheus 的 web 页面，生产环境不建议使用&lt;code&gt;NodePort&lt;/code&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ cat&lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt;EOF | kubectl apply -f -
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;apiVersion: v1
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;kind: Service
@@ -2432,7 +2432,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;  selector:
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;    prometheus: prometheus
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;EOF&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打开浏览器访问&lt;code&gt;ip:30900&lt;/code&gt;进入target发现已经监听起来了，对应的config里也有配置生成和导入。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;打开浏览器访问&lt;code&gt;ip:30900&lt;/code&gt;进入 target 发现已经监听起来了，对应的 config 里也有配置生成和导入。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2489,7 +2489,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;先清理掉上面的，然后我们使用官方提供的全套yaml正式部署&lt;code&gt;prometheus-operator&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;先清理掉上面的，然后我们使用官方提供的全套 yaml 正式部署&lt;code&gt;prometheus-operator&lt;/code&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete svc prometheus example-app
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete ClusterRoleBinding prometheus 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete ClusterRole prometheus
@@ -2498,7 +2498,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete  sa prometheus
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete prometheus prometheus
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl delete -f bundle.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;部署官方的prometheus-operator&#34;&gt;部署官方的prometheus-operator&lt;/h2&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;部署官方的-prometheus-operator&#34;&gt;部署官方的 prometheus-operator&lt;/h2&gt;
 &lt;h3 id=&#34;分类文件&#34;&gt;分类文件&lt;/h3&gt;
 &lt;p&gt;官方把所有文件都放在一起，这里我分类下。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; contrib/kube-prometheus/manifests/
@@ -2524,17 +2524,17 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;drwxr-xr-x &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; root root &lt;span class=&#34;m&#34;&gt;4096&lt;/span&gt; Jan  &lt;span class=&#34;m&#34;&gt;6&lt;/span&gt; 14:17 operator/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;drwxr-xr-x &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; root root &lt;span class=&#34;m&#34;&gt;4096&lt;/span&gt; Jan  &lt;span class=&#34;m&#34;&gt;6&lt;/span&gt; 14:19 prometheus/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;drwxr-xr-x &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; root root &lt;span class=&#34;m&#34;&gt;4096&lt;/span&gt; Jan  &lt;span class=&#34;m&#34;&gt;6&lt;/span&gt; 14:17 serviceMonitor/
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署operator&#34;&gt;部署operator&lt;/h3&gt;
-&lt;p&gt;先创建ns和operator，quay.io仓库拉取慢，可以使用我脚本拉取，其他镜像也可以这样去拉，不过在apply之前才能拉，一旦被docker接手拉取就只能漫长等。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-operator&#34;&gt;部署 operator&lt;/h3&gt;
+&lt;p&gt;先创建 ns 和 operator，quay.io 仓库拉取慢，可以使用我脚本拉取，其他镜像也可以这样去拉，不过在 apply 之前才能拉，一旦被 docker 接手拉取就只能漫长等。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f .
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl -s https://zhangguanzhang.github.io/bash/pull.sh &lt;span class=&#34;p&#34;&gt;|&lt;/span&gt; bash -s -- quay.io/coreos/prometheus-operator:v0.26.0
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f operator/
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认状态运行正常再往后执行，这里镜像是quay.io仓库的可能会很慢耐心等待或者自行修改成能拉取到的。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;确认状态运行正常再往后执行，这里镜像是 quay.io 仓库的可能会很慢耐心等待或者自行修改成能拉取到的。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n monitoring get pod
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                                   READY     STATUS    RESTARTS   AGE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;prometheus-operator-56954c76b5-qm9ww   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          24s
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署整套crd&#34;&gt;部署整套CRD&lt;/h3&gt;
-&lt;p&gt;创建相关的CRD，这里镜像可能也要很久。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署整套-crd&#34;&gt;部署整套 CRD&lt;/h3&gt;
+&lt;p&gt;创建相关的 CRD，这里镜像可能也要很久。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f adapter/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f alertmanager/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f node-exporter/
@@ -2542,7 +2542,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f grafana/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f prometheus/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f serviceMonitor/
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以通过get查看整体状态，这里镜像原因会等待很久，我们可以先往后看几个坑的地方。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以通过 get 查看整体状态，这里镜像原因会等待很久，我们可以先往后看几个坑的地方。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl -n monitoring get all
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;常见坑的说明和解决方法&#34;&gt;常见坑的说明和解决方法&lt;/h3&gt;
 &lt;h4 id=&#34;坑一&#34;&gt;坑一&lt;/h4&gt;
@@ -2574,7 +2574,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 
-这里要注意有一个坑，二进制部署k8s管理组件和新版本kubeadm部署的都会发现在prometheus server的页面上发现&lt;code&gt;kube-controller&lt;/code&gt;和&lt;code&gt;kube-schedule&lt;/code&gt;的target为0/0也就是上图所示。这是因为serviceMonitor是根据label去选取svc的，我们可以看到对应的&lt;code&gt;serviceMonitor&lt;/code&gt;是选取的ns范围是&lt;code&gt;kube-system&lt;/code&gt;。&lt;/p&gt;
+这里要注意有一个坑，二进制部署 k8s 管理组件和新版本 kubeadm 部署的都会发现在 prometheus server 的页面上发现&lt;code&gt;kube-controller&lt;/code&gt;和&lt;code&gt;kube-schedule&lt;/code&gt;的target为0/0也就是上图所示。这是因为serviceMonitor是根据label去选取svc的，我们可以看到对应的&lt;code&gt;serviceMonitor&lt;/code&gt;是选取的 ns 范围是&lt;code&gt;kube-system&lt;/code&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ grep -2 selector serviceMonitor/prometheus-serviceMonitorKube*
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceMonitor/prometheus-serviceMonitorKubeControllerManager.yaml-    matchNames:
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceMonitor/prometheus-serviceMonitorKubeControllerManager.yaml-    - kube-system
@@ -2593,19 +2593,19 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceMonitor/prometheus-serviceMonitorKubeScheduler.yaml:  selector:
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceMonitor/prometheus-serviceMonitorKubeScheduler.yaml-    matchLabels:
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;serviceMonitor/prometheus-serviceMonitorKubeScheduler.yaml-      k8s-app: kube-scheduler
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;而kube-system里默认只有这俩svc，且没有符合上面的label。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;而 kube-system 里默认只有这俩 svc，且没有符合上面的 label。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl -n kube-system get svc
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                      TYPE        CLUSTER-IP   EXTERNAL-IP   PORT&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;         AGE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-dns                  ClusterIP   10.96.0.10   &amp;lt;none&amp;gt;        53/UDP，53/TCP   139m
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubelet                   ClusterIP   None         &amp;lt;none&amp;gt;        10250/TCP       103m
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;但是却有对应的ep(没有带任何label)被创建，这点想不通官方什么鬼操作，另外这里没有kubelet的ep，我博客部署的二进制的话会有。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;但是却有对应的 ep(没有带任何 label) 被创建，这点想不通官方什么鬼操作，另外这里没有 kubelet 的 ep，我博客部署的二进制的话会有。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl get ep -n kube-system
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                      ENDPOINTS                                                AGE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-controller-manager   &amp;lt;none&amp;gt;                                                   139m
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-dns                  10.244.1.2:53，10.244.8.10:53，10.244.1.2:53 + &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt; more...   139m
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kube-scheduler            &amp;lt;none&amp;gt;                                                   139m
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;解决办法&#34;&gt;解决办法&lt;/h4&gt;
-&lt;p&gt;所以这里我们创建两个管理组建的svc，名字无所谓，关键是svc的label要能被servicemonitor选中，svc的选择器的label是因为kubeadm的staticPod的label是这样，如果是二进制部署的这俩svc的selector部分不能要。&lt;/p&gt;
+&lt;p&gt;所以这里我们创建两个管理组建的 svc，名字无所谓，关键是 svc 的 label 要能被 servicemonitor 选中，svc 的选择器的 label 是因为 kubeadm 的 staticPod 的 label 是这样，如果是二进制部署的这俩 svc 的 selector 部分不能要。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2641,7 +2641,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10251&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10251&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;二进制的话需要我们手动填入svc对应的ep的属性，我集群是HA的，所有有三个，仅供参考，别傻傻得照抄，另外这个ep的名字得和上面的svc的名字和属性对应上：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;二进制的话需要我们手动填入 svc 对应的 ep 的属性，我集群是 HA 的，所有有三个，仅供参考，别傻傻得照抄，另外这个 ep 的名字得和上面的 svc 的名字和属性对应上：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Endpoints&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2675,7 +2675,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http-metrics&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10251&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里不知道为啥kubeadm部署的没有kubelet这个ep，我博客二进制部署后是会有kubelet这个ep的(好像metrics server创建的)，下面仅供参考，IP根据实际写。另外kubeadm部署下kubelet的readonly的metrics端口(默认是10255)不会开放可以删掉ep的那部分port：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里不知道为啥 kubeadm 部署的没有 kubelet 这个 ep，我博客二进制部署后是会有 kubelet 这个 ep 的 (好像 metrics server 创建的)，下面仅供参考，IP 根据实际写。另外 kubeadm 部署下 kubelet 的 readonly 的 metrics 端口 (默认是 10255) 不会开放可以删掉 ep 的那部分 port：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Endpoints&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2715,7 +2715,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;https-metrics&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;10250&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;至于prometheus server的服务访问，别再用效率不行的&lt;code&gt;NodePort&lt;/code&gt;了，上ingress controller吧，怎么部署参照我博客&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34;&gt;IngressController&lt;/a&gt;。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;至于 prometheus server 的服务访问，别再用效率不行的&lt;code&gt;NodePort&lt;/code&gt;了，上 ingress controller 吧，怎么部署参照我博客&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34;&gt;IngressController&lt;/a&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -2758,7 +2758,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;alertmanager-main&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9093&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;坑二&#34;&gt;坑二&lt;/h4&gt;
-&lt;p&gt;访问prometheus server的web页面我们发现即使创建了svc和注入对应ep的信息在target页面发现prometheus server请求被拒绝。&lt;/p&gt;
+&lt;p&gt;访问 prometheus server 的 web 页面我们发现即使创建了 svc 和注入对应 ep 的信息在 target 页面发现 prometheus server 请求被拒绝。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2787,7 +2787,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;在宿主机上我们发现127.0.0.1才能访问，网卡ip不能访问(这里是另一个环境找的，所以ip是192不是前面的172)&lt;/p&gt;
+&lt;p&gt;在宿主机上我们发现 127.0.0.1 才能访问，网卡 ip 不能访问 (这里是另一个环境找的，所以 ip 是 192 不是前面的 172)&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ hostname -i
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;192.168.15.223
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl -I http://192.168.15.223:10251/metrics
@@ -2798,17 +2798,17 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Content-Type: text/plain&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;0.0.4
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Date: Mon， &lt;span class=&#34;m&#34;&gt;07&lt;/span&gt; Jan &lt;span class=&#34;m&#34;&gt;2019&lt;/span&gt; 13:33:50 GMT
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;解决办法-1&#34;&gt;解决办法&lt;/h4&gt;
-&lt;p&gt;修改管理组件bind的ip。&lt;/p&gt;
-&lt;p&gt;如果使用kubeadm启动的集群，初始化时的config.yml里可以加入如下参数&lt;/p&gt;
+&lt;p&gt;修改管理组件 bind 的 ip。&lt;/p&gt;
+&lt;p&gt;如果使用 kubeadm 启动的集群，初始化时的 config.yml 里可以加入如下参数&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;controllerManagerExtraArgs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0.0.0.0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;schedulerExtraArgs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;0.0.0.0&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;已经启动后的使用下面命令更改就会滚动更新&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;sed -ri &lt;span class=&#34;s1&#34;&gt;&amp;#39;/--address/s#=.+#=0.0.0.0#&amp;#39;&lt;/span&gt; /etc/kubernetes/manifests/kube-*
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;二进制的话查看是不是bind的0.0.0.0如果不是就修改成0.0.0.0，多块网卡如果只想bind一个网卡就写对应的主机上的网卡ip，写0.0.0.0就会监听所有网卡的对应端口。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;二进制的话查看是不是 bind 的 0.0.0.0 如果不是就修改成 0.0.0.0，多块网卡如果只想 bind 一个网卡就写对应的主机上的网卡 ip，写 0.0.0.0 就会监听所有网卡的对应端口。&lt;/p&gt;
 &lt;h3 id=&#34;访问相关页面&#34;&gt;访问相关页面&lt;/h3&gt;
-&lt;p&gt;通过浏览器查看&lt;code&gt;prometheus.monitoring.k8s.local&lt;/code&gt;与&lt;code&gt;grafana.monitoring.k8s.local&lt;/code&gt;是否正常，若沒问题就可以看到下图结果，grafana初始用股名和密码是admin。&lt;/p&gt;
+&lt;p&gt;通过浏览器查看&lt;code&gt;prometheus.monitoring.k8s.local&lt;/code&gt;与&lt;code&gt;grafana.monitoring.k8s.local&lt;/code&gt;是否正常，若沒问题就可以看到下图结果，grafana 初始用股名和密码是 admin。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2866,7 +2866,7 @@ dashboard登陆的token如果使用管理员的话可以用rbac绑定集群管�
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;最后&#34;&gt;最后&lt;/h2&gt;
-&lt;p&gt;可以多看看官方写的yaml，里面有更多的字段没介绍可以看yaml来了解。&lt;/p&gt;
+&lt;p&gt;可以多看看官方写的 yaml，里面有更多的字段没介绍可以看 yaml 来了解。&lt;/p&gt;
 &lt;h2 id=&#34;参考文档&#34;&gt;参考文档&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/coreos/prometheus-operator/tree/master/Documentation&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/coreos/prometheus-operator/tree/master/Documentation&lt;/a&gt;&lt;/li&gt;

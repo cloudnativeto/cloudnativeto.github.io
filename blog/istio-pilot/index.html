@@ -326,7 +326,7 @@
         content="2020-09-08T12:00:00&#43;08:00"
       />
     
-    <meta property="article:modified_time" content="2023-08-29T10:08:12&#43;08:00">
+    <meta property="article:modified_time" content="2023-08-30T20:44:49&#43;08:00">
   
 
   
@@ -355,7 +355,7 @@
   "headline": "Istio Pilot 源码分析（一）",
   
   "datePublished": "2020-09-08T12:00:00+08:00",
-  "dateModified": "2023-08-29T10:08:12+08:00",
+  "dateModified": "2023-08-30T20:44:49+08:00",
   
   "author": {
     "@type": "Person",
@@ -848,7 +848,7 @@
 
   
   <span class="middot-divider"></span>
-  字数 5913
+  字数 5930
   <span class="middot-divider"></span>
   <span class="article-reading-time">
       阅读时长 27 分钟
@@ -937,7 +937,7 @@
                     <p><code>Istio</code> 作为目前 Service Mesh 方案中的翘楚，吸引着越来越多的企业及开发者。越来越多的团队想将其应用于微服务的治理，但在实际落地时却因为不了解 <code>Istio</code> 黑盒中的运行机制而左右为难，本文将基于 1.7 的源码讲解 <code>Istio</code> 的核心组件 <code>Pilot</code> 的结构及运行流程，希望对读者应用 <code>Istio</code> 有所助益。</p>
 <p><em>注：本文基于 <code>istio release-1.7</code> 分支分析，其他版本的代码结构会有所不同。</em></p>
 <h2 id="背景">背景</h2>
-<p>随着 <code>Istio</code> 1.7 的发布，内部组件精简后的 <code>istiod</code> 日趋稳定，越来越多的公司将其应用到自身微服务的流量治理、安全通信及监测中。多点也不例外，应用 <code>Istio</code> 来落地业务系统所有 <code>Dubbo</code> 服务的网格化，下沉 <code>SDK</code> 逻辑，解决基础中间件与业务系统过于耦合等痛点。 目前，我们是通过自己开发的 <code>Controller</code> 组件对接 <code>Zookeeper</code> 等注册中心，将注册到 <code>Zookeeper</code> 的节点实时转化为 <code>ServiceEntry</code> 及 <code>WorkloadEntry</code> 等 <code>Istio</code> 配置类型写入 <code>kube-apiserver</code>，再由 <code>Pilot</code> 转化为 <code>xDS</code> 协议下发至数据面，同时对集群、虚拟机中的服务进行治理。随着公司服务网格化的逐步落地，对 <code>Istio</code> 及数据面组件源码级掌握的诉求越来越高，没有足够的深度及广度很难解决开发过程中遇到的难题，让我们一起揭开 <code>Istio</code> 神秘的面纱，看看黑箱内部是如何运作的。</p>
+<p>随着 <code>Istio</code> 1.7 的发布，内部组件精简后的 <code>istiod</code> 日趋稳定，越来越多的公司将其应用到自身微服务的流量治理、安全通信及监测中。多点也不例外，应用 <code>Istio</code> 来落地业务系统所有 <code>Dubbo</code> 服务的网格化，下沉 <code>SDK</code> 逻辑，解决基础中间件与业务系统过于耦合等痛点。目前，我们是通过自己开发的 <code>Controller</code> 组件对接 <code>Zookeeper</code> 等注册中心，将注册到 <code>Zookeeper</code> 的节点实时转化为 <code>ServiceEntry</code> 及 <code>WorkloadEntry</code> 等 <code>Istio</code> 配置类型写入 <code>kube-apiserver</code>，再由 <code>Pilot</code> 转化为 <code>xDS</code> 协议下发至数据面，同时对集群、虚拟机中的服务进行治理。随着公司服务网格化的逐步落地，对 <code>Istio</code> 及数据面组件源码级掌握的诉求越来越高，没有足够的深度及广度很难解决开发过程中遇到的难题，让我们一起揭开 <code>Istio</code> 神秘的面纱，看看黑箱内部是如何运作的。</p>
 <p>本文作为 <code>Istio</code> 控制面组件 <code>Pilot</code> 的源码分析系列，主要面向刚接触 <code>Istio</code> 或仅停留在使用 <code>Istio</code> 基本配置类型（如 <code>VirtualService</code>、<code>DestinationRule</code> 等）的同学，需要熟悉 <code>Istio</code> 的一些 <a href="https://istio.io/latest/zh/docs/concepts/traffic-management/" target="_blank" rel="noopener">基础概念及名词</a> 。文章会涉及较多的代码细节，我们会以不同的篇幅分别介绍以下内容：</p>
 <ol>
 <li><code>pilot-discovery</code> 宏观架构及启动流程梳理</li>
@@ -947,7 +947,7 @@
 <li><code>pilot</code> 中的身份认证及安全通信解析</li>
 </ol>
 <p>相信通过源码一步一步分析，能消除读者对 <code>Pilot</code> 的陌生感，在基于 <code>Pilot</code> 做适配开发时会更加清楚的了解其底层运行逻辑，碰到问题时也能更好的定位。</p>
-<p><code>Pilot</code> 的代码主要分为两部分:</p>
+<p><code>Pilot</code> 的代码主要分为两部分：</p>
 <ul>
 <li><code>pilot-discovery</code></li>
 <li><code>pilot-agent</code></li>
@@ -1027,7 +1027,7 @@
 <p><code>ConfigStores</code> 是一个列表，里面存储了各类 <code>Istio</code> 配置文件，包括 <code>ServiceEntry</code> 、<code>WorkloadEntry</code> 等服务数据，也包括 <code>VirtualService</code>、<code>DestinationRules</code>、<code>Sidecar</code> 等流量控制、路由规则的配置数据，<code>pilot-discovery</code> 将这些 <code>ConfigStores</code> 聚合成一个 <code>configController</code> 统一进行管理，之后再从其中衍生出 <code>IstioConfigStore</code>，将其作为 <code>serviceEntryStore</code> 的配置源。<code>serviceEntryStore</code> 其实就是 <code>ServiceEntry Controller</code>，响应 <code>ServiceEntry</code> 和 <code>WorkloadEntry</code> 这类服务信息的变化。</p>
 <p><code>EnvoyXdsServer</code> 比较核心，一切与 <code>xDS</code> 协议相关的接收、转换、下发操作都由它完成。<code>EnvoyXdsServer</code> 对接所有集群中的边车代理，如 <code>Envoy</code>、<code>MOSN</code> 等，当配置或服务发生变化时主动推送，也会响应代理发送的请求，依据请求的信息下发相应的 <code>xDS</code> 配置。</p>
 <p>理解了这三个核心组件的定义，就能比较好的理解下面分析的各类流程了。</p>
-<p><code>pilot-discovery</code> 的整个业务流程梳理如下，可以先大概浏览一遍，之后我们逐一进行分析:
+<p><code>pilot-discovery</code> 的整个业务流程梳理如下，可以先大概浏览一遍，之后我们逐一进行分析：
 
 
 
@@ -1059,7 +1059,7 @@
     </figcaption></figure>
 </p>
 <h2 id="启动流程梳理">启动流程梳理</h2>
-<p>首先详细看一下 <code>pilot-discovery</code> 的启动流程。<code>pilot-discovery</code> 组件的入口代码在 <code>istio/pilot/cmd/pilot-discovery</code> 中。该目录中包含两个文件: <code>main.go</code> 和 <code>request.go</code>。<code>main.go</code> 中定义了 <code>pilot-discovery</code> 根命令及 <code>discovery</code> 命令，是启动服务发现及配置下发的主流程; 另一个文件 <code>request.go</code> 中定义了 <code>request</code> 命令，用来请求 <code>Pilot</code> 中的 <code>metrics/debug</code> 接口，多用来调试。</p>
+<p>首先详细看一下 <code>pilot-discovery</code> 的启动流程。<code>pilot-discovery</code> 组件的入口代码在 <code>istio/pilot/cmd/pilot-discovery</code> 中。该目录中包含两个文件：<code>main.go</code> 和 <code>request.go</code>。<code>main.go</code> 中定义了 <code>pilot-discovery</code> 根命令及 <code>discovery</code> 命令，是启动服务发现及配置下发的主流程; 另一个文件 <code>request.go</code> 中定义了 <code>request</code> 命令，用来请求 <code>Pilot</code> 中的 <code>metrics/debug</code> 接口，多用来调试。</p>
 <p><code>main.go</code> 中 <code>discoveryCmd</code>的 <code>RunE</code> 函数定义了启动过程，代码如下：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// 创建一个接收空结构的 stop channel 用来停止所有 servers
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="nx">stop</span> <span class="o">:=</span> <span class="nb">make</span><span class="p">(</span><span class="kd">chan</span> <span class="kd">struct</span><span class="p">{})</span>
@@ -1146,7 +1146,7 @@
       image.png
     </figcaption></figure>
 </p>
-<p>我们对每个步骤逐一进行分析:</p>
+<p>我们对每个步骤逐一进行分析：</p>
 <ol>
 <li>
 <p>初始化 <code>Environment</code></p>
@@ -1175,7 +1175,7 @@
 </span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">defaultMode</span><span class="p">:</span><span class="w"> </span><span class="m">420</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">istio</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">config-volume</span><span class="w">
-</span></span></span></code></pre></div><p>相应的配置存储在 <code>istio-system/istio</code> 这个 <code>configmap</code> 中，里面保存了 <code>mesh</code> 和 <code>meshNetworks</code> 两种配置，样例如下:</p>
+</span></span></span></code></pre></div><p>相应的配置存储在 <code>istio-system/istio</code> 这个 <code>configmap</code> 中，里面保存了 <code>mesh</code> 和 <code>meshNetworks</code> 两种配置，样例如下：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w"></span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ConfigMap</span><span class="w">
 </span></span></span><span class="line"><span class="cl"><span class="w"></span><span class="nt">metadata</span><span class="p">:</span><span class="w">
@@ -1201,7 +1201,7 @@
 </span></span><span class="line"><span class="cl">  <span class="nx">MeshHolder</span><span class="p">:</span> <span class="nx">e</span><span class="p">,</span>
 </span></span><span class="line"><span class="cl"><span class="p">})</span>
 </span></span><span class="line"><span class="cl"><span class="nx">e</span><span class="p">.</span><span class="nx">ServiceDiscovery</span> <span class="p">=</span> <span class="nx">ac</span>
-</span></span></code></pre></div><p>首先是初始化了一份 <code>PushContext</code> ，创建 <code>PushContext</code> 所需的各种列表和 <code>Map</code> 。 其次是初始化了一个聚合所有注册中心的 <code>Controller</code> 作为 <code>Environment</code> 中的 <code>ServiceDiscovery</code> 。 该 <code>Controller</code> 提供从所有注册中心（如 <code>Kubernetes, Consul, MCP</code> 等）获取服务和实例列表的方法。 这里传入了一个参数 <code>MeshHolder</code> 是想利用 <code>Environment</code> 中的 <code>mesh.Watcher</code> 将 <code>mesh</code> 这个配置同步过去。</p>
+</span></span></code></pre></div><p>首先是初始化了一份 <code>PushContext</code> ，创建 <code>PushContext</code> 所需的各种列表和 <code>Map</code> 。其次是初始化了一个聚合所有注册中心的 <code>Controller</code> 作为 <code>Environment</code> 中的 <code>ServiceDiscovery</code> 。该 <code>Controller</code> 提供从所有注册中心（如 <code>Kubernetes, Consul, MCP</code> 等）获取服务和实例列表的方法。这里传入了一个参数 <code>MeshHolder</code> 是想利用 <code>Environment</code> 中的 <code>mesh.Watcher</code> 将 <code>mesh</code> 这个配置同步过去。</p>
 </li>
 <li>
 <p>初始化 <code>Server</code></p>
@@ -1322,7 +1322,7 @@
 </span></span><span class="line"><span class="cl">  <span class="k">go</span> <span class="nx">s</span><span class="p">.</span><span class="nx">configController</span><span class="p">.</span><span class="nf">Run</span><span class="p">(</span><span class="nx">stop</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">  <span class="k">return</span> <span class="kc">nil</span>
 </span></span><span class="line"><span class="cl"><span class="p">})</span>
-</span></span></code></pre></div><p>再来看 <code>initServiceControllers</code> 处理服务发现的 <code>Controller</code> 初始化:</p>
+</span></span></code></pre></div><p>再来看 <code>initServiceControllers</code> 处理服务发现的 <code>Controller</code> 初始化：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">Server</span><span class="p">)</span> <span class="nf">initServiceControllers</span><span class="p">(</span><span class="nx">args</span> <span class="o">*</span><span class="nx">PilotArgs</span><span class="p">)</span> <span class="kt">error</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">serviceControllers</span> <span class="o">:=</span> <span class="nx">s</span><span class="p">.</span><span class="nf">ServiceController</span><span class="p">()</span>
 </span></span><span class="line"><span class="cl">  <span class="k">for</span> <span class="nx">_</span><span class="p">,</span> <span class="nx">r</span> <span class="o">:=</span> <span class="k">range</span> <span class="nx">args</span><span class="p">.</span><span class="nx">RegistryOptions</span><span class="p">.</span><span class="nx">Registries</span> <span class="p">{</span>
@@ -1374,13 +1374,13 @@
 </span></span><span class="line"><span class="cl">  <span class="nx">networkForRegistry</span> <span class="kt">string</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">once</span> <span class="nx">sync</span><span class="p">.</span><span class="nx">Once</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>可以看到 <code>Controller</code> 对 <code>Services</code> 、 <code>Nodes</code> 、 <code>Pods</code> 等资源各自初始化了 <code>Informer</code> 、 Lister 以及对应的 Map，各类 Handlers 在 Informer 监听到增删改查时推送相应的事件到 queue ，再由 <code>onServiceEvent</code> 、 <code>onNodeEvent</code> 、 <code>c.pods.onEvent</code> 中更新对应的 Map 。</p>
+</span></span></code></pre></div><p>可以看到 <code>Controller</code> 对 <code>Services</code> 、 <code>Nodes</code> 、 <code>Pods</code> 等资源各自初始化了 <code>Informer</code> 、Lister 以及对应的 Map，各类 Handlers 在 Informer 监听到增删改查时推送相应的事件到 queue，再由 <code>onServiceEvent</code> 、 <code>onNodeEvent</code> 、 <code>c.pods.onEvent</code> 中更新对应的 Map。</p>
 <p>回到 <code>initServiceControllers</code> ，初始化完 Kubernetes 注册中心之后，还需要关注 Kubernetes 集群之外的服务，这些服务基本都是通过 <code>ServiceEntry</code> 注册到控制面的，所有 <code>ServiceEntry</code> 配置数据目前还都在之前初始化的 <code>configController</code> 配置中心控制器中，这里将 <code>ServiceEntry</code> 数据单独拎出来初始化一个 <code>ServicEntry</code> 注册中心，加入到 <code>serviceControllers</code> 中：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="nx">s</span><span class="p">.</span><span class="nx">serviceEntryStore</span> <span class="p">=</span> <span class="nx">serviceentry</span><span class="p">.</span><span class="nf">NewServiceDiscovery</span><span class="p">(</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">s</span><span class="p">.</span><span class="nx">configController</span><span class="p">,</span> <span class="nx">s</span><span class="p">.</span><span class="nx">environment</span><span class="p">.</span><span class="nx">IstioConfigStore</span><span class="p">,</span> <span class="nx">s</span><span class="p">.</span><span class="nx">XDSServer</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl"><span class="nx">serviceControllers</span><span class="p">.</span><span class="nf">AddRegistry</span><span class="p">(</span><span class="nx">s</span><span class="p">.</span><span class="nx">serviceEntryStore</span><span class="p">)</span>
 </span></span></code></pre></div><p><code>serviceEntryStore</code> 相关的逻辑会在后续 xDS 下发流程的分析中再阐述。</p>
-<p>最后将 <code>serviceControllers</code> 中所有的服务注册中心的 <code>Controller</code> 的启动函数都注册到 <code>startFuncs</code> 中:</p>
+<p>最后将 <code>serviceControllers</code> 中所有的服务注册中心的 <code>Controller</code> 的启动函数都注册到 <code>startFuncs</code> 中：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="nx">s</span><span class="p">.</span><span class="nf">addStartFunc</span><span class="p">(</span><span class="kd">func</span><span class="p">(</span><span class="nx">stop</span> <span class="o">&lt;-</span><span class="kd">chan</span> <span class="kd">struct</span><span class="p">{})</span> <span class="kt">error</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="k">go</span> <span class="nx">serviceControllers</span><span class="p">.</span><span class="nf">Run</span><span class="p">(</span><span class="nx">stop</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">  <span class="k">return</span> <span class="kc">nil</span>
@@ -1490,7 +1490,7 @@
 </span></span><span class="line"><span class="cl">  <span class="k">return</span> <span class="kc">nil</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span></code></pre></div><p>这里将 <code>EnvoyXdsServer</code> 的启动添加至 <code>startFuncs</code> 中，便于后续统一启动。并初始化 <code>gRPC</code> 服务器，监听对应的端口。</p>
-<p>初始化 <code>gRPC</code> 服务器，并注册 <code>xDS V2</code> 和 <code>xDS V3</code> 的 <code>ADS</code> 服务到 <code>gRPC</code> 服务器上:</p>
+<p>初始化 <code>gRPC</code> 服务器，并注册 <code>xDS V2</code> 和 <code>xDS V3</code> 的 <code>ADS</code> 服务到 <code>gRPC</code> 服务器上：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">Server</span><span class="p">)</span> <span class="nf">initGrpcServer</span><span class="p">(</span><span class="nx">options</span> <span class="o">*</span><span class="nx">istiokeepalive</span><span class="p">.</span><span class="nx">Options</span><span class="p">)</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">grpcOptions</span> <span class="o">:=</span> <span class="nx">s</span><span class="p">.</span><span class="nf">grpcServerOptions</span><span class="p">(</span><span class="nx">options</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">s</span><span class="p">.</span><span class="nx">grpcServer</span> <span class="p">=</span> <span class="nx">grpc</span><span class="p">.</span><span class="nf">NewServer</span><span class="p">(</span><span class="nx">grpcOptions</span><span class="o">...</span><span class="p">)</span>

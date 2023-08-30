@@ -13,23 +13,23 @@
     </image>
     
     <item>
-      <title>使用Django，Prometheus，和Kubernetes定制应用指标</title>
+      <title>使用 Django，Prometheus，和 Kubernetes 定制应用指标</title>
       <link>https://cloudnative.to/blog/custom-application-metrics-with-django-prometheus-and-kubernetes/</link>
       <pubDate>Mon, 16 Sep 2019 22:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/custom-application-metrics-with-django-prometheus-and-kubernetes/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://labs.meanpug.com/custom-application-metrics-with-django-prometheus-and-kubernetes/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
-&lt;p&gt;本文强调了应用程序定制指标的重要性，用代码实例演示了如何设计指标并整合Prometheus到Django项目中，为使用Django构建应用的开发者提供了参考。&lt;/p&gt;
+&lt;p&gt;本文强调了应用程序定制指标的重要性，用代码实例演示了如何设计指标并整合 Prometheus 到 Django 项目中，为使用 Django 构建应用的开发者提供了参考。&lt;/p&gt;
 &lt;h2 id=&#34;为什么自定义指标很重要&#34;&gt;为什么自定义指标很重要？&lt;/h2&gt;
-&lt;p&gt;尽管有大量关于这一主题的讨论，但应用程序的自定义指标的重要性怎么强调都不为过。和为Django应用收集的核心服务指标（应用和web服务器统计数据、关键数据库和缓存操作指标）不同，自定义指标是业务特有的数据点，其边界和阈值只有你自己知道，这其实是很有趣的事情。&lt;/p&gt;
+&lt;p&gt;尽管有大量关于这一主题的讨论，但应用程序的自定义指标的重要性怎么强调都不为过。和为 Django 应用收集的核心服务指标（应用和 web 服务器统计数据、关键数据库和缓存操作指标）不同，自定义指标是业务特有的数据点，其边界和阈值只有你自己知道，这其实是很有趣的事情。&lt;/p&gt;
 &lt;p&gt;什么样的指标才是有用的？考虑下面几点：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;运行一个电子商务网站并追踪平均订单数量。突然间订单的数量不那么平均了。有了可靠的应用指标和监控，你就可以在&lt;a href=&#34;https://dealbook.nytimes.com/2012/08/02/knight-capital-says-trading-mishap-cost-it-440-million/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损失殆尽&lt;/a&gt;之前捕获到Bug。&lt;/li&gt;
+&lt;li&gt;运行一个电子商务网站并追踪平均订单数量。突然间订单的数量不那么平均了。有了可靠的应用指标和监控，你就可以在&lt;a href=&#34;https://dealbook.nytimes.com/2012/08/02/knight-capital-says-trading-mishap-cost-it-440-million/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;损失殆尽&lt;/a&gt;之前捕获到 Bug。&lt;/li&gt;
 &lt;li&gt;你正在写一个爬虫，它每小时从一个新闻网站抓取最新的文章。突然最近的文章并不新了。可靠的指标和监控可以更早地揭示问题所在。&lt;/li&gt;
 &lt;li&gt;我认为你已经理解了重点。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;设置django应用程序&#34;&gt;设置Django应用程序&lt;/h2&gt;
-&lt;p&gt;除了明显的依赖（&lt;code&gt;pip install Django&lt;/code&gt;）之外，我们还需要为宠物项目（译者注：demo）添加一些额外的包。继续并安装&lt;code&gt;pip install django-prometheus-client&lt;/code&gt;。这将为我们提供一个Python的Prometheus客户端，以及一些有用的Django hook，包括中间件和一个优雅的DB包装器。接下来，我们将运行Django管理命令来启动项目，更新我们的设置来使用Prometheus客户端，并将Prometheus的URL添加到URL配置中。&lt;/p&gt;
+&lt;h2 id=&#34;设置-django-应用程序&#34;&gt;设置 Django 应用程序&lt;/h2&gt;
+&lt;p&gt;除了明显的依赖（&lt;code&gt;pip install Django&lt;/code&gt;）之外，我们还需要为宠物项目（译者注：demo）添加一些额外的包。继续并安装&lt;code&gt;pip install django-prometheus-client&lt;/code&gt;。这将为我们提供一个 Python 的 Prometheus 客户端，以及一些有用的 Django hook，包括中间件和一个优雅的 DB 包装器。接下来，我们将运行 Django 管理命令来启动项目，更新我们的设置来使用 Prometheus 客户端，并将 Prometheus 的 URL 添加到 URL 配置中。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;启动一个新的项目和应用程序&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;为了这篇文章，并且切合&lt;a href=&#34;https://www.meanpug.com/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;代理的品牌&lt;/a&gt;，我们建立了一个遛狗服务。请注意，它实际上不会做什么事，但足以作为一个教学示例。执行如下命令：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;django-admin.py startproject demo
@@ -42,7 +42,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s1&#34;&gt;&amp;#39;walker&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在，我们来添加一些基本的模型和视图。简单起见，我只实现将要验证的部分。如果想要完整地示例，可以从这个&lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo应用&lt;/a&gt; 获取源码。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在，我们来添加一些基本的模型和视图。简单起见，我只实现将要验证的部分。如果想要完整地示例，可以从这个&lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo 应用&lt;/a&gt; 获取源码。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# walker/models.py&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;django.db&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;models&lt;/span&gt;
@@ -164,8 +164,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;            &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;redirect&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;reverse&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;walk_start&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;?walk=&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;walk&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;id&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HttpResponseBadRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;content&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;sa&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;form validation failed with errors &lt;/span&gt;&lt;span class=&#34;si&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;form&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;errors&lt;/span&gt;&lt;span class=&#34;si&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;更新应用设置并添加Prometheus urls&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;现在我们有了一个Django项目以及相应的设置，可以为 &lt;a href=&#34;https://github.com/korfuri/django-prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;django-prometheus&lt;/a&gt;添加需要的配置项了。在 &lt;code&gt;settings.py&lt;/code&gt;中添加下面的配置：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;strong&gt;更新应用设置并添加 Prometheus urls&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;现在我们有了一个 Django 项目以及相应的设置，可以为 &lt;a href=&#34;https://github.com/korfuri/django-prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;django-prometheus&lt;/a&gt;添加需要的配置项了。在 &lt;code&gt;settings.py&lt;/code&gt;中添加下面的配置：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;INSTALLED_APPS&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;s1&#34;&gt;&amp;#39;django_prometheus&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
@@ -189,15 +189,15 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;s1&#34;&gt;&amp;#39;PORT&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;os&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;getenv&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;DB_PORT&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;5432&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;},&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;添加url配置到 &lt;code&gt;urls.py&lt;/code&gt;：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;添加 url 配置到 &lt;code&gt;urls.py&lt;/code&gt;：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;urlpatterns&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;include&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;django_prometheus.urls&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)),&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在我们有了一个配置好的基本应用，并为整合做好了准备。&lt;/p&gt;
 &lt;hr&gt;
-&lt;h2 id=&#34;添加prometheus指标&#34;&gt;添加Prometheus指标&lt;/h2&gt;
-&lt;p&gt;由于&lt;code&gt;django-prometheus&lt;/code&gt;提供了开箱即用功能，我们可以立即追踪一些基本的模型操作，比如插入和删除。可以在&lt;code&gt;/metrics&lt;/code&gt;endpoint看到这些：&lt;/p&gt;
+&lt;h2 id=&#34;添加-prometheus-指标&#34;&gt;添加 Prometheus 指标&lt;/h2&gt;
+&lt;p&gt;由于&lt;code&gt;django-prometheus&lt;/code&gt;提供了开箱即用功能，我们可以立即追踪一些基本的模型操作，比如插入和删除。可以在&lt;code&gt;/metrics&lt;/code&gt;endpoint 看到这些：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -220,7 +220,7 @@
   &lt;/div&gt;&lt;figcaption&gt;
       django-prometheus default metrics
     &lt;/figcaption&gt;&lt;/figure&gt;
-&lt;em&gt;django-prometheus提供的默认指标&lt;/em&gt;&lt;/p&gt;
+&lt;em&gt;django-prometheus 提供的默认指标&lt;/em&gt;&lt;/p&gt;
 &lt;p&gt;让我们把它变得更有趣点。&lt;/p&gt;
 &lt;p&gt;添加一个&lt;code&gt;walker/metrics.py&lt;/code&gt;文件，定义一些要追踪的基本指标。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# walker/metrics.py&lt;/span&gt;
@@ -232,7 +232,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;invalid_walks&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Counter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;invalid_walks&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;number of walks attempted to be started, but invalid&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;walk_distance&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;Histogram&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;walk_distance&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;distribution of distance walked&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;buckets&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;50&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;200&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;400&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;800&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;1600&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;3200&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;])&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;很简单，不是吗？&lt;a href=&#34;https://prometheus.io/docs/concepts/metric_types/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus文档&lt;/a&gt;很好地解释了每种指标类型的用途，简言之，我们使用计数器来表示严格随时间增长的指标，使用直方图来追踪包含值分布的指标。下面开始验证应用的代码。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;很简单，不是吗？&lt;a href=&#34;https://prometheus.io/docs/concepts/metric_types/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus 文档&lt;/a&gt;很好地解释了每种指标类型的用途，简言之，我们使用计数器来表示严格随时间增长的指标，使用直方图来追踪包含值分布的指标。下面开始验证应用的代码。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# walker/views.py&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;...&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;walker&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;metrics&lt;/span&gt;
@@ -317,10 +317,10 @@
   &lt;/div&gt;&lt;figcaption&gt;
       prometheus custom metrics
     &lt;/figcaption&gt;&lt;/figure&gt;
-&lt;em&gt;定义的指标此时已经可以在prometheus里查找到了&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;至此，我们已经在代码中添加了自定义指标，整合了应用以追踪指标，并验证了这些指标已在&lt;code&gt;/metrics&lt;/code&gt; 上更新并可用。让我们继续将仪表化应用部署到Kubernetes集群。&lt;/p&gt;
-&lt;h2 id=&#34;使用helm部署应用&#34;&gt;使用Helm部署应用&lt;/h2&gt;
-&lt;p&gt;我只会列出和追踪、导出指标相关的配置内容，完整的Helm chart部署和服务配置可以在 &lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo应用&lt;/a&gt;中找到。 作为起点，这有一些和导出指标相关的deployment和configmap的配置：&lt;/p&gt;
+&lt;em&gt;定义的指标此时已经可以在 prometheus 里查找到了&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;至此，我们已经在代码中添加了自定义指标，整合了应用以追踪指标，并验证了这些指标已在&lt;code&gt;/metrics&lt;/code&gt; 上更新并可用。让我们继续将仪表化应用部署到 Kubernetes 集群。&lt;/p&gt;
+&lt;h2 id=&#34;使用-helm-部署应用&#34;&gt;使用 Helm 部署应用&lt;/h2&gt;
+&lt;p&gt;我只会列出和追踪、导出指标相关的配置内容，完整的 Helm chart 部署和服务配置可以在 &lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo 应用&lt;/a&gt;中找到。作为起点，这有一些和导出指标相关的 deployment 和 configmap 的配置：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# helm/demo/templates/nginx-conf-configmap.yaml&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -411,17 +411,17 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containerPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;           &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;没什么神奇的，只是一些YAML而已。有两个重点需要强调一下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;没什么神奇的，只是一些 YAML 而已。有两个重点需要强调一下：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;我们通过一个nginx反向代理将&lt;code&gt;/metrics&lt;/code&gt;放在了验证后面，为location块设置了auth_basic指令集。你可能希望在反向代理之后部署&lt;a href=&#34;https://docs.gunicorn.org/en/latest/deploy.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gunicorn&lt;/a&gt; ，但这样做可以获得保护指标的额外好处。&lt;/li&gt;
-&lt;li&gt;我们使用多线程的gunicorn而不是多个worker。虽然可以为Prometheus客户端启用&lt;a href=&#34;https://github.com/prometheus/client_python#multiprocess-mode-gunicorn&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多进程模式&lt;/a&gt;，但在Kubernetes环境中，安装会更为复杂。为什么这很重要呢？在一个pod中运行多个worker的风险在于，每个worker将在采集时报告自己的一组指标值。但是，由于服务在Prometheus Kubernetes SD scrape配置中被设置为pod级别 ，这些（潜在的）跳转值将被错误地分类为&lt;a href=&#34;https://prometheus.io/docs/concepts/metric_types/#counter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;计数器重置&lt;/a&gt;，从而导致测量结果不一致。你并不一定需要遵循上述所有步骤，但重点是：如果你了解的不多，应该从一个单线程+单worker的gunicorn环境开始，或者从一个单worker+多线程环境开始。&lt;/li&gt;
+&lt;li&gt;我们通过一个 nginx 反向代理将&lt;code&gt;/metrics&lt;/code&gt;放在了验证后面，为 location 块设置了 auth_basic 指令集。你可能希望在反向代理之后部署&lt;a href=&#34;https://docs.gunicorn.org/en/latest/deploy.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gunicorn&lt;/a&gt; ，但这样做可以获得保护指标的额外好处。&lt;/li&gt;
+&lt;li&gt;我们使用多线程的 gunicorn 而不是多个 worker。虽然可以为 Prometheus 客户端启用&lt;a href=&#34;https://github.com/prometheus/client_python#multiprocess-mode-gunicorn&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多进程模式&lt;/a&gt;，但在 Kubernetes 环境中，安装会更为复杂。为什么这很重要呢？在一个 pod 中运行多个 worker 的风险在于，每个 worker 将在采集时报告自己的一组指标值。但是，由于服务在 Prometheus Kubernetes SD scrape 配置中被设置为 pod 级别，这些（潜在的）跳转值将被错误地分类为&lt;a href=&#34;https://prometheus.io/docs/concepts/metric_types/#counter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;计数器重置&lt;/a&gt;，从而导致测量结果不一致。你并不一定需要遵循上述所有步骤，但重点是：如果你了解的不多，应该从一个单线程 + 单 worker 的 gunicorn 环境开始，或者从一个单 worker+多线程环境开始。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;h2 id=&#34;使用helm部署prometheus&#34;&gt;使用Helm部署Prometheus&lt;/h2&gt;
-&lt;p&gt;基于&lt;a href=&#34;https://helm.sh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Helm&lt;/a&gt;的帮助文档，部署Prometheus非常简单，不需要额外工作：&lt;/p&gt;
+&lt;h2 id=&#34;使用-helm-部署-prometheus&#34;&gt;使用 Helm 部署 Prometheus&lt;/h2&gt;
+&lt;p&gt;基于&lt;a href=&#34;https://helm.sh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Helm&lt;/a&gt;的帮助文档，部署 Prometheus 非常简单，不需要额外工作：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm upgrade --install prometheus stable/prometheus
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;几分钟后，你应该就可以通过 &lt;code&gt;port-forward&lt;/code&gt; 进入Prometheus的pod（默认的容器端口是9090）。&lt;/p&gt;
-&lt;h2 id=&#34;为应用配置prometheus-scrape目标&#34;&gt;为应用配置Prometheus scrape目标&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/helm/charts/tree/master/stable/prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus Helm chart&lt;/a&gt; 有大量的自定义可选项，不过我们只需要设置&lt;code&gt;extraScrapeConfigs&lt;/code&gt;。创建一个&lt;code&gt;values.yaml&lt;/code&gt;文件。你可以略过这部分直接使用 &lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo应用&lt;/a&gt; 作为参考。文件内容如下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;几分钟后，你应该就可以通过 &lt;code&gt;port-forward&lt;/code&gt; 进入 Prometheus 的 pod（默认的容器端口是 9090）。&lt;/p&gt;
+&lt;h2 id=&#34;为应用配置-prometheus-scrape-目标&#34;&gt;为应用配置 Prometheus scrape 目标&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/helm/charts/tree/master/stable/prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus Helm chart&lt;/a&gt; 有大量的自定义可选项，不过我们只需要设置&lt;code&gt;extraScrapeConfigs&lt;/code&gt;。创建一个&lt;code&gt;values.yaml&lt;/code&gt;文件。你可以略过这部分直接使用 &lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;demo 应用&lt;/a&gt; 作为参考。文件内容如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;extraScrapeConfigs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;  - job_name: demo
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;    scrape_interval: 5s
@@ -453,11 +453,11 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        target_label: job
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;      - target_label: endpoint
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;sd&#34;&gt;        replacement: http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建完成后，就可以通过下面的操作为prometheus deployment更新配置。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;创建完成后，就可以通过下面的操作为 prometheus deployment 更新配置。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm upgrade --install prometheus -f values.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;为验证所有的步骤都配置正确了，打开浏览器输入 &lt;code&gt;http://localhost:9090/targets&lt;/code&gt; （假设你已经通过 &lt;code&gt;port-forward&lt;/code&gt;进入了运行prometheus的Pod）。如果你看到demo应用在target的列表中，说明运行正常了。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;为验证所有的步骤都配置正确了，打开浏览器输入 &lt;code&gt;http://localhost:9090/targets&lt;/code&gt; （假设你已经通过 &lt;code&gt;port-forward&lt;/code&gt;进入了运行 prometheus 的 Pod）。如果你看到 demo 应用在 target 的列表中，说明运行正常了。&lt;/p&gt;
 &lt;h2 id=&#34;自己动手试试&#34;&gt;自己动手试试&lt;/h2&gt;
-&lt;p&gt;我要强调一点：捕获自定义的应用程序指标并设置相应的报告和监控是软件工程中最重要的任务之一。幸运的是，将Prometheus指标集成到Django应用程序中实际上非常简单，正如本文展示的那样。如果你想要开始监测自己的应用，请参考完整的&lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;示例应用程序&lt;/a&gt;，或者直接fork代码库。祝你玩得开心。&lt;/p&gt;
+&lt;p&gt;我要强调一点：捕获自定义的应用程序指标并设置相应的报告和监控是软件工程中最重要的任务之一。幸运的是，将 Prometheus 指标集成到 Django 应用程序中实际上非常简单，正如本文展示的那样。如果你想要开始监测自己的应用，请参考完整的&lt;a href=&#34;https://github.com/MeanPug/django-prometheus-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;示例应用程序&lt;/a&gt;，或者直接 fork 代码库。祝你玩得开心。&lt;/p&gt;
 </description>
     </item>
     

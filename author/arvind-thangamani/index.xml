@@ -13,11 +13,11 @@
     </image>
     
     <item>
-      <title>使用Envoy和Jaeger实现分布式追踪</title>
+      <title>使用 Envoy 和 Jaeger 实现分布式追踪</title>
       <link>https://cloudnative.to/blog/distributed-tracing-with-envoy-service-mesh-jaeger/</link>
       <pubDate>Tue, 11 Dec 2018 14:24:23 +0800</pubDate>
       <guid>https://cloudnative.to/blog/distributed-tracing-with-envoy-service-mesh-jaeger/</guid>
-      <description>&lt;p&gt;如果你是初次接触服务网格和Envoy，我&lt;a href=&#34;https://medium.com/@dnivra26/service-mesh-with-envoy-101-e6b2131ee30b&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;有一篇文章可以帮助你入门。&lt;/p&gt;
+      <description>&lt;p&gt;如果你是初次接触服务网格和 Envoy，我&lt;a href=&#34;https://medium.com/@dnivra26/service-mesh-with-envoy-101-e6b2131ee30b&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;有一篇文章可以帮助你入门。&lt;/p&gt;
 &lt;p&gt;在微服务架构中，可观测性变得越加重要。我认为这是选择微服务这条路的必要条件之一。我的一位前同事列出了一份非常棒的&lt;a href=&#34;https://news.ycombinator.com/item?id=12509533&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;需求清单&lt;/a&gt;，如果你想做微服务，那么你需要满足提到的这些要求。&lt;/p&gt;
 &lt;p&gt;可观测性有许多事要做：&lt;/p&gt;
 &lt;ul&gt;
@@ -26,17 +26,17 @@
 &lt;li&gt;日志集中化&lt;/li&gt;
 &lt;li&gt;分布式追踪&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;本文只讨论Envoy下的分布式追踪，我尽量给出一个全貌来描述分布式追踪、OpenTracing、Envoy和Jaeger是如何整合在一起工作的。在&lt;a href=&#34;https://medium.com/@dnivra26/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下一篇文章&lt;/a&gt;中，我们将讨论使用Envoy、prometheus和grafana做监控。&lt;/p&gt;
+&lt;p&gt;本文只讨论 Envoy 下的分布式追踪，我尽量给出一个全貌来描述分布式追踪、OpenTracing、Envoy 和 Jaeger 是如何整合在一起工作的。在&lt;a href=&#34;https://medium.com/@dnivra26/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下一篇文章&lt;/a&gt;中，我们将讨论使用 Envoy、prometheus 和 grafana 做监控。&lt;/p&gt;
 &lt;h2 id=&#34;分布式追踪&#34;&gt;分布式追踪&lt;/h2&gt;
-&lt;p&gt;随着大量的服务和请求的流转，你需要能够快速发现哪里出了问题。分布式追踪最早由&lt;a href=&#34;https://ai.google/research/pubs/pub36356&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;谷歌的Dapper&lt;/a&gt;普及开来，它本质上具有在微服务的整个生命周期中追踪请求的能力。&lt;/p&gt;
-&lt;p&gt;最简单的实现方法是在前端代理生成一个唯一的请求id（x-request-id），并将该请求id传递给与其交互的所有服务。基本上可以向所有的日志追加这一请求id。因此，如果你在kibana这样的系统中搜索唯一id，你会看到针对该特定请求的所有相关的日志。&lt;/p&gt;
+&lt;p&gt;随着大量的服务和请求的流转，你需要能够快速发现哪里出了问题。分布式追踪最早由&lt;a href=&#34;https://ai.google/research/pubs/pub36356&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;谷歌的 Dapper&lt;/a&gt;普及开来，它本质上具有在微服务的整个生命周期中追踪请求的能力。&lt;/p&gt;
+&lt;p&gt;最简单的实现方法是在前端代理生成一个唯一的请求 id（x-request-id），并将该请求 id 传递给与其交互的所有服务。基本上可以向所有的日志追加这一请求 id。因此，如果你在 kibana 这样的系统中搜索唯一 id，你会看到针对该特定请求的所有相关的日志。&lt;/p&gt;
 &lt;p&gt;这非常有用，但是它不能告诉你每个服务中请求完成的顺序、是否是并行完成的或者花费了多少时间。&lt;/p&gt;
-&lt;p&gt;让我们看看OpenTracing和Envoy如何帮助我们解决这一问题。&lt;/p&gt;
+&lt;p&gt;让我们看看 OpenTracing 和 Envoy 如何帮助我们解决这一问题。&lt;/p&gt;
 &lt;h2 id=&#34;opentracing&#34;&gt;OpenTracing&lt;/h2&gt;
-&lt;p&gt;与其只传递一个id（x-request-id），不如传递更多的数据，比如哪个服务位于请求的根级别，哪个服务是哪个服务的子服务等等。这可以帮我们找出所有的答案。标准的做法是使用OpenTracing，它是分布式追踪的规范，和语言无关。你可以在&lt;a href=&#34;https://opentracing.io/speciation/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;阅读更多关于此规范的信息。&lt;/p&gt;
+&lt;p&gt;与其只传递一个 id（x-request-id），不如传递更多的数据，比如哪个服务位于请求的根级别，哪个服务是哪个服务的子服务等等。这可以帮我们找出所有的答案。标准的做法是使用 OpenTracing，它是分布式追踪的规范，和语言无关。你可以在&lt;a href=&#34;https://opentracing.io/speciation/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;阅读更多关于此规范的信息。&lt;/p&gt;
 &lt;h2 id=&#34;envoy&#34;&gt;Envoy&lt;/h2&gt;
-&lt;p&gt;服务网格就像微服务的通信层，服务之间的所有通信都是通过网格进行的。它可以实现负载均衡、服务发现、流量转移、速率限制、指标（metrics）收集等功能，Envoy就是这样的一个服务网格。在我们的例子中，Envoy将帮助我们生成唯一根请求id （x-request-id），生成子请求id，并将它们发送到&lt;a href=&#34;https://www.jaegertracing.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jaeger&lt;/a&gt;或&lt;a href=&#34;https://zipkin.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin&lt;/a&gt;这样的追踪系统，这些系统存储、聚合追踪数据并为其提供可视化的能力。&lt;/p&gt;
-&lt;p&gt;这篇文章中我们会使用Jaeger作为追踪系统，Envoy用来生成基于zipkin或lighstep格式的追踪数据。我们会使用zipkin的标准来兼容Jaeger。&lt;/p&gt;
+&lt;p&gt;服务网格就像微服务的通信层，服务之间的所有通信都是通过网格进行的。它可以实现负载均衡、服务发现、流量转移、速率限制、指标（metrics）收集等功能，Envoy 就是这样的一个服务网格。在我们的例子中，Envoy 将帮助我们生成唯一根请求 id（x-request-id），生成子请求 id，并将它们发送到&lt;a href=&#34;https://www.jaegertracing.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jaeger&lt;/a&gt;或&lt;a href=&#34;https://zipkin.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Zipkin&lt;/a&gt;这样的追踪系统，这些系统存储、聚合追踪数据并为其提供可视化的能力。&lt;/p&gt;
+&lt;p&gt;这篇文章中我们会使用 Jaeger 作为追踪系统，Envoy 用来生成基于 zipkin 或 lighstep 格式的追踪数据。我们会使用 zipkin 的标准来兼容 Jaeger。&lt;/p&gt;
 &lt;h2 id=&#34;只要给我看代码就好&#34;&gt;只要给我看代码就好&lt;/h2&gt;
 &lt;p&gt;下面的图展示了我们尝试构建的系统全貌：&lt;/p&gt;
 &lt;p&gt;
@@ -70,9 +70,9 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;服务安装&lt;/p&gt;
-&lt;p&gt;我们将使用docker-compose来部署Envoy。你需要向Envoy提供一份配置文件。这里我不打算解释如何配置Envoy，只集中讨论与追踪相关的部分。。你可以在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到更多关于配置Envoy的信息。&lt;/p&gt;
-&lt;h2 id=&#34;前端envoy&#34;&gt;前端Envoy&lt;/h2&gt;
-&lt;p&gt;前端Envoy的作用是生成根请求id，你可以通过配置去实现。下面是它的配置文件：&lt;/p&gt;
+&lt;p&gt;我们将使用 docker-compose 来部署 Envoy。你需要向 Envoy 提供一份配置文件。这里我不打算解释如何配置 Envoy，只集中讨论与追踪相关的部分。。你可以在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到更多关于配置 Envoy 的信息。&lt;/p&gt;
+&lt;h2 id=&#34;前端-envoy&#34;&gt;前端 Envoy&lt;/h2&gt;
+&lt;p&gt;前端 Envoy 的作用是生成根请求 id，你可以通过配置去实现。下面是它的配置文件：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;tracing&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -146,13 +146,13 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;jaeger&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;9411&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第1-8行启用追踪并配置追踪系统和它所在的位置。&lt;/p&gt;
-&lt;p&gt;第27-28行指定流量进出的位置。&lt;/p&gt;
-&lt;p&gt;第38行指出Envoy必须生成根请求id。&lt;/p&gt;
-&lt;p&gt;第66-73行配置Jaeger追踪系统。&lt;/p&gt;
-&lt;p&gt;所有Envoy的配置中（前端，服务a，b和c）都需要启用追踪和配置Jaeger地址&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第 1-8 行启用追踪并配置追踪系统和它所在的位置。&lt;/p&gt;
+&lt;p&gt;第 27-28 行指定流量进出的位置。&lt;/p&gt;
+&lt;p&gt;第 38 行指出 Envoy 必须生成根请求 id。&lt;/p&gt;
+&lt;p&gt;第 66-73 行配置 Jaeger 追踪系统。&lt;/p&gt;
+&lt;p&gt;所有 Envoy 的配置中（前端，服务 a，b 和 c）都需要启用追踪和配置 Jaeger 地址&lt;/p&gt;
 &lt;h2 id=&#34;service-a&#34;&gt;Service A&lt;/h2&gt;
-&lt;p&gt;在我们的例子中服务A将调用服务B和服务C。关于分布式追踪非常重要的一点是，尽管Envoy支持进行分布式追踪，但也&lt;strong&gt;依赖于服务把生成的Header传递给流出的请求&lt;/strong&gt;。因此，服务A将在调用服务B和C时转发请求头。服务A是一个只有一个端点（endpoint）的简单的go服务，内部调用服务B和服务C。下面是我们需要传递的头信息：&lt;/p&gt;
+&lt;p&gt;在我们的例子中服务 A 将调用服务 B 和服务 C。关于分布式追踪非常重要的一点是，尽管 Envoy 支持进行分布式追踪，但也&lt;strong&gt;依赖于服务把生成的 Header 传递给流出的请求&lt;/strong&gt;。因此，服务 A 将在调用服务 B 和 C 时转发请求头。服务 A 是一个只有一个端点（endpoint）的简单的 go 服务，内部调用服务 B 和服务 C。下面是我们需要传递的头信息：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;GET&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;http://service_a_envoy:8788/&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	&lt;span class=&#34;nx&#34;&gt;fmt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Printf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;%s&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
@@ -168,9 +168,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;resp&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Do&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;req&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您可能惊讶为什么调用服务B时URL是&lt;code&gt;service_a_envoy&lt;/code&gt;。如果你还记得我们已经讨论过服务之间的所有通信都需要通过envoy代理的话，类似的，可以在调用服务C时传递Header。&lt;/p&gt;
-&lt;h2 id=&#34;服务b和服务c&#34;&gt;服务B和服务C&lt;/h2&gt;
-&lt;p&gt;剩下的两个服务不需要对代码进行任何更改，因为它们处于叶子级别。一旦这两个服务要调用其他端点，则必须转发请求追踪头，除此之外不需要对Envoy进行任何特殊配置。服务B和C代码如下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;您可能惊讶为什么调用服务 B 时 URL 是&lt;code&gt;service_a_envoy&lt;/code&gt;。如果你还记得我们已经讨论过服务之间的所有通信都需要通过 envoy 代理的话，类似的，可以在调用服务 C 时传递 Header。&lt;/p&gt;
+&lt;h2 id=&#34;服务-b-和服务-c&#34;&gt;服务 B 和服务 C&lt;/h2&gt;
+&lt;p&gt;剩下的两个服务不需要对代码进行任何更改，因为它们处于叶子级别。一旦这两个服务要调用其他端点，则必须转发请求追踪头，除此之外不需要对 Envoy 进行任何特殊配置。服务 B 和 C 代码如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;package&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;main&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
@@ -207,7 +207,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;HandleFunc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;/&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;handler&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;log&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Fatal&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;http&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;ListenAndServe&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;:8083&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;所有这些完成后，如果您运行&lt;code&gt;docker-compose up&lt;/code&gt;并访问前端Envoy端点，就会生成追踪信息并推送到Jaeger。Jaeger有一个非常友好的UI界面来展示追踪信息，我们的信息看上去像这样：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;所有这些完成后，如果您运行&lt;code&gt;docker-compose up&lt;/code&gt;并访问前端 Envoy 端点，就会生成追踪信息并推送到 Jaeger。Jaeger 有一个非常友好的 UI 界面来展示追踪信息，我们的信息看上去像这样：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -238,11 +238,11 @@
       trace from jaeger
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;正如你看到的，它提供了总体的时间损耗，系统各部分是时间损耗，哪个服务调用哪个服务，服务和服务的关系（服务b和服务c是兄弟关系）。Jaeger的进一步使用留待你自己去探索。&lt;/p&gt;
-&lt;p&gt;你可以在&lt;a href=&#34;https://github.com/dnivra26/envoy_distributed_tracing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到所有的Envoy配置、代码和Docker compose文件。&lt;/p&gt;
+&lt;p&gt;正如你看到的，它提供了总体的时间损耗，系统各部分是时间损耗，哪个服务调用哪个服务，服务和服务的关系（服务 b 和服务 c 是兄弟关系）。Jaeger 的进一步使用留待你自己去探索。&lt;/p&gt;
+&lt;p&gt;你可以在&lt;a href=&#34;https://github.com/dnivra26/envoy_distributed_tracing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到所有的 Envoy 配置、代码和 Docker compose 文件。&lt;/p&gt;
 &lt;p&gt;就是这些，谢谢，让我知道你的反馈。&lt;/p&gt;
-&lt;p&gt;如果你在寻找Envoy的xDS服务端的话，我的同事已经搭建了&lt;a href=&#34;https://github.com/tak2siva/Envoy-Pilot&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个&lt;/a&gt;。可以直接获取（check out）。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://medium.com/@dnivra26/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt; 是这一系列文章中的下一篇（使用Envoy，Prometheus和Grafana进行监控）。&lt;/p&gt;
+&lt;p&gt;如果你在寻找 Envoy 的 xDS 服务端的话，我的同事已经搭建了&lt;a href=&#34;https://github.com/tak2siva/Envoy-Pilot&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个&lt;/a&gt;。可以直接获取（check out）。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://medium.com/@dnivra26/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt; 是这一系列文章中的下一篇（使用 Envoy，Prometheus 和 Grafana 进行监控）。&lt;/p&gt;
 </description>
     </item>
     
@@ -252,7 +252,7 @@
       <pubDate>Fri, 23 Nov 2018 14:27:26 +0800</pubDate>
       <guid>https://cloudnative.to/blog/service-mesh-with-envoy-101/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/@dnivra26/service-mesh-with-envoy-101-e6b2131ee30b&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;本文将简单的讨论下我们经常听到的 “Service Mesh” 是什么，以及如何使用 “Envoy” 构建服务网格(Service Mesh)。&lt;/p&gt;
+&lt;p&gt;本文将简单的讨论下我们经常听到的“Service Mesh”是什么，以及如何使用“Envoy”构建服务网格 (Service Mesh)。&lt;/p&gt;
 &lt;h2 id=&#34;什么是-service-mesh&#34;&gt;什么是 Service Mesh?&lt;/h2&gt;
 &lt;p&gt;Service Mesh 可以比作是微服务结构中的通信层。每个服务之间来往的所有请求都将通过网格。每个服务都有自己的代理服务，所有这些代理服务共同组成了“服务网格”(Service Mesh)。所以假如一个服务想要和另一个服务通信，他不是直接和这个目标服务通信的，他会先把请求路由给自己本地的代理，再由代理把请求路由到目标服务。从本质上讲，每个服务实例都只知道自己本地的代理，并不知道外面世界是什么样的。&lt;/p&gt;
 &lt;p&gt;
@@ -283,7 +283,7 @@
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;当你在谈论 “Service Mesh” 的时候，你肯定也会听到 “Sidecar” 这个词，“SideCar” 就是用于每个服务实例中的代理，每个 “SideCar” 负责一个服务中的一个实例。&lt;/p&gt;
+&lt;p&gt;当你在谈论“Service Mesh”的时候，你肯定也会听到“Sidecar”这个词，“SideCar”就是用于每个服务实例中的代理，每个“SideCar”负责一个服务中的一个实例。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -312,7 +312,7 @@
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h2 id=&#34;service-mesh-能带来什么&#34;&gt;Service Mesh 能带来什么?&lt;/h2&gt;
+&lt;h2 id=&#34;service-mesh-能带来什么&#34;&gt;Service Mesh 能带来什么？&lt;/h2&gt;
 &lt;ol&gt;
 &lt;li&gt;服务发现&lt;/li&gt;
 &lt;li&gt;可观测性（Metrics）&lt;/li&gt;
@@ -324,8 +324,8 @@
 &lt;li&gt;分布式追踪&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id=&#34;envoy&#34;&gt;Envoy&lt;/h2&gt;
-&lt;p&gt;Envoy 是一个用 C++ 编写的高性能代理。绝不是一定要使用 Envoy 来搭建 “Service Mesh” ，你也可以使用其他代理，如 Nginx、Traefik 等……但是本文我们将使用 Envoy 。&lt;/p&gt;
-&lt;p&gt;好，让我们来搭建一个由3个服务组成的 “Service Mesh”。我们要搭建的“Service Mesh”的结构如下所示，每个服务旁都设置有一个代理。&lt;/p&gt;
+&lt;p&gt;Envoy 是一个用 C++ 编写的高性能代理。绝不是一定要使用 Envoy 来搭建“Service Mesh” ，你也可以使用其他代理，如 Nginx、Traefik 等……但是本文我们将使用 Envoy。&lt;/p&gt;
+&lt;p&gt;好，让我们来搭建一个由 3 个服务组成的“Service Mesh”。我们要搭建的“Service Mesh”的结构如下所示，每个服务旁都设置有一个代理。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -355,7 +355,7 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;front-envoy&#34;&gt;Front Envoy&lt;/h2&gt;
-&lt;p&gt;“Front Envoy” 是边界代理即前端代理，常常会用它来做 TLS 终止，认证，生成请求头部，等……&lt;/p&gt;
+&lt;p&gt;“Front Envoy”是边界代理即前端代理，常常会用它来做 TLS 终止，认证，生成请求头部，等……&lt;/p&gt;
 &lt;p&gt;我们先一起来看下“Front Envoy”的配置。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;admin&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -414,26 +414,26 @@
 &lt;/ol&gt;
 &lt;p&gt;我们逐个来看。&lt;/p&gt;
 &lt;h2 id=&#34;侦听器listeners&#34;&gt;侦听器（Listeners）&lt;/h2&gt;
-&lt;p&gt;Envoy 实例中可以运行一个或多个侦听器。第9-36行，配置了&amp;quot;http_listener&amp;quot;的地址和端口，每个侦听器也可以有一个或多个网络过滤器（filter）。这些过滤器可以实现路由、TLS终止、流量迁移等…… 我们这里用到的过滤器 “envoy.http_connection_manager” 是内嵌的过滤器之一，Envoy 还有其他几种&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/network_filters/network_filters#config-network-filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;过滤器&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Envoy 实例中可以运行一个或多个侦听器。第 9-36 行，配置了&amp;quot;http_listener&amp;quot;的地址和端口，每个侦听器也可以有一个或多个网络过滤器（filter）。这些过滤器可以实现路由、TLS 终止、流量迁移等…… 我们这里用到的过滤器“envoy.http_connection_manager”是内嵌的过滤器之一，Envoy 还有其他几种&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/network_filters/network_filters#config-network-filters&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;过滤器&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;路由routes&#34;&gt;路由（Routes）&lt;/h2&gt;
-&lt;p&gt;第22-34行，为 filter 配置路由规范 &amp;ldquo;local_route”，声明应该从哪些域接受请求和一个用来与每个请求匹配的路由匹配器，并将请求发送到适当的集群。&lt;/p&gt;
+&lt;p&gt;第 22-34 行，为 filter 配置路由规范 &amp;ldquo;local_route”，声明应该从哪些域接受请求和一个用来与每个请求匹配的路由匹配器，并将请求发送到适当的集群。&lt;/p&gt;
 &lt;h2 id=&#34;集群clusters&#34;&gt;集群（Clusters）&lt;/h2&gt;
 &lt;p&gt;Clusters 是 Envoy 将流量路由到上游服务的规范。&lt;/p&gt;
-&lt;p&gt;第41-50行，定义的 “Service A”，它是唯一要前端代理 “Front Envoy” 建立通信的上游服务。&lt;/p&gt;
-&lt;p&gt;“connect_timeout” 是在返回503之前获得与上游服务的连接的时间限制。&lt;/p&gt;
+&lt;p&gt;第 41-50 行，定义的“Service A”，它是唯一要前端代理“Front Envoy”建立通信的上游服务。&lt;/p&gt;
+&lt;p&gt;“connect_timeout”是在返回 503 之前获得与上游服务的连接的时间限制。&lt;/p&gt;
 &lt;p&gt;通常一个服务不会仅仅只有一个实例，Envoy 支持&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/load_balancing#supported-load-balancers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多种负载均衡算法&lt;/a&gt;来分发流量。这里我们使用最基础的轮询算法。&lt;/p&gt;
 &lt;h2 id=&#34;端点endpoints&#34;&gt;端点（Endpoints）&lt;/h2&gt;
-&lt;p&gt;“hosts” 定义我们要将流量路由到的 “Service A” 的多个实例，在本文的演示案例中只有一个实例。&lt;/p&gt;
-&lt;p&gt;如果你注意到第48行，正如我们讨论的，我们不是直接访问 “Service A” ，而是和 “Service A” 中的其中一个实例的 Envoy 代理通信，再把流量路由给本地的实例。&lt;/p&gt;
-&lt;p&gt;你也可以声明服务名称，如 “Service A”，它将返回服务的所有实例 ，类似Kubernetes中的Headless Service。&lt;/p&gt;
-&lt;p&gt;这里我们使用的是客户端的负载均衡。Envoy 会缓存 “Service A” 所有的 “hosts”，每隔5秒钟刷新一次实例列表。&lt;/p&gt;
+&lt;p&gt;“hosts”定义我们要将流量路由到的“Service A”的多个实例，在本文的演示案例中只有一个实例。&lt;/p&gt;
+&lt;p&gt;如果你注意到第 48 行，正如我们讨论的，我们不是直接访问“Service A” ，而是和“Service A”中的其中一个实例的 Envoy 代理通信，再把流量路由给本地的实例。&lt;/p&gt;
+&lt;p&gt;你也可以声明服务名称，如“Service A”，它将返回服务的所有实例，类似 Kubernetes 中的 Headless Service。&lt;/p&gt;
+&lt;p&gt;这里我们使用的是客户端的负载均衡。Envoy 会缓存“Service A”所有的“hosts”，每隔 5 秒钟刷新一次实例列表。&lt;/p&gt;
 &lt;p&gt;Envoy 支持主动和被动的负载均衡。如果想启用健康检查功能，需要在 cluster 的配置中配置健康检查。&lt;/p&gt;
 &lt;h2 id=&#34;其他&#34;&gt;其他&lt;/h2&gt;
-&lt;p&gt;第2-7行，配置管理服务器，用于查看配置、修改日志级别、查看状态，等等……&lt;/p&gt;
-&lt;p&gt;第8行，“static_resources”，意味着我们要手动加载所有配置，我们也可以动态加载配置，后面我们再来看看是怎么做的。&lt;/p&gt;
+&lt;p&gt;第 2-7 行，配置管理服务器，用于查看配置、修改日志级别、查看状态，等等……&lt;/p&gt;
+&lt;p&gt;第 8 行，“static_resources”，意味着我们要手动加载所有配置，我们也可以动态加载配置，后面我们再来看看是怎么做的。&lt;/p&gt;
 &lt;p&gt;当然除了上文示例配置 Envoy 还有很多配置项，但我们的目标不是尝试所有可用的配置，而是要从最小配置开始。&lt;/p&gt;
 &lt;h2 id=&#34;service-a&#34;&gt;Service A&lt;/h2&gt;
-&lt;p&gt;以下是 “Service A” 的 Envoy 配置。&lt;/p&gt;
+&lt;p&gt;以下是“Service A”的 Envoy 配置。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;admin&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;access_log_path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/tmp/admin_access.log&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
@@ -565,10 +565,10 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;service_c_envoy&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8790&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第11-39行，定义一个侦听器来转发流量给“Service A”后端真实的实例，而103-111行，是其相应的集群定义。&lt;/p&gt;
-&lt;p&gt;“Service A” 也要与 “Service B” 和 “Service C” 通信，所以我们还配置了另外两个侦听器和对应的集群。这里我们将每个上游服务单独配置一个侦听器（localhost, Service B, Service C），另外一种方式是只配置一个侦听器和路由，用url或者headers来区分不同的上游服务。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第 11-39 行，定义一个侦听器来转发流量给“Service A”后端真实的实例，而 103-111 行，是其相应的集群定义。&lt;/p&gt;
+&lt;p&gt;“Service A”也要与“Service B”和“Service C”通信，所以我们还配置了另外两个侦听器和对应的集群。这里我们将每个上游服务单独配置一个侦听器（localhost, Service B, Service C），另外一种方式是只配置一个侦听器和路由，用 url 或者 headers 来区分不同的上游服务。&lt;/p&gt;
 &lt;h2 id=&#34;service-b--service-c&#34;&gt;Service B &amp;amp; Service C&lt;/h2&gt;
-&lt;p&gt;服务B 和服务C 都是叶子节点，除了本地主机的服务实例外，不需要和其他上游服务通信。所以配置相对简单些。&lt;/p&gt;
+&lt;p&gt;服务 B 和服务 C 都是叶子节点，除了本地主机的服务实例外，不需要和其他上游服务通信。所以配置相对简单些。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;admin&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;access_log_path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/tmp/admin_access.log&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
@@ -622,7 +622,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8082&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;所以也没有什么特别的配置，只有一个侦听器和一个集群。&lt;/p&gt;
 &lt;p&gt;到此我们完成了所有的配置，我们可以将其部署到 Kubernetes 上或者使用 docker-compose 进行测试。&lt;/p&gt;
-&lt;p&gt;docker-compose.yaml配置如下：&lt;/p&gt;
+&lt;p&gt;docker-compose.yaml 配置如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;3&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;services&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;front-envoy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -673,7 +673,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;build&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service_c/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;8083:8083&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;运行 docker-compose build 和 docker-compose up，访问localhost:8080，你应该可以看到请求成功通过所有的服务和代理，可以使用日志来验证。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;运行 docker-compose build 和 docker-compose up，访问 localhost:8080，你应该可以看到请求成功通过所有的服务和代理，可以使用日志来验证。&lt;/p&gt;
 &lt;h2 id=&#34;envoy-xds&#34;&gt;Envoy xDS&lt;/h2&gt;
 &lt;p&gt;我们通过为每个 SideCar 代理提供配置来实现这些，不同的服务，配置也稍微会有一定的区别。现在仅有两三个服务，手动去创建和管理 SideCar 的配置没什么问题，但随着服务数量的增加，手工创建和管理也显得更加困难。当你修改一个 SideCar 的配置，必须要重启 Envoy 实例才能使变更生效。&lt;/p&gt;
 &lt;p&gt;正如我们前面提到的，我们完全可以不用手动配置和加载所有组件，Clusters(CDS), Endpoints(EDS), Listeners(LDS) 和 Routes(RDS) 使用同一个 api server。所以每个 SideCar 都要和 api server 通信以获取配置，并且当一个新的配置在 api server 更新后，它会自动更新到 Envoy 实例中，避免了重启实例。&lt;/p&gt;
@@ -714,7 +714,7 @@
 &lt;li&gt;Service&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id=&#34;pod&#34;&gt;Pod&lt;/h2&gt;
-&lt;p&gt;通常Pod规范只在一个 Pod 中定义一个容器。但是根据定义，Pod 中可以容纳一个或多个容器。因为我们想要为每个服务实例旁运行一个 SideCar 代理，我们要将 Envoy 容器添加到每个 Pod。所以为了和外界通信，服务容器将通过 localhost 与 Envoy 容器通信。以下是 deployment 文件示例：&lt;/p&gt;
+&lt;p&gt;通常 Pod 规范只在一个 Pod 中定义一个容器。但是根据定义，Pod 中可以容纳一个或多个容器。因为我们想要为每个服务实例旁运行一个 SideCar 代理，我们要将 Envoy 容器添加到每个 Pod。所以为了和外界通信，服务容器将通过 localhost 与 Envoy 容器通信。以下是 deployment 文件示例：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;apps/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -754,9 +754,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;items&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;              &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;key&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;envoy-config&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;                &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;config.yaml&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以看到在容器定义部分，我们添加了 Envoy 代理。在第33-39行，我们通过 configmap 把 Envoy 配置文件挂载到 Envoy 容器中。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;可以看到在容器定义部分，我们添加了 Envoy 代理。在第 33-39 行，我们通过 configmap 把 Envoy 配置文件挂载到 Envoy 容器中。&lt;/p&gt;
 &lt;h2 id=&#34;service&#34;&gt;Service&lt;/h2&gt;
-&lt;p&gt;Kubernetes 的 services 负责维护可以路由流量到达的Pod端点的列表。而且通常 kube-proxy 作为这些 pod 端点的负载均衡。但在我们的示例中，我们做的是客户端的负载均衡，所以我们不想使用 kube-proxy 来做负载均衡，我们想获取 Pod 端点列表并自己做负载均衡。因此我们使用headless Service，只用来返回端点列表。&lt;/p&gt;
+&lt;p&gt;Kubernetes 的 services 负责维护可以路由流量到达的 Pod 端点的列表。而且通常 kube-proxy 作为这些 pod 端点的负载均衡。但在我们的示例中，我们做的是客户端的负载均衡，所以我们不想使用 kube-proxy 来做负载均衡，我们想获取 Pod 端点列表并自己做负载均衡。因此我们使用 headless Service，只用来返回端点列表。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -769,24 +769,24 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8786&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;servicea&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第6行申明了这个 Service 类型为 Headless Service。你也应该可以注意到我们并没有映射应用服务端口到 Kubernetes 的 service 端口，但我们映射了 Envoy 侦听器的8786端口到 service 的8786端口。流量会先到达 Envoy。&lt;/p&gt;
-&lt;p&gt;有了这些你也可以在Kubernetes很好的实践了。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第 6 行申明了这个 Service 类型为 Headless Service。你也应该可以注意到我们并没有映射应用服务端口到 Kubernetes 的 service 端口，但我们映射了 Envoy 侦听器的 8786 端口到 service 的 8786 端口。流量会先到达 Envoy。&lt;/p&gt;
+&lt;p&gt;有了这些你也可以在 Kubernetes 很好的实践了。&lt;/p&gt;
 &lt;p&gt;好，就到这里。期待你的回复。&lt;/p&gt;
-&lt;p&gt;本文是《&lt;a href=&#34;https://hackernoon.com/distributed-tracing-with-envoy-service-mesh-jaeger-c365b6191592&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用Envoy实现分布式追踪&lt;/a&gt;》和《&lt;a href=&#34;https://hackernoon.com/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用Envoy、Prometheus和Grafana监控&lt;/a&gt;》这两篇文章的阅读基础，如果有兴趣的话可以都读一下。&lt;/p&gt;
+&lt;p&gt;本文是《&lt;a href=&#34;https://hackernoon.com/distributed-tracing-with-envoy-service-mesh-jaeger-c365b6191592&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Envoy 实现分布式追踪&lt;/a&gt;》和《&lt;a href=&#34;https://hackernoon.com/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;使用 Envoy、Prometheus 和 Grafana 监控&lt;/a&gt;》这两篇文章的阅读基础，如果有兴趣的话可以都读一下。&lt;/p&gt;
 &lt;p&gt;查看本文所有的&lt;a href=&#34;https://github.com/dnivra26/envoy_servicemesh&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;配置和代码&lt;/a&gt;。&lt;/p&gt;
 </description>
     </item>
     
     <item>
-      <title>Envoy service mesh、Prometheus和Grafana下的微服务监控</title>
+      <title>Envoy service mesh、Prometheus 和 Grafana 下的微服务监控</title>
       <link>https://cloudnative.to/blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/</link>
       <pubDate>Tue, 20 Nov 2018 11:40:46 +0800</pubDate>
       <guid>https://cloudnative.to/blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/@dnivra26/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana-a1c26a8595fc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;如果你刚接触“Service Mesh“和“Envoy”，我&lt;a href=&#34;https://medium.com/@dnivra26/service-mesh-with-envoy-101-e6b2131ee30b&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;有一篇文章可以帮你入门。&lt;/p&gt;
-&lt;p&gt;这是&lt;strong&gt;Envoy service mesh下的可观测性&lt;/strong&gt;系列的第二篇文章，你可以在&lt;a href=&#34;https://medium.com/@dnivra26/distributed-tracing-with-envoy-service-mesh-jaeger-c365b6191592&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;阅读第一篇关于分布式追踪的文章。&lt;/p&gt;
+&lt;p&gt;这是&lt;strong&gt;Envoy service mesh 下的可观测性&lt;/strong&gt;系列的第二篇文章，你可以在&lt;a href=&#34;https://medium.com/@dnivra26/distributed-tracing-with-envoy-service-mesh-jaeger-c365b6191592&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;阅读第一篇关于分布式追踪的文章。&lt;/p&gt;
 &lt;p&gt;在微服务中谈及监控时，你可不能被蒙在鼓里，至少要知道问题出在哪儿了。&lt;/p&gt;
-&lt;p&gt;让我们看看Envoy是怎样帮助我们了解我们的服务运行状况的。在service mesh下，所有的通信都会通过mesh，这意味着没有任何服务会与其它服务直接通信，服务向Envoy发起调用请求，然后Envoy将调用请求路由到目标服务，所以Envoy将持有传入和传出流量的上下文。Envoy通常提供关于&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http_conn_man/stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;传入&lt;/a&gt;请求、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/cluster_manager/cluster_stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;传出&lt;/a&gt;请求和&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/statistics&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy实例状态&lt;/a&gt;的指标。&lt;/p&gt;
+&lt;p&gt;让我们看看 Envoy 是怎样帮助我们了解我们的服务运行状况的。在 service mesh 下，所有的通信都会通过 mesh，这意味着没有任何服务会与其它服务直接通信，服务向 Envoy 发起调用请求，然后 Envoy 将调用请求路由到目标服务，所以 Envoy 将持有传入和传出流量的上下文。Envoy 通常提供关于&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http_conn_man/stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;传入&lt;/a&gt;请求、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/cluster_manager/cluster_stats&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;传出&lt;/a&gt;请求和&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/statistics&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 实例状态&lt;/a&gt;的指标。&lt;/p&gt;
 &lt;h2 id=&#34;准备&#34;&gt;准备&lt;/h2&gt;
 &lt;p&gt;这是我们将要构建的系统概览。&lt;/p&gt;
 &lt;p&gt;
@@ -820,15 +820,15 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;statsd&#34;&gt;Statsd&lt;/h2&gt;
-&lt;p&gt;Envoy支持通过两到三种格式来暴露指标，但本文中我们将使用&lt;a href=&#34;https://github.com/b/statsd_spec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;statsd&lt;/a&gt;格式。&lt;/p&gt;
-&lt;p&gt;所以流程将是这样，首先Envoy推送指标到statsd，然后我们用&lt;a href=&#34;https://github.com/prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;prometheus&lt;/a&gt;（一个时序数据库）从statsd拉取指标，最后通过&lt;a href=&#34;https://github.com/grafana/grafana&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grafana&lt;/a&gt;可视化这些指标。&lt;/p&gt;
-&lt;p&gt;在准备概览图中，我提到了statsd exporter而不是statsd，这是因为我们并不会直接使用statsd，而是使用一个接收statsd格式数据，并将其以prometheus格式输出的转换器（服务）。下面让我们来搞定它吧。&lt;/p&gt;
-&lt;p&gt;Envoy的指标主要分为两类：&lt;/p&gt;
+&lt;p&gt;Envoy 支持通过两到三种格式来暴露指标，但本文中我们将使用&lt;a href=&#34;https://github.com/b/statsd_spec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;statsd&lt;/a&gt;格式。&lt;/p&gt;
+&lt;p&gt;所以流程将是这样，首先 Envoy 推送指标到 statsd，然后我们用&lt;a href=&#34;https://github.com/prometheus&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;prometheus&lt;/a&gt;（一个时序数据库）从 statsd 拉取指标，最后通过&lt;a href=&#34;https://github.com/grafana/grafana&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grafana&lt;/a&gt;可视化这些指标。&lt;/p&gt;
+&lt;p&gt;在准备概览图中，我提到了 statsd exporter 而不是 statsd，这是因为我们并不会直接使用 statsd，而是使用一个接收 statsd 格式数据，并将其以 prometheus 格式输出的转换器（服务）。下面让我们来搞定它吧。&lt;/p&gt;
+&lt;p&gt;Envoy 的指标主要分为两类：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;Counter（计数器）：一个只增不减的指标。如：请求总数&lt;/li&gt;
-&lt;li&gt;Gauge（量表）：一个可增可减的指标，类似于一个瞬时值。如：当前CPU使用量&lt;/li&gt;
+&lt;li&gt;Gauge（量表）：一个可增可减的指标，类似于一个瞬时值。如：当前 CPU 使用量&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;让我们看一个包含stats sink的Envoy配置&lt;/p&gt;
+&lt;p&gt;让我们看一个包含 stats sink 的 Envoy 配置&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;admin&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;access_log_path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;/tmp/admin_access.log&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -902,17 +902,17 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;socket_address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; 
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;service_a_envoy&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port_value&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8786&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第8-13行告诉Envoy我们需要statsd格式的指标、我们的统计信息前缀（通常是你的服务名）是什么和statsd sink的地址。&lt;/p&gt;
-&lt;p&gt;第55-63行配置了我们的环境中的statsd sink。&lt;/p&gt;
-&lt;p&gt;这就是让Envoy输出统计信息所需要的所有配置。现在让我们来看看第2-7行做了哪些事情：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;第 8-13 行告诉 Envoy 我们需要 statsd 格式的指标、我们的统计信息前缀（通常是你的服务名）是什么和 statsd sink 的地址。&lt;/p&gt;
+&lt;p&gt;第 55-63 行配置了我们的环境中的 statsd sink。&lt;/p&gt;
+&lt;p&gt;这就是让 Envoy 输出统计信息所需要的所有配置。现在让我们来看看第 2-7 行做了哪些事情：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;Envoy在9901端口暴露了一个管理端，你可以通过它动态地改变日志级别，查看当前配置、统计数据等&lt;/li&gt;
-&lt;li&gt;Envoy也可以生成与nginx类似的访问日志，你可以通过它了解服务间的通信状况。访问日志的格式也是可配置的，如第29-33行&lt;/li&gt;
+&lt;li&gt;Envoy 在 9901 端口暴露了一个管理端，你可以通过它动态地改变日志级别，查看当前配置、统计数据等&lt;/li&gt;
+&lt;li&gt;Envoy 也可以生成与 nginx 类似的访问日志，你可以通过它了解服务间的通信状况。访问日志的格式也是可配置的，如第 29-33 行&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;你需要将相同的配置添加到系统中的其它Envoy sidecar上（是的，每个服务都有自己的Envoy sidecar）。&lt;/p&gt;
-&lt;p&gt;这些服务本身是用go写的，它们做的事情很简单，仅仅是通过Envoy调用其它服务。你可以在&lt;a href=&#34;https://github.com/dnivra26/envoy_monitoring&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;查看服务和Envoy的配置。&lt;/p&gt;
-&lt;p&gt;现在，虽然我们只有图中的statsd exporter，但有了它，如果我们运行docker容器（docker-compose build &amp;amp; docker-compose up），然后向Front Envoy（localhost:8080）发送一些流量，Envoy 将把这些流量的指标发送到statsd exporter，随后statsd exporter会把这些指标转换成prometheus格式，并将其暴露在9102端口。&lt;/p&gt;
-&lt;p&gt;Statsd exporter中的统计信息格式如下图所示&lt;/p&gt;
+&lt;p&gt;你需要将相同的配置添加到系统中的其它 Envoy sidecar 上（是的，每个服务都有自己的 Envoy sidecar）。&lt;/p&gt;
+&lt;p&gt;这些服务本身是用 go 写的，它们做的事情很简单，仅仅是通过 Envoy 调用其它服务。你可以在&lt;a href=&#34;https://github.com/dnivra26/envoy_monitoring&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;查看服务和 Envoy 的配置。&lt;/p&gt;
+&lt;p&gt;现在，虽然我们只有图中的 statsd exporter，但有了它，如果我们运行 docker 容器（docker-compose build &amp;amp; docker-compose up），然后向 Front Envoy（localhost:8080）发送一些流量，Envoy 将把这些流量的指标发送到 statsd exporter，随后 statsd exporter 会把这些指标转换成 prometheus 格式，并将其暴露在 9102 端口。&lt;/p&gt;
+&lt;p&gt;Statsd exporter 中的统计信息格式如下图所示&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -929,9 +929,9 @@
 
 
 
-&lt;figure  id=&#34;figure-来自statsd-exporter的prometheus格式的指标&#34;&gt;
+&lt;figure  id=&#34;figure-来自-statsd-exporter-的-prometheus-格式的指标&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;来自statsd exporter的prometheus格式的指标&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;来自 statsd exporter 的 prometheus 格式的指标&#34; srcset=&#34;
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwxf9t7t5bj318g0azgof_hu709f7bdc402bdea7446701ca69514888_89514_c1813ca8548614008b23b871ed99de6a.webp 400w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwxf9t7t5bj318g0azgof_hu709f7bdc402bdea7446701ca69514888_89514_3b64fc2e7af4963abe21a764a900bda4.webp 760w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwxf9t7t5bj318g0azgof_hu709f7bdc402bdea7446701ca69514888_89514_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -940,15 +940,15 @@
                height=&#34;187&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      来自statsd exporter的prometheus格式的指标
+      来自 statsd exporter 的 prometheus 格式的指标
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;这里边将有上百个指标，同时，在上面的截图中我们能看到Service A和Service B之间的通信延迟指标。上图的指标是遵循prometheus格式的&lt;/p&gt;
+&lt;p&gt;这里边将有上百个指标，同时，在上面的截图中我们能看到 Service A 和 Service B 之间的通信延迟指标。上图的指标是遵循 prometheus 格式的&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;metric_name [&amp;#34;{&amp;#34; label_name &amp;#34;=&amp;#34; `&amp;#34;` label_value `&amp;#34;` { &amp;#34;,&amp;#34; label_name &amp;#34;=&amp;#34; `&amp;#34;` label_value `&amp;#34;` } [ &amp;#34;,&amp;#34; ] &amp;#34;}&amp;#34;] value [ timestamp ]
 &lt;/code&gt;&lt;/pre&gt;&lt;p&gt;你可以在&lt;a href=&#34;https://github.com/prometheus/docs/blob/master/content/docs/instrumenting/exposition_formats.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;了解更多。&lt;/p&gt;
 &lt;h2 id=&#34;prometheus&#34;&gt;Prometheus&lt;/h2&gt;
-&lt;p&gt;我们将使用&lt;a href=&#34;https://prometheus.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus&lt;/a&gt;作为时序数据库来保存我们的指标。Prometheus不仅是一个时序数据库，它本身还是一个监控系统，但本文我们只用它来存储指标数据。需要注意的是，prometheus是一个通过主动拉取来获取指标的系统，这意味着你必须告诉prometheus从何处拉取指标，在我们的例子中是从statsd exporter处拉取。&lt;/p&gt;
-&lt;p&gt;将Prometheus添加到系统中非常简单而又直接，我们只需要将拉取目标（statsd exporter）作为配置文件传递给Prometheus就可以了。配置看起来是这样的&lt;/p&gt;
+&lt;p&gt;我们将使用&lt;a href=&#34;https://prometheus.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Prometheus&lt;/a&gt;作为时序数据库来保存我们的指标。Prometheus 不仅是一个时序数据库，它本身还是一个监控系统，但本文我们只用它来存储指标数据。需要注意的是，prometheus 是一个通过主动拉取来获取指标的系统，这意味着你必须告诉 prometheus 从何处拉取指标，在我们的例子中是从 statsd exporter 处拉取。&lt;/p&gt;
+&lt;p&gt;将 Prometheus 添加到系统中非常简单而又直接，我们只需要将拉取目标（statsd exporter）作为配置文件传递给 Prometheus 就可以了。配置看起来是这样的&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;global&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scrape_interval&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;15s&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;scrape_configs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -958,8 +958,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;targets&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;statsd_exporter:9102&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;group&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s1&#34;&gt;&amp;#39;services&amp;#39;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;scrape_interval的值表示Prometheus从目标处拉取配置的频率。&lt;/p&gt;
-&lt;p&gt;现在启动Prometheus，里面应该有一些数据了。让我们打开localhost:9090来看一看&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;scrape_interval 的值表示 Prometheus 从目标处拉取配置的频率。&lt;/p&gt;
+&lt;p&gt;现在启动 Prometheus，里面应该有一些数据了。让我们打开 localhost:9090 来看一看&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -976,9 +976,9 @@
 
 
 
-&lt;figure  id=&#34;figure-prometheus查询页面&#34;&gt;
+&lt;figure  id=&#34;figure-prometheus-查询页面&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;prometheus查询页面&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;prometheus 查询页面&#34; srcset=&#34;
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy55z3klmj31jk0f6gmd_huc069c796849df746a728a566fda3318d_35500_332c68f381439a4df3e9c8321d6a9048.webp 400w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy55z3klmj31jk0f6gmd_huc069c796849df746a728a566fda3318d_35500_34bcd59ffd9eb6394aaaf3be74ba4517.webp 760w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy55z3klmj31jk0f6gmd_huc069c796849df746a728a566fda3318d_35500_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -987,11 +987,11 @@
                height=&#34;208&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      prometheus查询页面
+      prometheus 查询页面
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;如图所示，可以看到我们的指标。你能做的可不仅仅是选择已有的指标，从&lt;a href=&#34;https://prometheus.io/docs/prometheus/latest/querying/basics/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;可以阅读关于prometheus查询语言的更多信息。它还可以基于查询结果绘制图表，除此之外还有一个报警系统。&lt;/p&gt;
-&lt;p&gt;如果我们打开prometheus的targets页面，将能看到所有的拉取目标和它们的健康状态&lt;/p&gt;
+&lt;p&gt;如图所示，可以看到我们的指标。你能做的可不仅仅是选择已有的指标，从&lt;a href=&#34;https://prometheus.io/docs/prometheus/latest/querying/basics/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;可以阅读关于 prometheus 查询语言的更多信息。它还可以基于查询结果绘制图表，除此之外还有一个报警系统。&lt;/p&gt;
+&lt;p&gt;如果我们打开 prometheus 的 targets 页面，将能看到所有的拉取目标和它们的健康状态&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1008,9 +1008,9 @@
 
 
 
-&lt;figure  id=&#34;figure-prometheus目标&#34;&gt;
+&lt;figure  id=&#34;figure-prometheus-目标&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;prometheus目标&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;prometheus 目标&#34; srcset=&#34;
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy5occy0pj31jk0gbjs6_huf8d39d26bdbd237bb0b52e8931fd722e_36152_74cc446045518511fe5b24831dd2bfda.webp 400w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy5occy0pj31jk0gbjs6_huf8d39d26bdbd237bb0b52e8931fd722e_36152_1b9044381427a6ac17cb4987654326f6.webp 760w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwgy1fwy5occy0pj31jk0gbjs6_huf8d39d26bdbd237bb0b52e8931fd722e_36152_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -1019,13 +1019,13 @@
                height=&#34;223&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      prometheus目标
+      prometheus 目标
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;grafana&#34;&gt;Grafana&lt;/h2&gt;
-&lt;p&gt;Grafana是一个很棒的监控可视化解决方案，它支持Prometheus，Graphite，InfluxDB，ElasticSearch等多种后端。&lt;/p&gt;
-&lt;p&gt;Grafana有两大主要组件需要我们配置&lt;/p&gt;
-&lt;p&gt;(1). 数据源（Datasource）：指定grafana从哪个后端获取指标。你可以通过配置文件来配置数据源，代码如下所示&lt;/p&gt;
+&lt;p&gt;Grafana 是一个很棒的监控可视化解决方案，它支持 Prometheus，Graphite，InfluxDB，ElasticSearch 等多种后端。&lt;/p&gt;
+&lt;p&gt;Grafana 有两大主要组件需要我们配置&lt;/p&gt;
+&lt;p&gt;(1). 数据源（Datasource）：指定 grafana 从哪个后端获取指标。你可以通过配置文件来配置数据源，代码如下所示&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;datasources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1034,8 +1034,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;access&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;url&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;http://prometheus:9090&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;editable&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kc&#34;&gt;true&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;(2). 仪表盘（Dashboard）：你可以从仪表盘查看来自数据源的指标。Grafana支持多种可视化元素，如Graphs，Single Stats，Heatmaps……你可以继承这些元素并使用插件来构造自己的元素。&lt;/p&gt;
-&lt;p&gt;我在使用Grafana时遇到的唯一一个问题是，缺少一种标准的方法来用代码开发那些仪表盘。所幸有一些第三方的库提供了支持，我们将使用来自weaveworks的&lt;a href=&#34;https://github.com/weaveworks/grafanalib&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grafanalib&lt;/a&gt;。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;(2). 仪表盘（Dashboard）：你可以从仪表盘查看来自数据源的指标。Grafana 支持多种可视化元素，如 Graphs，Single Stats，Heatmaps……你可以继承这些元素并使用插件来构造自己的元素。&lt;/p&gt;
+&lt;p&gt;我在使用 Grafana 时遇到的唯一一个问题是，缺少一种标准的方法来用代码开发那些仪表盘。所幸有一些第三方的库提供了支持，我们将使用来自 weaveworks 的&lt;a href=&#34;https://github.com/weaveworks/grafanalib&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;grafanalib&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;下面是我们通过 python 代码尝试构建的一个仪表盘&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-python&#34; data-lang=&#34;python&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;from&lt;/span&gt; &lt;span class=&#34;nn&#34;&gt;grafanalib.core&lt;/span&gt; &lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;
@@ -1100,11 +1100,11 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;p&#34;&gt;),&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;auto_panel_ids&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在这段代码中，我们为2xx，5xx和延迟数据构建了图表。其中第5-22行很重要，它从我们的设置中提取可用的service names作为grafana的变量，为我们创建一个动态的仪表盘，这意味着我们能够选择性地查看特定源服务和目标服务的统计数据。如果想了解更多关于变量的内容请参考&lt;a href=&#34;http://docs.grafana.org/reference/templating/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;你需要通过grafanalib命令来从上述python文件生成仪表盘&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在这段代码中，我们为 2xx，5xx 和延迟数据构建了图表。其中第 5-22 行很重要，它从我们的设置中提取可用的 service names 作为 grafana 的变量，为我们创建一个动态的仪表盘，这意味着我们能够选择性地查看特定源服务和目标服务的统计数据。如果想了解更多关于变量的内容请参考&lt;a href=&#34;http://docs.grafana.org/reference/templating/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;你需要通过 grafanalib 命令来从上述 python 文件生成仪表盘&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;     generate-dashboard -o dashboard.json service-dashboard.py
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意这里生成的dashboard.json可不容易阅读。&lt;/p&gt;
-&lt;p&gt;所以，启动Grafana时我们只需要传递仪表盘和数据源就好了。当访问http:localhost:3000时，你将看到：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;注意这里生成的 dashboard.json 可不容易阅读。&lt;/p&gt;
+&lt;p&gt;所以，启动 Grafana 时我们只需要传递仪表盘和数据源就好了。当访问 http:localhost:3000 时，你将看到：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -1121,9 +1121,9 @@
 
 
 
-&lt;figure  id=&#34;figure-grafana仪表盘&#34;&gt;
+&lt;figure  id=&#34;figure-grafana-仪表盘&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;grafana仪表盘&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;grafana 仪表盘&#34; srcset=&#34;
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwly1fx6n732mrdj31jk0h7jsc_hu3a2ec367fb14480d5607ba0084afc79a_40829_6903b24a86d66820b7f1887e429c0a06.webp 400w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwly1fx6n732mrdj31jk0h7jsc_hu3a2ec367fb14480d5607ba0084afc79a_40829_4bca2416ba0cec0094acb734ebe291d9.webp 760w,
                /blog/microservices-monitoring-with-envoy-service-mesh-prometheus-grafana/006tNbRwly1fx6n732mrdj31jk0h7jsc_hu3a2ec367fb14480d5607ba0084afc79a_40829_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -1132,11 +1132,11 @@
                height=&#34;235&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      grafana仪表盘
+      grafana 仪表盘
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;现在你应该能看到2xx，5xx和延迟的图表，同时还能看到一个下拉菜单，你可以通过它选择源服务和目标服务。关于Grafana还有许多内容我们没有讨论到，包括强大的查询编辑器和告警系统。更重要的是，这一切都是可以通过插件和应用扩展的，可以参考&lt;a href=&#34;https://github.com/grafana/kubernetes-app&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;的例子。如果你正想可视化常见服务如redis，rabbitmq等的指标，grafana有一个&lt;a href=&#34;https://grafana.com/dashboards&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;公共仪表盘&lt;/a&gt;库，你只需要导入它们就可以使用了。使用Grafana 还有一个好处，你可以通过配置文件和代码创建和管理所有东西，而不需要过多地通过UI来操作。&lt;/p&gt;
-&lt;p&gt;我建议你试用一下prometheus和grafana以了解更多信息。感谢阅读，如有建议和意见，请写在评论中。&lt;/p&gt;
+&lt;p&gt;现在你应该能看到 2xx，5xx 和延迟的图表，同时还能看到一个下拉菜单，你可以通过它选择源服务和目标服务。关于 Grafana 还有许多内容我们没有讨论到，包括强大的查询编辑器和告警系统。更重要的是，这一切都是可以通过插件和应用扩展的，可以参考&lt;a href=&#34;https://github.com/grafana/kubernetes-app&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;的例子。如果你正想可视化常见服务如 redis，rabbitmq 等的指标，grafana 有一个&lt;a href=&#34;https://grafana.com/dashboards&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;公共仪表盘&lt;/a&gt;库，你只需要导入它们就可以使用了。使用 Grafana 还有一个好处，你可以通过配置文件和代码创建和管理所有东西，而不需要过多地通过 UI 来操作。&lt;/p&gt;
+&lt;p&gt;我建议你试用一下 prometheus 和 grafana 以了解更多信息。感谢阅读，如有建议和意见，请写在评论中。&lt;/p&gt;
 &lt;p&gt;在&lt;a href=&#34;https://github.com/dnivra26/envoy_monitoring/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;可以找到所有代码和配置文件。&lt;/p&gt;
 </description>
     </item>

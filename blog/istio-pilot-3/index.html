@@ -326,7 +326,7 @@
         content="2020-09-24T12:00:00&#43;08:00"
       />
     
-    <meta property="article:modified_time" content="2023-08-29T10:08:12&#43;08:00">
+    <meta property="article:modified_time" content="2023-08-30T20:44:49&#43;08:00">
   
 
   
@@ -355,7 +355,7 @@
   "headline": "Istio Pilot 源码分析（三）",
   
   "datePublished": "2020-09-24T12:00:00+08:00",
-  "dateModified": "2023-08-29T10:08:12+08:00",
+  "dateModified": "2023-08-30T20:44:49+08:00",
   
   "author": {
     "@type": "Person",
@@ -848,10 +848,10 @@
 
   
   <span class="middot-divider"></span>
-  字数 6200
+  字数 6308
   <span class="middot-divider"></span>
   <span class="article-reading-time">
-      阅读时长 28 分钟
+      阅读时长 29 分钟
   </span>
   
 
@@ -936,7 +936,7 @@
                     
                     <p>本篇主要探讨上一篇源码分析中留下的问题，如 <code>EnvoyXdsServer</code> 是如何工作的，以及 xDS 的下发流程。对推送事件的防抖、<code>SidecarScope</code> 的运用做一些细致的分析。</p>
 <h2 id="envoyxdsserver">EnvoyXdsServer</h2>
-<p><code>EnvoyXdsServer</code> 主要负责 Pilot 中 xDS 协议的生成和下发，接收并处理 <code>configController</code> 和 <code>serviceController</code> 推送的 PushRequest ，与集群中所有的数据面代理进行 gRPC 通信，并处理它们的请求。在 Pilot Server 中的定义如下：</p>
+<p><code>EnvoyXdsServer</code> 主要负责 Pilot 中 xDS 协议的生成和下发，接收并处理 <code>configController</code> 和 <code>serviceController</code> 推送的 PushRequest，与集群中所有的数据面代理进行 gRPC 通信，并处理它们的请求。在 Pilot Server 中的定义如下：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// Server contains the runtime configuration for the Pilot discovery service.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">type</span> <span class="nx">Server</span> <span class="kd">struct</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">EnvoyXdsServer</span> <span class="o">*</span><span class="nx">xds</span><span class="p">.</span><span class="nx">DiscoveryServer</span>
@@ -1019,7 +1019,7 @@
 </span></span><span class="line"><span class="cl">  <span class="k">go</span> <span class="nx">s</span><span class="p">.</span><span class="nf">sendPushes</span><span class="p">(</span><span class="nx">stopCh</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span></code></pre></div><h3 id="receive-connection">Receive Connection</h3>
-<p>当服务实例的代理（ Sidecar 模式） 启动的时候，会和 grpcServer 建立连接并调用 <code>StreamAggregatedResources</code> 方法：</p>
+<p>当服务实例的代理（Sidecar 模式）启动的时候，会和 grpcServer 建立连接并调用 <code>StreamAggregatedResources</code> 方法：</p>
 <p>
 
 
@@ -1135,7 +1135,7 @@
 <p>什么是防抖（ <code>Debounce</code> ）呢？举一个简单的例子，我们每天上班都要坐电梯，当你第一个进电梯后，想上 5 楼，按下了 5 楼并关闭了电梯门，门还没关上的时候，突然碰到一个同事，电梯门又打开，同事进来后你们一起去了 5 楼。这样两个人两次去 5 楼的事件，电梯跑了一趟就解决了。试想如果电梯的门都是秒关不等人，每次只装一个人，第二个人必须等电梯把上一个人送到之后才能重新乘坐，就算写字楼有很多电梯也会在早高峰的时候产生拥挤。</p>
 <p>假设电梯容量无限大，你有无数个同事，今天好巧不巧每次电梯快关上的时候都有个同事要进来，门永远关不上，电梯也一直不走，那好了大家今天谁也别想上班，也是个很大的问题。那我们做一个规定，每趟电梯在 1 楼的时候最多等待 3 分钟，到时间了电梯就走，这样电梯的利用率就提升了，大家也不用等太久就可以上班打卡。</p>
 <p>如果优化的更好一点，把所有电梯分成奇偶两组，奇组只在奇数层停，偶组只在偶数层停。这样就可以最大化的提升资源利用率。但还有一种情况，如果我们进电梯后，后面没有人进电梯了，白白等待了 3 分钟电梯才走，浪费了时间，这也不行。</p>
-<p>那我们就再给电梯系统加一个时间，让电梯在有人进电梯后等待 10 秒，如果过了 10 秒还没有下一个人进来，电梯就不等了。 如有有人进来就重新计时 10 秒钟。</p>
+<p>那我们就再给电梯系统加一个时间，让电梯在有人进电梯后等待 10 秒，如果过了 10 秒还没有下一个人进来，电梯就不等了。如有有人进来就重新计时 10 秒钟。</p>
 <p>从上面这个例子可以引申出几个概念，一个是最小静默时间，一个是最大延迟时间。最小静默时间就是上面的 10 秒钟，从上一个进电梯的人开始计时，10 秒内有新的人进来就接着等，否则就不等，每进一个人就重新计算这个时间。最大延迟时间就是上面电梯等待的 3 分钟，到了这个时间就算还有很多人没有进电梯，电梯也必须走。另外一个防抖中的重要概念就是分组合并，比如把都去偶数层的人统一在一趟电梯上。</p>
 <p><code>EnvoyXdsServer</code> 的防抖函数也一样，把要推送的请求根据资源类型、事件类型分组或者合并，并在 <code>minQuite</code> 时间内等待下一个请求，超过 <code>maxDelay</code> 时间就进行下一步处理。</p>
 <p>在 Pilot 中最小静默时间可以通过 <code>PILOT_DEBOUNCE_AFTER</code> 这个环境变量设置，默认为 100 毫秒，最大延迟时间可以通过 <code>PILOT_DEBOUNCE_MAX</code> 设置，默认为 10 秒。</p>
@@ -1176,7 +1176,7 @@
 </span></span><span class="line"><span class="cl">    <span class="nx">timeChan</span> <span class="p">=</span> <span class="nx">time</span><span class="p">.</span><span class="nf">After</span><span class="p">(</span><span class="nx">debounceAfter</span> <span class="o">-</span> <span class="nx">quietTime</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">  <span class="p">}</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>可以看到当事件的延迟时间大于等于最大延迟时间或静默时间大于等于最小静默时间，才会执行 push() 方法。 push() 方法也是 <code>debounce</code> 方法中包装的一个过程函数，它会在真正的 <code>pushFn()</code> 完成后向 <code>freeCh</code> 发送消息表示这次防抖处理完成了，可以开始下一次防抖。</p>
+</span></span></code></pre></div><p>可以看到当事件的延迟时间大于等于最大延迟时间或静默时间大于等于最小静默时间，才会执行 push() 方法。push() 方法也是 <code>debounce</code> 方法中包装的一个过程函数，它会在真正的 <code>pushFn()</code> 完成后向 <code>freeCh</code> 发送消息表示这次防抖处理完成了，可以开始下一次防抖。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="nx">push</span> <span class="o">:=</span> <span class="kd">func</span><span class="p">(</span><span class="nx">req</span> <span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">PushRequest</span><span class="p">)</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="nf">pushFn</span><span class="p">(</span><span class="nx">req</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">freeCh</span> <span class="o">&lt;-</span> <span class="kd">struct</span><span class="p">{}{}</span>
@@ -1214,7 +1214,7 @@
 </span></span><span class="line"><span class="cl">    <span class="k">return</span>
 </span></span><span class="line"><span class="cl">  <span class="p">}</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>先看 <code>case r:= &lt;-ch</code> 这个分支，当收到第一个 PushRequest 的时候，通过一个延时器 <code>timeChan</code> 先延迟一个最小静默时间（100 毫秒），期间接收新的请求直接进行 Merge ，同时累加已防抖的事件个数。当第一个 100 毫秒计时结束就会进入 <code>case &lt;-timeChan</code> 分支，会判断是否有正在执行的防抖过程，没有的话就执行 <code>pushWorker()</code> 做一次防抖判断看是否需要推送。如果第一个请求的延迟时间还没有超过最大延迟时间（10 秒钟）并且距离处理上一次 PushRequest 的时间不足最小静默时间（100 毫秒），则继续延时，等待 <code>debouncedAfter - quietTime</code> 也就是不足最小静默时间的部分，再进行下一次 <code>pushWorker()</code> 操作。</p>
+</span></span></code></pre></div><p>先看 <code>case r:= &lt;-ch</code> 这个分支，当收到第一个 PushRequest 的时候，通过一个延时器 <code>timeChan</code> 先延迟一个最小静默时间（100 毫秒），期间接收新的请求直接进行 Merge，同时累加已防抖的事件个数。当第一个 100 毫秒计时结束就会进入 <code>case &lt;-timeChan</code> 分支，会判断是否有正在执行的防抖过程，没有的话就执行 <code>pushWorker()</code> 做一次防抖判断看是否需要推送。如果第一个请求的延迟时间还没有超过最大延迟时间（10 秒钟）并且距离处理上一次 PushRequest 的时间不足最小静默时间（100 毫秒），则继续延时，等待 <code>debouncedAfter - quietTime</code> 也就是不足最小静默时间的部分，再进行下一次 <code>pushWorker()</code> 操作。</p>
 <p>在看真正的 <code>pushFn</code> 函数之前，我们先了解下防抖函数是怎么合并 PushRequest 的。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// istio/pilot/pkg/model/push_context.go:250
 </span></span></span><span class="line"><span class="cl"><span class="c1">// Merge two update requests together
@@ -1297,7 +1297,7 @@
       PushChannel Source
     </figcaption></figure>
 </p>
-<p>而 <code>ConfigsUpdated</code> 跟踪了所有已经发生变化的配置，这个 Map 主要被用于那些被 <a href="https://istio.io/latest/docs/reference/config/networking/sidecar/" target="_blank" rel="noopener">Sidecar</a> 限定了服务可见性的数据面代理，来过滤不必接收的 xDS 推送。只有与这些代理相关的服务（如 Sidecar 中定义的 Egress 和 Ingress ）发生变化时，才推送到特定的客户端。当 <code>ConfigsUpdated</code> 为空时，则表示所有的数据面代理都会收到这次推送。</p>
+<p>而 <code>ConfigsUpdated</code> 跟踪了所有已经发生变化的配置，这个 Map 主要被用于那些被 <a href="https://istio.io/latest/docs/reference/config/networking/sidecar/" target="_blank" rel="noopener">Sidecar</a> 限定了服务可见性的数据面代理，来过滤不必接收的 xDS 推送。只有与这些代理相关的服务（如 Sidecar 中定义的 Egress 和 Ingress）发生变化时，才推送到特定的客户端。当 <code>ConfigsUpdated</code> 为空时，则表示所有的数据面代理都会收到这次推送。</p>
 <p>所以才有上面代码中 <code>if len(first.ConfigsUpdated) &gt; 0 &amp;&amp; len(other.ConfigsUpdated) &gt; 0</code> 这个判断，只要有一个请求需要推送至所有代理，就不会合并 <code>ConfigUpdated</code> 。</p>
 <p>对 PushRequest 做完防抖之后，再来看真正的 <code>pushFn</code> :</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// Push is called to push changes on config updates using ADS. This is set in DiscoveryService.Push,
@@ -1321,7 +1321,7 @@
 </span></span><span class="line"><span class="cl">  <span class="nx">req</span><span class="p">.</span><span class="nx">Push</span> <span class="p">=</span> <span class="nx">push</span>
 </span></span><span class="line"><span class="cl">  <span class="k">go</span> <span class="nx">s</span><span class="p">.</span><span class="nf">AdsPushAll</span><span class="p">(</span><span class="nx">versionLocal</span><span class="p">,</span> <span class="nx">req</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>可以看到先处理了不是全量推送的请求 <code>if !req.Full</code> ，结合之前分析所有 PushRequest 的来源可知， <code>Full=false</code> 只在 <code>EDSUpdate</code> 的时候才有可能推送，还记得之前分析 <code>ServiceEntryStore</code> 里的 <code>workloadEntryHandler</code> 吗？ EDS 的变化不需要更新 <code>PushContext</code> ，所以这里获取了全局的 <code>globalPushContext</code> 后就直接处理了。说到这里读者可能会对 <code>PushContext</code> 感到疑惑，这个是用来做什么的呢，为什么 EDS 的增量更新就不用更新它呢？我们先来看看 <code>PushContext</code> 的定义：</p>
+</span></span></code></pre></div><p>可以看到先处理了不是全量推送的请求 <code>if !req.Full</code> ，结合之前分析所有 PushRequest 的来源可知， <code>Full=false</code> 只在 <code>EDSUpdate</code> 的时候才有可能推送，还记得之前分析 <code>ServiceEntryStore</code> 里的 <code>workloadEntryHandler</code> 吗？EDS 的变化不需要更新 <code>PushContext</code> ，所以这里获取了全局的 <code>globalPushContext</code> 后就直接处理了。说到这里读者可能会对 <code>PushContext</code> 感到疑惑，这个是用来做什么的呢，为什么 EDS 的增量更新就不用更新它呢？我们先来看看 <code>PushContext</code> 的定义：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">type</span> <span class="nx">PushContext</span> <span class="kd">struct</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="c1">// ...
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>  <span class="c1">// privateServices are reachable within the same namespace, with exportTo &#34;.&#34;
@@ -1360,7 +1360,7 @@
 </span></span><span class="line"><span class="cl">  <span class="c1">// gateways for each namespace
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>  <span class="nx">gatewaysByNamespace</span> <span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">][]</span><span class="nx">Config</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">allGateways</span>         <span class="p">[]</span><span class="nx">Config</span>
-</span></span></code></pre></div><p><code>PushContext</code> 里定义了大量对 Service 、 VirtualService 等的缓存，当服务发生变化时，必须要更新，而 EDS 的增量推送则不用。</p>
+</span></span></code></pre></div><p><code>PushContext</code> 里定义了大量对 Service、VirtualService 等的缓存，当服务发生变化时，必须要更新，而 EDS 的增量推送则不用。</p>
 <p>在 <code>Push()</code> 方法更新了 <code>PushContext</code> 之后便调用 <code>AdsPushAll()</code> 和 <code>startPush(req)</code> 将 PushRequest 重新入队到了 <code>DiscoveryServer.pushQueue</code> :</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="c1">// Send a signal to all connections, with a push event.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">DiscoveryServer</span><span class="p">)</span> <span class="nf">startPush</span><span class="p">(</span><span class="nx">req</span> <span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">PushRequest</span><span class="p">)</span> <span class="p">{</span>
@@ -1391,7 +1391,7 @@
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>  <span class="c1">// If model.PushRequest is not nil, it will be Enqueued again once MarkDone has been called.
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>  <span class="nx">inProgress</span> <span class="kd">map</span><span class="p">[</span><span class="o">*</span><span class="nx">Connection</span><span class="p">]</span><span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">PushRequest</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>其中 <code>eventsMap</code> 保存了所有代理 gRPC 连接的 PushRequest ，如果相同连接的 PushRequest 再次入队，将会被合并。 <code>inProgress</code> 保存了所有连接正在处理的 PushRequest 。这里合并的操作和上面 <code>debounce</code> 逻辑一样，调用的是同一个函数。</p>
+</span></span></code></pre></div><p>其中 <code>eventsMap</code> 保存了所有代理 gRPC 连接的 PushRequest，如果相同连接的 PushRequest 再次入队，将会被合并。 <code>inProgress</code> 保存了所有连接正在处理的 PushRequest。这里合并的操作和上面 <code>debounce</code> 逻辑一样，调用的是同一个函数。</p>
 <h3 id="send-pushes">Send Pushes</h3>
 <p>当所有的 PushRequest 经过防抖等一系列处理后，重新入队到 <code>pushQueue</code> ，这时在 <code>EnvoyXdsServer</code> 启动时创建的协程 <code>sendPushes</code> 就开始工作了。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">DiscoveryServer</span><span class="p">)</span> <span class="nf">Start</span><span class="p">(</span><span class="nx">stopCh</span> <span class="o">&lt;-</span><span class="kd">chan</span> <span class="kd">struct</span><span class="p">{})</span> <span class="p">{</span>
@@ -1404,7 +1404,7 @@
 </span></span><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">DiscoveryServer</span><span class="p">)</span> <span class="nf">sendPushes</span><span class="p">(</span><span class="nx">stopCh</span> <span class="o">&lt;-</span><span class="kd">chan</span> <span class="kd">struct</span><span class="p">{})</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="nf">doSendPushes</span><span class="p">(</span><span class="nx">stopCh</span><span class="p">,</span> <span class="nx">s</span><span class="p">.</span><span class="nx">concurrentPushLimit</span><span class="p">,</span> <span class="nx">s</span><span class="p">.</span><span class="nx">pushQueue</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>这里传入了节流的参数 <code>s.concurrentPushLimit</code> ，它是由环境变量 <code>PILOT_PUSH_THROTTLE</code> 控制的，默认为 100 。 <code>doSendPushes</code> 的逻辑如图：</p>
+</span></span></code></pre></div><p>这里传入了节流的参数 <code>s.concurrentPushLimit</code> ，它是由环境变量 <code>PILOT_PUSH_THROTTLE</code> 控制的，默认为 100。 <code>doSendPushes</code> 的逻辑如图：</p>
 <p>
 
 
@@ -1435,7 +1435,7 @@
       EnvoyXdsServer Send Pushes
     </figcaption></figure>
 </p>
-<p>首先从 <code>pushQueue</code> 中通过 <code>Dequeue()</code> 方法获取需要处理的代理客户端和对应的 PushRequest ，再根据 PushRequest 生成 Event 传入客户端的 <code>pushChannel</code> 中，注意和 <code>EnvoyXdsServer</code> 的 <code>pushChannel</code> 不同，这里的是针对当前客户端连接的 <code>pushChannel</code> 。</p>
+<p>首先从 <code>pushQueue</code> 中通过 <code>Dequeue()</code> 方法获取需要处理的代理客户端和对应的 PushRequest，再根据 PushRequest 生成 Event 传入客户端的 <code>pushChannel</code> 中，注意和 <code>EnvoyXdsServer</code> 的 <code>pushChannel</code> 不同，这里的是针对当前客户端连接的 <code>pushChannel</code> 。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">func</span> <span class="nf">doSendPushes</span><span class="p">(</span><span class="nx">stopCh</span> <span class="o">&lt;-</span><span class="kd">chan</span> <span class="kd">struct</span><span class="p">{},</span> <span class="nx">semaphore</span> <span class="kd">chan</span> <span class="kd">struct</span><span class="p">{},</span> <span class="nx">queue</span> <span class="o">*</span><span class="nx">PushQueue</span><span class="p">)</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="k">for</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">    <span class="k">select</span> <span class="p">{</span>
@@ -1561,7 +1561,7 @@
 </span></span><span class="line"><span class="cl">  <span class="nx">_</span><span class="p">,</span> <span class="nx">exists</span> <span class="o">:=</span> <span class="nx">sc</span><span class="p">.</span><span class="nx">configDependencies</span><span class="p">[</span><span class="nx">config</span><span class="p">.</span><span class="nf">HashCode</span><span class="p">()]</span>
 </span></span><span class="line"><span class="cl">  <span class="k">return</span> <span class="nx">exists</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>它先是判断了变化的配置是否和 <code>SidecarScope</code> 是同个命名空间，不过这只针对 Sidecar 和 EnvoyFilter 等特殊配置。再处理一些不常见的配置，如果这些配置不在 <code>SidecarScope</code> 管理范围内的话，作为 unknown 类型也返回 true 。 <code>SidecarScope</code> 管理的流控配置主要是以下三种：</p>
+</span></span></code></pre></div><p>它先是判断了变化的配置是否和 <code>SidecarScope</code> 是同个命名空间，不过这只针对 Sidecar 和 EnvoyFilter 等特殊配置。再处理一些不常见的配置，如果这些配置不在 <code>SidecarScope</code> 管理范围内的话，作为 unknown 类型也返回 true。 <code>SidecarScope</code> 管理的流控配置主要是以下三种：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="nx">sidecarScopeKnownConfigTypes</span> <span class="p">=</span> <span class="kd">map</span><span class="p">[</span><span class="nx">resource</span><span class="p">.</span><span class="nx">GroupVersionKind</span><span class="p">]</span><span class="kd">struct</span><span class="p">{}{</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">gvk</span><span class="p">.</span><span class="nx">ServiceEntry</span><span class="p">:</span>    <span class="p">{},</span>
 </span></span><span class="line"><span class="cl">  <span class="nx">gvk</span><span class="p">.</span><span class="nx">VirtualService</span><span class="p">:</span>  <span class="p">{},</span>
@@ -1669,8 +1669,8 @@
 </li>
 <li>
 <p>PushConnection</p>
-<p>回到 <code>pushConnection</code> 的主流程，在 <code>Full=false</code> 下判断 <code>ProxyNeedsPush</code> ，确定需要推送后调用 <code>pushEds</code> 增量推送 EDS 。</p>
-<p>详细分析下 <code>pushEds</code> 的过程，首先遍历所有的 Clusters ，构建生成器生成 EDS ，然后调用 con.send() 进行推送：</p>
+<p>回到 <code>pushConnection</code> 的主流程，在 <code>Full=false</code> 下判断 <code>ProxyNeedsPush</code> ，确定需要推送后调用 <code>pushEds</code> 增量推送 EDS。</p>
+<p>详细分析下 <code>pushEds</code> 的过程，首先遍历所有的 Clusters，构建生成器生成 EDS，然后调用 con.send() 进行推送：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="kd">func</span> <span class="p">(</span><span class="nx">s</span> <span class="o">*</span><span class="nx">DiscoveryServer</span><span class="p">)</span> <span class="nf">pushEds</span><span class="p">(</span><span class="nx">push</span> <span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">PushContext</span><span class="p">,</span> <span class="nx">con</span> <span class="o">*</span><span class="nx">Connection</span><span class="p">,</span> <span class="nx">version</span> <span class="kt">string</span><span class="p">,</span> <span class="nx">edsUpdatedServices</span> <span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kd">struct</span><span class="p">{})</span> <span class="kt">error</span> <span class="p">{</span>
 </span></span><span class="line"><span class="cl">  <span class="c1">// ...
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span>  <span class="k">for</span> <span class="nx">_</span><span class="p">,</span> <span class="nx">clusterName</span> <span class="o">:=</span> <span class="k">range</span> <span class="nx">con</span><span class="p">.</span><span class="nf">Clusters</span><span class="p">()</span> <span class="p">{</span>
@@ -1707,7 +1707,7 @@
 </span></span><span class="line"><span class="cl">  <span class="p">}()</span>
 </span></span><span class="line"><span class="cl">  <span class="c1">// ...
 </span></span></span><span class="line"><span class="cl"><span class="c1"></span><span class="p">}</span>
-</span></span></code></pre></div><p>如果是增量推送的话这里就退出了，全量推送和只推送 EDS 一样，也会先判断下 <code>ProxyNeedsPush</code> ，确定需要后开始全量推送，根据 <code>pushTypes</code> 的不同分别推送 CDS 、 EDS 、 LDS 和 RDS :</p>
+</span></span></code></pre></div><p>如果是增量推送的话这里就退出了，全量推送和只推送 EDS 一样，也会先判断下 <code>ProxyNeedsPush</code> ，确定需要后开始全量推送，根据 <code>pushTypes</code> 的不同分别推送 CDS、EDS、LDS 和 RDS :</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-go" data-lang="go"><span class="line"><span class="cl"><span class="nx">pushTypes</span> <span class="o">:=</span> <span class="nf">PushTypeFor</span><span class="p">(</span><span class="nx">con</span><span class="p">.</span><span class="nx">node</span><span class="p">,</span> <span class="nx">pushEv</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="nx">con</span><span class="p">.</span><span class="nf">Watching</span><span class="p">(</span><span class="nx">v3</span><span class="p">.</span><span class="nx">ClusterShortType</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="nx">pushTypes</span><span class="p">[</span><span class="nx">CDS</span><span class="p">]</span> <span class="p">{</span>
@@ -1749,7 +1749,7 @@
 </li>
 </ol>
 <h3 id="client-request">Client Request</h3>
-<p>这部分的内容比较简单，核心推送和上面的 <code>sendPushes</code> 一样，流程先是从 <code>reqChannel</code> 中获取 <code>DiscoveryRequest</code> 看客户端订阅了哪些 xDS ，组装推送即可。</p>
+<p>这部分的内容比较简单，核心推送和上面的 <code>sendPushes</code> 一样，流程先是从 <code>reqChannel</code> 中获取 <code>DiscoveryRequest</code> 看客户端订阅了哪些 xDS，组装推送即可。</p>
 <p>
 
 
@@ -1820,7 +1820,7 @@
 </span></span><span class="line"><span class="cl">  <span class="k">return</span> <span class="kc">nil</span>
 </span></span></code></pre></div><h3 id="总结">总结</h3>
 <p>xDS 的推送流程到这里就讲完了。我们从 <code>EnvoyXdsServer</code> 的结构开始，对其启动流程、怎么与客户端建立连接、怎么感知配置和服务变化、怎么防抖、怎么推送、<code>SidecarScope</code> 如何工作等都做了比较细致的分析，虽然已经阅读了源码，但是距离服务网格化的实际落地、实践中的各种性能问题、针对业务的优化，我们还有很长一段路要走。</p>
-<p>限于篇幅， xDS 的生成逻辑我们将在下一篇源码分析中讲解，也就是生成器中构建 xDS 的地方，这部分涉及到很多数据的转化，内容繁杂，需要整篇分析才能讲解的清楚。</p>
+<p>限于篇幅，xDS 的生成逻辑我们将在下一篇源码分析中讲解，也就是生成器中构建 xDS 的地方，这部分涉及到很多数据的转化，内容繁杂，需要整篇分析才能讲解的清楚。</p>
 
                 </div>
                 

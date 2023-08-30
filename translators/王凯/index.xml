@@ -21,7 +21,7 @@
 &lt;blockquote&gt;
 &lt;p&gt;编者注：原文于 2017 年 7 月 30 日发布于 Envoy 博客上。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;关于 Envoy 代码库的底层技术文档目前相当稀少。 为了纠正这个问题，我打算做一系列关于各种子系统的博客文章。 由于这是第一篇文章，请让我知道您的想法以及您希望了解的其他主题。&lt;/p&gt;
+&lt;p&gt;关于 Envoy 代码库的底层技术文档目前相当稀少。为了纠正这个问题，我打算做一系列关于各种子系统的博客文章。由于这是第一篇文章，请让我知道您的想法以及您希望了解的其他主题。&lt;/p&gt;
 &lt;p&gt;我经常看到的关于 Envoy 的最常见技术问题之一就是要求从底层描述 Envoy 使用的线程模型。这篇文章将介绍 Envoy 如何将连接映射到线程，以及内部使用的线程本地存储（TLS）系统的描述，以使代码极其并行且性能更高。&lt;/p&gt;
 &lt;h3 id=&#34;线程模型概览&#34;&gt;线程模型概览&lt;/h3&gt;
 &lt;p&gt;
@@ -54,29 +54,29 @@
 &lt;/p&gt;
 &lt;p&gt;Envoy 使用三种不同类型的线程，如上图所示。&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Main：此线程负责服务器启动和关闭，所有 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/dynamic_configuration.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS API&lt;/a&gt; 处理（包括 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/service_discovery.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS&lt;/a&gt;，&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/health_checking.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运行状况检查&lt;/a&gt; 和常规 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/cluster_manager.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群管理&lt;/a&gt;），&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/runtime.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运行时&lt;/a&gt;，统计刷新，管理和一般进程管理（信号，&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/hot_restart.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热启动&lt;/a&gt; 等）。 在此线程上发生的所有事情都是异步的并且是 “非阻塞的”。通常，主线程协调所有不需要大量 CPU 来完成的关键过程功能。 这允许将大多数管理代码编写为单线程编写。&lt;/li&gt;
-&lt;li&gt;Worker：默认情况下，Envoy 为系统中的每个硬件线程生成一个工作线程。（这可以通过 &lt;a href=&#34;https://lyft.github.io/envoy/docs/operations/cli.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&amp;ndash;concurrency&lt;/a&gt; &lt;a href=&#34;https://lyft.github.io/envoy/docs/operations/cli.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;选项&lt;/a&gt; 控制）。 每个工作线程运行一个 “非阻塞” 事件循环，负责监听每个监听器（当前没有监听器分片），接受新连接，为连接实例化过滤器堆栈，以及处理所有 IO 的生命周期。 连接。 同样，这允许将大多数连接处理代码写成好像是单线程的。&lt;/li&gt;
-&lt;li&gt;文件刷新器：Envoy 写入的每个文件（主要是访问日志）当前都有一个独立的阻塞刷新线程。 这是因为即使使用 O_NONBLOCK 写入文件系统缓存文件有时也会阻塞（哎）。 当工作线程需要写入文件时，数据实际上被移入内存缓冲区，最终通过文件刷新线程刷新。 这是代码的一个区域，技术上所有 worker 都可以阻止同一个锁尝试填充内存缓冲区。 还有一些其他的将在下面进一步讨论。&lt;/li&gt;
+&lt;li&gt;Main：此线程负责服务器启动和关闭，所有 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/dynamic_configuration.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;xDS API&lt;/a&gt; 处理（包括 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/service_discovery.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS&lt;/a&gt;，&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/health_checking.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运行状况检查&lt;/a&gt; 和常规 &lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/cluster_manager.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群管理&lt;/a&gt;），&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/runtime.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运行时&lt;/a&gt;，统计刷新，管理和一般进程管理（信号，&lt;a href=&#34;https://lyft.github.io/envoy/docs/intro/arch_overview/hot_restart.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热启动&lt;/a&gt; 等）。在此线程上发生的所有事情都是异步的并且是“非阻塞的”。通常，主线程协调所有不需要大量 CPU 来完成的关键过程功能。这允许将大多数管理代码编写为单线程编写。&lt;/li&gt;
+&lt;li&gt;Worker：默认情况下，Envoy 为系统中的每个硬件线程生成一个工作线程。（这可以通过 &lt;a href=&#34;https://lyft.github.io/envoy/docs/operations/cli.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&amp;ndash;concurrency&lt;/a&gt; &lt;a href=&#34;https://lyft.github.io/envoy/docs/operations/cli.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;选项&lt;/a&gt; 控制）。每个工作线程运行一个“非阻塞”事件循环，负责监听每个监听器（当前没有监听器分片），接受新连接，为连接实例化过滤器堆栈，以及处理所有 IO 的生命周期。连接。同样，这允许将大多数连接处理代码写成好像是单线程的。&lt;/li&gt;
+&lt;li&gt;文件刷新器：Envoy 写入的每个文件（主要是访问日志）当前都有一个独立的阻塞刷新线程。这是因为即使使用 O_NONBLOCK 写入文件系统缓存文件有时也会阻塞（哎）。当工作线程需要写入文件时，数据实际上被移入内存缓冲区，最终通过文件刷新线程刷新。这是代码的一个区域，技术上所有 worker 都可以阻止同一个锁尝试填充内存缓冲区。还有一些其他的将在下面进一步讨论。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;连接处理&#34;&gt;连接处理&lt;/h3&gt;
-&lt;p&gt;如上所述，所有工作线程都会在没有任何分片的情况下监听所有监听器。 因此，内核用于智能地将接受的套接字分派给工作线程。 现代内核一般都很擅长这个；他们使用诸如 IO 优先级提升之类的功能来尝试填充线程的工作，然后开始使用同时监听同一套接字的其他线程，以及不使用单个自旋锁来处理每个接受。&lt;/p&gt;
-&lt;p&gt;一旦连接被 worker 接受，它就永远不会离开那个 worker。 所有进一步的连接处理都在工作线程内完全处理，包括任何转发行为。这有一些重要的含义：&lt;/p&gt;
+&lt;p&gt;如上所述，所有工作线程都会在没有任何分片的情况下监听所有监听器。因此，内核用于智能地将接受的套接字分派给工作线程。现代内核一般都很擅长这个；他们使用诸如 IO 优先级提升之类的功能来尝试填充线程的工作，然后开始使用同时监听同一套接字的其他线程，以及不使用单个自旋锁来处理每个接受。&lt;/p&gt;
+&lt;p&gt;一旦连接被 worker 接受，它就永远不会离开那个 worker。所有进一步的连接处理都在工作线程内完全处理，包括任何转发行为。这有一些重要的含义：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Envoy 中的所有连接池都是每个工作线程。 因此，尽管 HTTP / 2 连接池一次只与每个上游主机建立一个连接，但如果有四个工作站，则每个上游主机在稳定状态下将有四个 HTTP/2 连接。&lt;/li&gt;
-&lt;li&gt;Envoy 以这种方式工作的原因是因为通过将所有代码保存在单个工作线程中，几乎所有代码都可以在没有锁的情况下编写，就像它是单线程一样。 这种设计使得大多数代码更易于编写，并且可以非常好地扩展到几乎无限数量的 worker。&lt;/li&gt;
-&lt;li&gt;然而，一个主要的问题是，从内存和连接池效率的角度来看，调整并发选项实际上非常重要。 拥有比所需更多的 worker 将浪费内存，创建更多空闲连接，并导致更低的连接池命中率。 在 Lyft，我们的 sidecar Envoy 以非常低的并发性运行，因此性能大致与他们旁边的服务相匹配。 我们只以最大并发性运行我们的边缘 Envoy。&lt;/li&gt;
+&lt;li&gt;Envoy 中的所有连接池都是每个工作线程。因此，尽管 HTTP / 2 连接池一次只与每个上游主机建立一个连接，但如果有四个工作站，则每个上游主机在稳定状态下将有四个 HTTP/2 连接。&lt;/li&gt;
+&lt;li&gt;Envoy 以这种方式工作的原因是因为通过将所有代码保存在单个工作线程中，几乎所有代码都可以在没有锁的情况下编写，就像它是单线程一样。这种设计使得大多数代码更易于编写，并且可以非常好地扩展到几乎无限数量的 worker。&lt;/li&gt;
+&lt;li&gt;然而，一个主要的问题是，从内存和连接池效率的角度来看，调整并发选项实际上非常重要。拥有比所需更多的 worker 将浪费内存，创建更多空闲连接，并导致更低的连接池命中率。在 Lyft，我们的 sidecar Envoy 以非常低的并发性运行，因此性能大致与他们旁边的服务相匹配。我们只以最大并发性运行我们的边缘 Envoy。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;什么是非阻塞&#34;&gt;什么是非阻塞&lt;/h3&gt;
-&lt;p&gt;到目前为止，在讨论主线程和工作线程如何操作时，已经多次使用术语 “非阻塞”。 所有代码都是在假设没有任何阻塞的情况下编写的。 然而，这并不完全正确（完全是这样的吗？）。 Envoy 确实采用了一些进程宽锁：&lt;/p&gt;
+&lt;p&gt;到目前为止，在讨论主线程和工作线程如何操作时，已经多次使用术语“非阻塞”。所有代码都是在假设没有任何阻塞的情况下编写的。然而，这并不完全正确（完全是这样的吗？）。Envoy 确实采用了一些进程宽锁：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;如前所述，如果正在写入访问日志，则所有工作程序在填充内存访问日志缓冲区之前都会获取相同的锁。 锁定保持时间应该非常低，但是这种锁可以在高并发性和高吞吐量下竞争。&lt;/li&gt;
-&lt;li&gt;Envoy 采用了一个非常复杂的系统来处理线程本地的统计数据。 这将是一个单独的帖子的主题。 但是，我将简要提一下，作为线程本地统计处理的一部分，有时需要获取对中央 “stat store” 的锁定。这种锁定不应该高度争用。&lt;/li&gt;
-&lt;li&gt;主线程需要定期与所有工作线程协调。 这是通过从主线程 “发布” 到工作线程（有时从工作线程返回到主线程）来完成的。 发布需要锁定，以便将发布的消息放入队列中以便以后发送。 这些锁永远不应该高度争用，但它们仍然可以在技术上阻止。&lt;/li&gt;
-&lt;li&gt;当 Envoy 将自己记录到标准错误时，它会获取进程范围的锁定。 一般来说，Envoy 本地记录被认为是表现糟糕的，所以没有多少考虑改善这一点。&lt;/li&gt;
+&lt;li&gt;如前所述，如果正在写入访问日志，则所有工作程序在填充内存访问日志缓冲区之前都会获取相同的锁。锁定保持时间应该非常低，但是这种锁可以在高并发性和高吞吐量下竞争。&lt;/li&gt;
+&lt;li&gt;Envoy 采用了一个非常复杂的系统来处理线程本地的统计数据。这将是一个单独的帖子的主题。但是，我将简要提一下，作为线程本地统计处理的一部分，有时需要获取对中央“stat store”的锁定。这种锁定不应该高度争用。&lt;/li&gt;
+&lt;li&gt;主线程需要定期与所有工作线程协调。这是通过从主线程“发布”到工作线程（有时从工作线程返回到主线程）来完成的。发布需要锁定，以便将发布的消息放入队列中以便以后发送。这些锁永远不应该高度争用，但它们仍然可以在技术上阻止。&lt;/li&gt;
+&lt;li&gt;当 Envoy 将自己记录到标准错误时，它会获取进程范围的锁定。一般来说，Envoy 本地记录被认为是表现糟糕的，所以没有多少考虑改善这一点。&lt;/li&gt;
 &lt;li&gt;还有一些其他随机锁，但它们都不在性能关键路径中，永远不应该争用。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;线程本地存储&#34;&gt;线程本地存储&lt;/h3&gt;
-&lt;p&gt;由于 Envoy 将主线程职责与工作线程职责分开，因此需要在主线程上完成复杂处理，然后以高度并发的方式使每个工作线程可用。 本节介绍了 Envoy 的高级线程本地存储（TLS）系统。 在下一节中，我将描述如何使用它来处理集群管理。&lt;/p&gt;
+&lt;p&gt;由于 Envoy 将主线程职责与工作线程职责分开，因此需要在主线程上完成复杂处理，然后以高度并发的方式使每个工作线程可用。本节介绍了 Envoy 的高级线程本地存储（TLS）系统。在下一节中，我将描述如何使用它来处理集群管理。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -105,20 +105,20 @@
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;如已经描述的那样，主线程基本上处理 Envoy 过程中的所有管理 / 控制平面功能。 （控制平面在这里有点过载但是当在 Envoy 进程中考虑并与工人做的转发进行比较时，似乎是合适的）。 主线程进程执行某些工作是一种常见模式，然后需要使用该工作的结果更新每个工作线程，并且工作线程不需要在每次访问时获取锁定。&lt;/p&gt;
+&lt;p&gt;如已经描述的那样，主线程基本上处理 Envoy 过程中的所有管理 / 控制平面功能。 （控制平面在这里有点过载但是当在 Envoy 进程中考虑并与工人做的转发进行比较时，似乎是合适的）。主线程进程执行某些工作是一种常见模式，然后需要使用该工作的结果更新每个工作线程，并且工作线程不需要在每次访问时获取锁定。&lt;/p&gt;
 &lt;p&gt;Envoy 的 TLS 系统的工作原理如下：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;在主线程上运行的代码可以分配进程范围的 TLS 槽。 虽然是抽象的，但实际上，这是一个允许 O（1）访问的向量索引。&lt;/li&gt;
-&lt;li&gt;主线程可以将任意数据设置到其槽中。 完成此操作后，数据将作为正常事件循环事件发布到每个工作程序中。&lt;/li&gt;
+&lt;li&gt;在主线程上运行的代码可以分配进程范围的 TLS 槽。虽然是抽象的，但实际上，这是一个允许 O（1）访问的向量索引。&lt;/li&gt;
+&lt;li&gt;主线程可以将任意数据设置到其槽中。完成此操作后，数据将作为正常事件循环事件发布到每个工作程序中。&lt;/li&gt;
 &lt;li&gt;工作线程可以从其 TLS 槽读取，并将检索那里可用的任何线程本地数据。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;虽然非常简单，但这是一个非常强大的范例，与 RCU 锁定概念非常相似。 （实质上，工作线程在工作时从不会看到 TLS 插槽中的数据发生任何变化。更改只发生在工作事件之间的静止期间）。 Envoy 以两种不同的方式使用它：&lt;/p&gt;
+&lt;p&gt;虽然非常简单，但这是一个非常强大的范例，与 RCU 锁定概念非常相似。 （实质上，工作线程在工作时从不会看到 TLS 插槽中的数据发生任何变化。更改只发生在工作事件之间的静止期间）。Envoy 以两种不同的方式使用它：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;通过在没有任何锁定的情况下访问每个 worker 存储不同的数据&lt;/li&gt;
-&lt;li&gt;通过将共享指针存储到每个 worker 的只读全局数据。 因此，每个工作者都具有对在工作时不能递减的数据的引用计数。 只有当所有 worker 都已停顿并加载新的共享数据时，旧数据才会被销毁。 这与 RCU 相同。&lt;/li&gt;
+&lt;li&gt;通过将共享指针存储到每个 worker 的只读全局数据。因此，每个工作者都具有对在工作时不能递减的数据的引用计数。只有当所有 worker 都已停顿并加载新的共享数据时，旧数据才会被销毁。这与 RCU 相同。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;集群线程更新&#34;&gt;集群线程更新&lt;/h3&gt;
-&lt;p&gt;在本节中，我将描述 TLS 如何用于集群管理。 集群管理包括 xDS API 处理和 / 或 DNS 以及运行状况检查。&lt;/p&gt;
+&lt;p&gt;在本节中，我将描述 TLS 如何用于集群管理。集群管理包括 xDS API 处理和 / 或 DNS 以及运行状况检查。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -149,34 +149,34 @@
 &lt;/p&gt;
 &lt;p&gt;上图显示了涉及以下组件和步骤的总体流程：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;集群管理器是 Envoy 内部的组件，用于管理所有已知的上游集群，CDS API，SDS / EDS API，DNS 和活动（带外）运行状况检查。 它负责创建每个上游集群的最终一致视图，其中包括已发现的主机以及运行状况。&lt;/li&gt;
+&lt;li&gt;集群管理器是 Envoy 内部的组件，用于管理所有已知的上游集群，CDS API，SDS / EDS API，DNS 和活动（带外）运行状况检查。它负责创建每个上游集群的最终一致视图，其中包括已发现的主机以及运行状况。&lt;/li&gt;
 &lt;li&gt;运行状况检查程序执行活动运行状况检查，并将运行状况更改报告回集群管理器。&lt;/li&gt;
-&lt;li&gt;执行 CDS / SDS / EDS / DNS 以确定集群成员资格。 状态更改将报告回集群管理器。&lt;/li&gt;
+&lt;li&gt;执行 CDS / SDS / EDS / DNS 以确定集群成员资格。状态更改将报告回集群管理器。&lt;/li&gt;
 &lt;li&gt;每个工作线程都在不断运行事件循环。&lt;/li&gt;
 &lt;li&gt;当集群管理器确定集群的状态已更改时，它会创建集群状态的新只读快照，并将其发布到每个工作线程。&lt;/li&gt;
 &lt;li&gt;在下一个静止期间，工作线程将更新分配的 TLS 插槽中的快照。&lt;/li&gt;
-&lt;li&gt;在需要确定要负载均衡的主机的 IO 事件期间，负载均衡器将在 TLS 插槽中查询主机信息。 没有获得锁定来执行此操作。 （另请注意，TLS 还可以在更新时触发事件，以便负载平衡器和其他组件可以重新计算高速缓存，数据结构等。这超出了本文的范围，但在代码中的各个位置使用）。&lt;/li&gt;
+&lt;li&gt;在需要确定要负载均衡的主机的 IO 事件期间，负载均衡器将在 TLS 插槽中查询主机信息。没有获得锁定来执行此操作。 （另请注意，TLS 还可以在更新时触发事件，以便负载平衡器和其他组件可以重新计算高速缓存，数据结构等。这超出了本文的范围，但在代码中的各个位置使用）。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;通过使用先前描述的过程，Envoy 能够处理每个请求而不需要任何锁定（除了之前描述的那些）。 除了 TLS 代码本身的复杂性之外，大多数代码都不需要理解线程如何工作，并且可以编写为单线程。 这使得大多数代码更容易编写，并产生出色的性能。&lt;/p&gt;
+&lt;p&gt;通过使用先前描述的过程，Envoy 能够处理每个请求而不需要任何锁定（除了之前描述的那些）。除了 TLS 代码本身的复杂性之外，大多数代码都不需要理解线程如何工作，并且可以编写为单线程。这使得大多数代码更容易编写，并产生出色的性能。&lt;/p&gt;
 &lt;h3 id=&#34;其他使用-tls-的子系统&#34;&gt;其他使用 TLS 的子系统&lt;/h3&gt;
-&lt;p&gt;TLS 和 RCU 在 Envoy 中广泛使用。 其他一些例子包括：&lt;/p&gt;
+&lt;p&gt;TLS 和 RCU 在 Envoy 中广泛使用。其他一些例子包括：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;运行时（功能标志）覆盖查找：在主线程上计算当前功能标志覆盖映射。 然后使用 RCU 语义为每个工作程序提供只读快照。&lt;/li&gt;
-&lt;li&gt;路由表交换：对于 RDS 提供的路由表，路由表在主线程上实例化。 然后使用 RCU 语义为每个工作程序提供只读快照。 这使得路由表交换有效地原子化。&lt;/li&gt;
-&lt;li&gt;HTTP 日期标头缓存：事实证明，在每个请求上计算 HTTP 日期标头（当每个核心执行～25K + RPS 时）非常昂贵。 Envoy 大约每半秒计算一次日期标题，并通过 TLS 和 RCU 将其提供给每个 worker 。&lt;/li&gt;
+&lt;li&gt;运行时（功能标志）覆盖查找：在主线程上计算当前功能标志覆盖映射。然后使用 RCU 语义为每个工作程序提供只读快照。&lt;/li&gt;
+&lt;li&gt;路由表交换：对于 RDS 提供的路由表，路由表在主线程上实例化。然后使用 RCU 语义为每个工作程序提供只读快照。这使得路由表交换有效地原子化。&lt;/li&gt;
+&lt;li&gt;HTTP 日期标头缓存：事实证明，在每个请求上计算 HTTP 日期标头（当每个核心执行～25K + RPS 时）非常昂贵。Envoy 大约每半秒计算一次日期标题，并通过 TLS 和 RCU 将其提供给每个 worker。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;还有其他情况，但前面的例子应该提供 TLS 所用事物的良好品味。&lt;/p&gt;
 &lt;h3 id=&#34;已知的性能陷阱&#34;&gt;已知的性能陷阱&lt;/h3&gt;
 &lt;p&gt;虽然 Envoy 整体表现相当不错，但是当它以非常高的并发性和吞吐量使用时，有一些已知领域需要注意：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;正如本文中已经描述的那样，当前所有工作者在写入访问日志的内存缓冲区时都会获得锁定。 在高并发性和高吞吐量的情况下，当写入最终文件时，将需要以按顺序交付为代价对每个 worker 批量访问日志进行批处理。 或者，访问日志可以成为每个工作线程。&lt;/li&gt;
-&lt;li&gt;尽管统计信息已经过非常优化，但在非常高的并发性和吞吐量下，个别统计信息可能存在原子争用。 对此的解决方案是每个工人计数器，定期冲洗到中央计数器。 这将在后续文章中讨论。&lt;/li&gt;
-&lt;li&gt;如果 Envoy 部署在几乎没有需要大量资源来处理的连接的场景中，现有架构将无法正常运行。 这是因为无法保证连接在 worker 之间均匀分布。 这可以通过实现工作者连接平衡来解决，其中 worker 能够将连接转发给另一个 worker 进行处理。&lt;/li&gt;
+&lt;li&gt;正如本文中已经描述的那样，当前所有工作者在写入访问日志的内存缓冲区时都会获得锁定。在高并发性和高吞吐量的情况下，当写入最终文件时，将需要以按顺序交付为代价对每个 worker 批量访问日志进行批处理。或者，访问日志可以成为每个工作线程。&lt;/li&gt;
+&lt;li&gt;尽管统计信息已经过非常优化，但在非常高的并发性和吞吐量下，个别统计信息可能存在原子争用。对此的解决方案是每个工人计数器，定期冲洗到中央计数器。这将在后续文章中讨论。&lt;/li&gt;
+&lt;li&gt;如果 Envoy 部署在几乎没有需要大量资源来处理的连接的场景中，现有架构将无法正常运行。这是因为无法保证连接在 worker 之间均匀分布。这可以通过实现工作者连接平衡来解决，其中 worker 能够将连接转发给另一个 worker 进行处理。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;结论&#34;&gt;结论&lt;/h3&gt;
-&lt;p&gt;Envoy 的线程模型旨在支持编程的简单性和大规模并行性，但如果调整不当可能会浪费内存和连接使用。 该模型允许它在非常高的 worker 数量和吞吐量下表现良好。&lt;/p&gt;
+&lt;p&gt;Envoy 的线程模型旨在支持编程的简单性和大规模并行性，但如果调整不当可能会浪费内存和连接使用。该模型允许它在非常高的 worker 数量和吞吐量下表现良好。&lt;/p&gt;
 &lt;p&gt;正如我在 &lt;a href=&#34;https://twitter.com/mattklein123/status/872291252695293952&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Twitter&lt;/a&gt; 上简要提到的那样，该设计也适合在 DPDK 之类的完整用户模式网络堆栈上运行，这可能导致商用服务器在执行完整的 L7 处理时每秒处理数百万个请求。看看未来几年建成什么会非常有趣。&lt;/p&gt;
-&lt;p&gt;最后一个快速评论：我多次被问到为什么我们为 Envoy 选择 C++。 原因仍然是它仍然是唯一广泛部署的生产级语言，使用该语言中可以构建本文中描述的架构。 C++ 当然不适合所有项目，甚至许多项目，但对于某些用例，它仍然是完成工作的唯一工具。&lt;/p&gt;
+&lt;p&gt;最后一个快速评论：我多次被问到为什么我们为 Envoy 选择 C++。原因仍然是它仍然是唯一广泛部署的生产级语言，使用该语言中可以构建本文中描述的架构。C++ 当然不适合所有项目，甚至许多项目，但对于某些用例，它仍然是完成工作的唯一工具。&lt;/p&gt;
 </description>
     </item>
     
@@ -216,7 +216,7 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/@jdrawlings/serverless-jenkins-with-jenkins-x-9134cbfe6870&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;Jenkins服务来源于创建自2004年的Hudson。在软件行业中，Jenkins已经是家喻户晓的明星产品，并且已经是CI和CD的领头羊。到目前为止有超过2050万的Jenkins任务，以及将近20万的Jenkins服务在运行中。这真的是非常惊人的增长速度。&lt;/p&gt;
+&lt;p&gt;Jenkins 服务来源于创建自 2004 年的 Hudson。在软件行业中，Jenkins 已经是家喻户晓的明星产品，并且已经是 CI 和 CD 的领头羊。到目前为止有超过 2050 万的 Jenkins 任务，以及将近 20 万的 Jenkins 服务在运行中。这真的是非常惊人的增长速度。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -233,9 +233,9 @@
 
 
 
-&lt;figure  id=&#34;figure-jenkins的增长变化图&#34;&gt;
+&lt;figure  id=&#34;figure-jenkins-的增长变化图&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;jenkins的增长变化图&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;jenkins 的增长变化图&#34; srcset=&#34;
                /blog/serverless-jenkins-with-jenkins-x/5f3e3349gy1fxsw5vx2ooj20jk0c6gmj_hub9a2b7fb321d93d4f7c75c8dd8a5bba8_51020_51fec286cc14e7943f8124366404e148.webp 400w,
                /blog/serverless-jenkins-with-jenkins-x/5f3e3349gy1fxsw5vx2ooj20jk0c6gmj_hub9a2b7fb321d93d4f7c75c8dd8a5bba8_51020_7df3af2643fd11977f3ba26b8bd02081.webp 760w,
                /blog/serverless-jenkins-with-jenkins-x/5f3e3349gy1fxsw5vx2ooj20jk0c6gmj_hub9a2b7fb321d93d4f7c75c8dd8a5bba8_51020_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -244,42 +244,42 @@
                height=&#34;438&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      jenkins的增长变化图
+      jenkins 的增长变化图
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;上面的增长图说明在技术领域已经有很大的进步，列如云计算和容器，这些变化说明Jenkins在很多方面已经起到了很好的作用，我们应该很好的利用这些影响力。如今，很多公司都开始进行容器化改造，我们希望jenkins能跟上时代的步伐，开始自己的云原生之路。Jenkins应当继续成长，提供更多大家需要的自动化，可靠性，以及更好的开发体验。&lt;/p&gt;
-&lt;p&gt;Jenkins在取得巨大成功的同时，也产生了一些问题。&lt;/p&gt;
+&lt;p&gt;上面的增长图说明在技术领域已经有很大的进步，列如云计算和容器，这些变化说明 Jenkins 在很多方面已经起到了很好的作用，我们应该很好的利用这些影响力。如今，很多公司都开始进行容器化改造，我们希望 jenkins 能跟上时代的步伐，开始自己的云原生之路。Jenkins 应当继续成长，提供更多大家需要的自动化，可靠性，以及更好的开发体验。&lt;/p&gt;
+&lt;p&gt;Jenkins 在取得巨大成功的同时，也产生了一些问题。&lt;/p&gt;
 &lt;p&gt;下面让我们来简要描述一些我们了解到的比较重要的问题。&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;Jenkins服务的单点问题。特别是在服务维护期间，git webhook的操作都会被丢失.&lt;/li&gt;
-&lt;li&gt;Jenkins服务经常将磁盘跑满，需要脚本或者人工清理之后，才能继续运行.&lt;/li&gt;
-&lt;li&gt;在服务升级之后，plugin的版本会匹配不上.&lt;/li&gt;
-&lt;li&gt;多分支扫描，经常导致GitHub的速率被限制.&lt;/li&gt;
-&lt;li&gt;在没有任何任务执行时，也需要占用巨大的内存，从基于使用情况来看，这是一种巨大的浪费.&lt;/li&gt;
+&lt;li&gt;Jenkins 服务的单点问题。特别是在服务维护期间，git webhook 的操作都会被丢失。&lt;/li&gt;
+&lt;li&gt;Jenkins 服务经常将磁盘跑满，需要脚本或者人工清理之后，才能继续运行。&lt;/li&gt;
+&lt;li&gt;在服务升级之后，plugin 的版本会匹配不上。&lt;/li&gt;
+&lt;li&gt;多分支扫描，经常导致 GitHub 的速率被限制。&lt;/li&gt;
+&lt;li&gt;在没有任何任务执行时，也需要占用巨大的内存，从基于使用情况来看，这是一种巨大的浪费。&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;未来的改进：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;降低云计算开销，只在有任务需要被构建时才执行jenkins服务.&lt;/li&gt;
-&lt;li&gt;尽量使用上一次的临时构建通道，避免磁盘被耗尽.&lt;/li&gt;
-&lt;li&gt;通过持续集成进行插件的安装和插件的升级更新.&lt;/li&gt;
-&lt;li&gt;提供高可用性和可伸缩性的webhook操作，来解决spof问题.&lt;/li&gt;
-&lt;li&gt;避免由于GitHub的API扫描导致的速度风险.&lt;/li&gt;
-&lt;li&gt;提供灾难恢复策略，用来恢复存储在git上的所有配置信息.&lt;/li&gt;
+&lt;li&gt;降低云计算开销，只在有任务需要被构建时才执行 jenkins 服务。&lt;/li&gt;
+&lt;li&gt;尽量使用上一次的临时构建通道，避免磁盘被耗尽。&lt;/li&gt;
+&lt;li&gt;通过持续集成进行插件的安装和插件的升级更新。&lt;/li&gt;
+&lt;li&gt;提供高可用性和可伸缩性的 webhook 操作，来解决 spof 问题。&lt;/li&gt;
+&lt;li&gt;避免由于 GitHub 的 API 扫描导致的速度风险。&lt;/li&gt;
+&lt;li&gt;提供灾难恢复策略，用来恢复存储在 git 上的所有配置信息。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;Jenkins x项目在今年早些时候对外宣布为基于kubernetes的pull请求和gitops自动升级提供了CI和CD（Testing&amp;ndash;&amp;gt;Staging&amp;ndash;&amp;gt;Production）。Jenkins X同样继承了kubernetes的CRD特性(&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; title=&#34;custom resource definitions&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;custom resource definitions&lt;/a&gt;)，并为你的Jenkins服务和作业提供了编排功能。&lt;/p&gt;
-&lt;p&gt;Jenkins x和Jenkins激动的宣布无服务的Jenkins。Jenkins x既能编排无服务的jenkins，一个静态的jenkins master，也能为每一个team提供Knative构建；因此现在开源的Jenkins云拥有完整的Knative构建支持。&lt;/p&gt;
-&lt;p&gt;无服务Jenkins使用成功的并且创新开源项目来解决和上述静态Jenkins master的问题。Kubernetes现在是事实的云实现，因此现在让我们专注在那些不太有名的，却能使得无服务的Jenkins成为可能的项目：Prow and Knative build。&lt;/p&gt;
-&lt;p&gt;在这篇博客的底部，有一个链接到未经编辑的Youtube，它演示了这系列的操作。&lt;/p&gt;
-&lt;h2 id=&#34;prow是什么&#34;&gt;Prow是什么？&lt;/h2&gt;
-&lt;p&gt;Prow来源于google的电子商务系统。被一帮纠结于是否需要使用Jenkins来构建那些基于kubernetes的GitHub repos的优秀群体所创建。Kubernetes是GitHub上最成功的项目之一。Prow被用于&lt;a href=&#34;https://github.com/istio&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;和&lt;a href=&#34;https://github.com/jetstack/&#34; title=&#34;Jetstack&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jetstack&lt;/a&gt;的同时，还被140个项目使用。有许多不同的职责的微服务组成的基于事件的解决方案——为云原生提供了理想的松散耦合架构。对于merge到master上请求，有了更加有力的方式（不管是在构建请求之前，还是之后），可以使用ChatOps和构建系统进行交互。&lt;/p&gt;
-&lt;p&gt;Prow提供了可伸缩的，高可用的webhook事件处理器，可以将ProwJobs的CRDs请求写入到kubernetes,以至于像正在运行中的持续集成或者发布服务等其它微服务收到响应，并执行操作（kubernetes controller对于ProwJob 事件进行了监听）。Git 事件可以是新的 PR、issue、评论、merge、push等操作都会触发git event，因此我们能对更多的事件请求响应。&lt;/p&gt;
-&lt;p&gt;对于一些已经提供了一组配置规则的目录，我们提供了自动merge pull request功能。对于Prow组件和描述参考如下链接&lt;a href=&#34;https://github.com/kubernetes/test-infra/tree/master/prow&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/test-infra/tree/master/prow&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;Prow同样也将它的配置信息存储在git上，这样在出现问题时可以进行恢复。Jenkins X项目在向用户发布前已经进行了广泛的测试和验证。你能在如下地址上看到Jenkins X项目对于CI/CD提供了很多基于yaml的Prow配置&lt;a href=&#34;https://github.com/jenkins-x/prow-config&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/jenkins-x/prow-config&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Jenkins x 项目在今年早些时候对外宣布为基于 kubernetes 的 pull 请求和 gitops 自动升级提供了 CI 和 CD（Testing&amp;ndash;&amp;gt;Staging&amp;ndash;&amp;gt;Production）。Jenkins X 同样继承了 kubernetes 的 CRD 特性 (&lt;a href=&#34;https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/&#34; title=&#34;custom resource definitions&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;custom resource definitions&lt;/a&gt;)，并为你的 Jenkins 服务和作业提供了编排功能。&lt;/p&gt;
+&lt;p&gt;Jenkins x 和 Jenkins 激动的宣布无服务的 Jenkins。Jenkins x 既能编排无服务的 jenkins，一个静态的 jenkins master，也能为每一个 team 提供 Knative 构建；因此现在开源的 Jenkins 云拥有完整的 Knative 构建支持。&lt;/p&gt;
+&lt;p&gt;无服务 Jenkins 使用成功的并且创新开源项目来解决和上述静态 Jenkins master 的问题。Kubernetes 现在是事实的云实现，因此现在让我们专注在那些不太有名的，却能使得无服务的 Jenkins 成为可能的项目：Prow and Knative build。&lt;/p&gt;
+&lt;p&gt;在这篇博客的底部，有一个链接到未经编辑的 Youtube，它演示了这系列的操作。&lt;/p&gt;
+&lt;h2 id=&#34;prow-是什么&#34;&gt;Prow 是什么？&lt;/h2&gt;
+&lt;p&gt;Prow 来源于 google 的电子商务系统。被一帮纠结于是否需要使用 Jenkins 来构建那些基于 kubernetes 的 GitHub repos 的优秀群体所创建。Kubernetes 是 GitHub 上最成功的项目之一。Prow 被用于&lt;a href=&#34;https://github.com/istio&#34; title=&#34;Istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;和&lt;a href=&#34;https://github.com/jetstack/&#34; title=&#34;Jetstack&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jetstack&lt;/a&gt;的同时，还被 140 个项目使用。有许多不同的职责的微服务组成的基于事件的解决方案——为云原生提供了理想的松散耦合架构。对于 merge 到 master 上请求，有了更加有力的方式（不管是在构建请求之前，还是之后），可以使用 ChatOps 和构建系统进行交互。&lt;/p&gt;
+&lt;p&gt;Prow 提供了可伸缩的，高可用的 webhook 事件处理器，可以将 ProwJobs 的 CRDs 请求写入到 kubernetes，以至于像正在运行中的持续集成或者发布服务等其它微服务收到响应，并执行操作（kubernetes controller 对于 ProwJob 事件进行了监听）。Git 事件可以是新的 PR、issue、评论、merge、push 等操作都会触发 git event，因此我们能对更多的事件请求响应。&lt;/p&gt;
+&lt;p&gt;对于一些已经提供了一组配置规则的目录，我们提供了自动 merge pull request 功能。对于 Prow 组件和描述参考如下链接&lt;a href=&#34;https://github.com/kubernetes/test-infra/tree/master/prow&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/test-infra/tree/master/prow&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;Prow 同样也将它的配置信息存储在 git 上，这样在出现问题时可以进行恢复。Jenkins X 项目在向用户发布前已经进行了广泛的测试和验证。你能在如下地址上看到 Jenkins X项目对于CI/CD提供了很多基于yaml的Prow配置&lt;a href=&#34;https://github.com/jenkins-x/prow-config&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/jenkins-x/prow-config&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;knative-build&#34;&gt;Knative Build&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/knative/build&#34; title=&#34;Knative Build&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative Build&lt;/a&gt;是一个继承自Kubernetes项目的云原生解决方案。让用户可以直接从源码进行构建。Knative Build最大的特色就是可以将一些简单的操作在同一个pod中的串联起来的执行，还可以在容器间进行状态的共享。这个特性通过&lt;a href=&#34;https://kubernetes.io/docs/concepts/workloads/pods/init-containers/&#34; title=&#34;Kubernetes init containers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes init containers&lt;/a&gt;进行初始化。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/knative/build-templates&#34; title=&#34;Build Templates&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Build Templates&lt;/a&gt;是可以通过Kubernetes pod来直接运行你构建的项目。这个允许你在构建项目时，事先指定要需要运行的docker image，构建时需要用到的环境变量、service accounts、secret以及需要mount的存储卷。build template是kubernetes CRD的集合。可以使用Jenkins x进行自动升级。通过build template创建或者引入一个应用时，可以使用jenkins x产生Prow配置。在Jenkins x项目中有一个列子是在&lt;a href=&#34;https://github.com/jenkins-x-charts/jx-build-templates/blob/81fd333/jx-build-templates/templates/jenkins-go-buildtemplate.yaml#L4&#34; title=&#34;BuildTemplate&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BuildTemplate&lt;/a&gt;中配置&lt;a href=&#34;https://github.com/jenkins-x/prow-config/blob/7dcda43/prow/config.yaml#L138-L139&#34; title=&#34;prow config pointing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;prow config pointing&lt;/a&gt;。&lt;/p&gt;
-&lt;h2 id=&#34;什么是无服务jenkins&#34;&gt;什么是无服务Jenkins&lt;/h2&gt;
-&lt;p&gt;现在您已经了解了我们正在做的事情的背景，我们可以看看无服务Jenkins。云原生Jenkins正在努力帮助开发人员、团队和组织迁移到云，并确保Jenkins不仅与云相关，还允许我们利用云和Jenkins最擅长的东西。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/knative/build&#34; title=&#34;Knative Build&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Knative Build&lt;/a&gt;是一个继承自 Kubernetes 项目的云原生解决方案。让用户可以直接从源码进行构建。Knative Build 最大的特色就是可以将一些简单的操作在同一个 pod 中的串联起来的执行，还可以在容器间进行状态的共享。这个特性通过&lt;a href=&#34;https://kubernetes.io/docs/concepts/workloads/pods/init-containers/&#34; title=&#34;Kubernetes init containers&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes init containers&lt;/a&gt;进行初始化。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/knative/build-templates&#34; title=&#34;Build Templates&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Build Templates&lt;/a&gt;是可以通过 Kubernetes pod 来直接运行你构建的项目。这个允许你在构建项目时，事先指定要需要运行的 docker image，构建时需要用到的环境变量、service accounts、secret 以及需要 mount 的存储卷。build template 是 kubernetes CRD 的集合。可以使用 Jenkins x 进行自动升级。通过 build template 创建或者引入一个应用时，可以使用 jenkins x 产生 Prow 配置。在 Jenkins x 项目中有一个列子是在&lt;a href=&#34;https://github.com/jenkins-x-charts/jx-build-templates/blob/81fd333/jx-build-templates/templates/jenkins-go-buildtemplate.yaml#L4&#34; title=&#34;BuildTemplate&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;BuildTemplate&lt;/a&gt;中配置&lt;a href=&#34;https://github.com/jenkins-x/prow-config/blob/7dcda43/prow/config.yaml#L138-L139&#34; title=&#34;prow config pointing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;prow config pointing&lt;/a&gt;。&lt;/p&gt;
+&lt;h2 id=&#34;什么是无服务-jenkins&#34;&gt;什么是无服务 Jenkins&lt;/h2&gt;
+&lt;p&gt;现在您已经了解了我们正在做的事情的背景，我们可以看看无服务 Jenkins。云原生 Jenkins 正在努力帮助开发人员、团队和组织迁移到云，并确保 Jenkins 不仅与云相关，还允许我们利用云和 Jenkins 最擅长的东西。&lt;/p&gt;
 &lt;p&gt;详情：&lt;/p&gt;
 &lt;p&gt;
 
@@ -311,45 +311,45 @@
       Credit: thanks to Gareth Evans for the diagram
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;使用基于Kubernetes的Jenkins X将会帮你自动安装和配置Prow和Knative，下面我们开始准备进行安装。当创建项目或者引入项目时，jx cli生成了所有需要的配置，并且更新git repo webhook endpoint。&lt;/p&gt;
-&lt;p&gt;现在，每个pull请求或合并到master的请求都会触发使用Knative在Kubernetes中产生一个临时的Jenkins操作，checkout git revision，配置所需的凭证，并使用Jenkinsfile运行应用程序构建管道。一旦构建完成，它将丢弃Jenkinsfile运行程序pod。&lt;/p&gt;
-&lt;p&gt;多亏了&lt;a href=&#34;https://github.com/jenkinsci/custom-war-packager&#34; title=&#34;War Packager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;War Packager&lt;/a&gt;（CWP）， Jenkins X发布过程构建了不同风格的Jenkins服务器，其中包含必要的构建工具。语言检测确保使用正确的风格。我们还使用&lt;a href=&#34;https://github.com/jenkinsci/configuration-as-code-plugin&#34; title=&#34;Configuration as Code plugin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Configuration as Code plugin&lt;/a&gt;（CasC）在构建时添加必要的Jenkins配置。CWP很棒的特性之一是它提取Jenkins插件再构建serverless Jenkins（而不是当serverless Jenkins），所以在基于Jenkins image的容器和JVM中启动Jenkins X耗时5秒——相比之下，要花几分钟启动基于Kubernetes的Jenkins server。&lt;/p&gt;
-&lt;p&gt;每当我们发布Jenkins X时，我们有一个&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-serverless&#34; title=&#34;monorepo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;monorepo&lt;/a&gt;，它用于自动构建和发布这些程序指定的Jenkins image。&lt;/p&gt;
-&lt;p&gt;这也意味着，因为插件是在&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-serverless/blob/master/packager-config.yml#L29-L170&#34; title=&#34;yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;yaml&lt;/a&gt;中定义的，并存储在git中，所以我们可以为CI和CD工具提供CI和CD。当我们想要升级一个插件时，我们发出一个pull请求，它会触发CI并构建一个预览Jenkins image，确保没有插件冲突，我们甚至可以运行模拟作业作为自动化测试（尽管我们还没有完成这一部分）。每个人都可以采用完全相同的方法，构建定制的Serverless Jenkins images，以相同的方式在管道中使用。&lt;/p&gt;
-&lt;p&gt;突出的一件事是,当你切换到Serverless Jenkins，进行构建是没有状态存储（这意味着为每个Job构建的编号总是1）。在Jenkins X中，我们为了PipelineActivity创建的CRD，所以这就允许我们在单个Jenkins构建完成之后想象先前的构建管道可以生成下一个构建编号和存储信息。&lt;/p&gt;
-&lt;p&gt;当Prow收到webhook事件时，它将在Kubernetes中创建一个Knative构建资源。接下来，监视构建的Knative构建控制器将创建一个Kubernetes pod，并自动添加一个克隆PR或发布分支源代码的init容器。接下来，利用&lt;a href=&#34;https://github.com/jenkinsci/jenkinsfile-runner&#34; title=&#34;Jenkinsfile runner&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jenkinsfile runner&lt;/a&gt;，在一个单独的步骤中启动Jenkins可以访问Knative克隆的源代码并处理应用程序Jenkinsfile。&lt;/p&gt;
+&lt;p&gt;使用基于 Kubernetes 的 Jenkins X 将会帮你自动安装和配置 Prow 和 Knative，下面我们开始准备进行安装。当创建项目或者引入项目时，jx cli 生成了所有需要的配置，并且更新 git repo webhook endpoint。&lt;/p&gt;
+&lt;p&gt;现在，每个 pull 请求或合并到 master 的请求都会触发使用 Knative 在 Kubernetes 中产生一个临时的 Jenkins 操作，checkout git revision，配置所需的凭证，并使用 Jenkinsfile 运行应用程序构建管道。一旦构建完成，它将丢弃 Jenkinsfile 运行程序 pod。&lt;/p&gt;
+&lt;p&gt;多亏了&lt;a href=&#34;https://github.com/jenkinsci/custom-war-packager&#34; title=&#34;War Packager&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;War Packager&lt;/a&gt;（CWP），Jenkins X 发布过程构建了不同风格的 Jenkins 服务器，其中包含必要的构建工具。语言检测确保使用正确的风格。我们还使用&lt;a href=&#34;https://github.com/jenkinsci/configuration-as-code-plugin&#34; title=&#34;Configuration as Code plugin&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Configuration as Code plugin&lt;/a&gt;（CasC）在构建时添加必要的 Jenkins 配置。CWP 很棒的特性之一是它提取 Jenkins 插件再构建 serverless Jenkins（而不是当 serverless Jenkins），所以在基于 Jenkins image 的容器和 JVM 中启动 Jenkins X 耗时 5 秒——相比之下，要花几分钟启动基于 Kubernetes 的 Jenkins server。&lt;/p&gt;
+&lt;p&gt;每当我们发布 Jenkins X 时，我们有一个&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-serverless&#34; title=&#34;monorepo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;monorepo&lt;/a&gt;，它用于自动构建和发布这些程序指定的 Jenkins image。&lt;/p&gt;
+&lt;p&gt;这也意味着，因为插件是在&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-serverless/blob/master/packager-config.yml#L29-L170&#34; title=&#34;yaml&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;yaml&lt;/a&gt;中定义的，并存储在 git 中，所以我们可以为 CI 和 CD 工具提供 CI 和 CD。当我们想要升级一个插件时，我们发出一个 pull 请求，它会触发 CI 并构建一个预览 Jenkins image，确保没有插件冲突，我们甚至可以运行模拟作业作为自动化测试（尽管我们还没有完成这一部分）。每个人都可以采用完全相同的方法，构建定制的 Serverless Jenkins images，以相同的方式在管道中使用。&lt;/p&gt;
+&lt;p&gt;突出的一件事是，当你切换到 Serverless Jenkins，进行构建是没有状态存储（这意味着为每个 Job 构建的编号总是 1）。在 Jenkins X 中，我们为了 PipelineActivity 创建的 CRD，所以这就允许我们在单个 Jenkins 构建完成之后想象先前的构建管道可以生成下一个构建编号和存储信息。&lt;/p&gt;
+&lt;p&gt;当 Prow 收到 webhook 事件时，它将在 Kubernetes 中创建一个 Knative 构建资源。接下来，监视构建的 Knative 构建控制器将创建一个 Kubernetes pod，并自动添加一个克隆 PR 或发布分支源代码的 init 容器。接下来，利用&lt;a href=&#34;https://github.com/jenkinsci/jenkinsfile-runner&#34; title=&#34;Jenkinsfile runner&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jenkinsfile runner&lt;/a&gt;，在一个单独的步骤中启动 Jenkins 可以访问 Knative 克隆的源代码并处理应用程序 Jenkinsfile。&lt;/p&gt;
 &lt;h2 id=&#34;如何开始尝试&#34;&gt;如何开始尝试？&lt;/h2&gt;
-&lt;p&gt;今天，含有Prow的Jenkins X在使用terraform via在GKE上创建集群时开箱即用&lt;/p&gt;
+&lt;p&gt;今天，含有 Prow 的 Jenkins X 在使用 terraform via 在 GKE 上创建集群时开箱即用&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;jx create terraform
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;或者在其他创建集群或安装命令上使用功能标志时，即：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;jx create cluster gke --prow 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;jx install — prow
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;faq&#34;&gt;FAQ&lt;/h2&gt;
-&lt;p&gt;&lt;strong&gt;如果没有运行中的Jenkins服务，如何访问UI？&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;有一个非常重要的问题是Serveless Jenkins没有开源的Jenkins UI。下面我们来解释一下，Jenkins X具有可以使Jenkins X开发人员感到友好的IDE和CLI工具，但UI已经消失了。Prow有一个名为Deck的开源UI，Jenkins X安装了OOTB。CloudBees可能很快也将提供免费增值UI，但有关详细信息，请自行查找。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;如果没有运行中的 Jenkins 服务，如何访问 UI？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;有一个非常重要的问题是 Serveless Jenkins 没有开源的 Jenkins UI。下面我们来解释一下，Jenkins X 具有可以使 Jenkins X 开发人员感到友好的 IDE 和 CLI 工具，但 UI 已经消失了。Prow 有一个名为 Deck 的开源 UI，Jenkins X 安装了 OOTB。CloudBees 可能很快也将提供免费增值 UI，但有关详细信息，请自行查找。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;从哪里可以看到构建的日志&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;目前Jenkinsfile runner将构建日志发送到标准输出，但是一个允许我们利用Kubernetes集群集中日志记录的更好的解决方案将被开发，如Stackdriver，CloudWatch。 我们还提供&lt;code&gt;jx logs -k&lt;/code&gt;（在构建运行时可用）和&lt;code&gt;jx get build log&lt;/code&gt;（可用几个小时）&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;我是否需要更改依赖于特定Jenkins multibranch插件环境变量（如&lt;code&gt;$ JOB_NAME&lt;/code&gt;）的Jenkinsfile？&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;不，我们已经尝试确保所有与MBP相关的环境变量仍然以相同的格式添加。 如果还有什么没有被添加的。请让我们知道。&lt;/p&gt;
-&lt;h2 id=&#34;如何将jenkinsfiles迁移到serveless-jenkins&#34;&gt;如何将Jenkinsfiles迁移到Serveless Jenkins？&lt;/h2&gt;
-&lt;p&gt;Jenkins X项目本身已经从使用静态（永远在线）Jenkins服务器迁移到Serveless Jenkins。是的，我们将Jenkins服务器缩小到0并将我们所有的Git存储转移到Prow和Serverless Jenkins。您可以在&lt;a href=&#34;https://github.com/jenkins-x/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/jenkins-x/&lt;/a&gt;组织上查看任何拉取请求，以查看它的实际运行情况。 我们使用的是&lt;a href=&#34;https://github.com/jenkins-x/draft-packs/blob/prow/packs/javascript/Jenkinsfile&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;declarative style Jenkinsfile&lt;/a&gt;（这是我们在将新项目导入Jenkins X时添加的），这意味着迁移到Serverless Jenkins只需要对Jenkins文件进行一些调整：&lt;/p&gt;
+&lt;p&gt;目前 Jenkinsfile runner 将构建日志发送到标准输出，但是一个允许我们利用 Kubernetes 集群集中日志记录的更好的解决方案将被开发，如 Stackdriver，CloudWatch。我们还提供&lt;code&gt;jx logs -k&lt;/code&gt;（在构建运行时可用）和&lt;code&gt;jx get build log&lt;/code&gt;（可用几个小时）&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;我是否需要更改依赖于特定 Jenkins multibranch 插件环境变量（如&lt;code&gt;$ JOB_NAME&lt;/code&gt;）的 Jenkinsfile？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;不，我们已经尝试确保所有与 MBP 相关的环境变量仍然以相同的格式添加。如果还有什么没有被添加的。请让我们知道。&lt;/p&gt;
+&lt;h2 id=&#34;如何将-jenkinsfiles-迁移到-serveless-jenkins&#34;&gt;如何将 Jenkinsfiles 迁移到 Serveless Jenkins？&lt;/h2&gt;
+&lt;p&gt;Jenkins X 项目本身已经从使用静态（永远在线）Jenkins 服务器迁移到 Serveless Jenkins。是的，我们将 Jenkins 服务器缩小到 0 并将我们所有的 Git 存储转移到 Prow 和 Serverless Jenkins。您可以在&lt;a href=&#34;https://github.com/jenkins-x/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/jenkins-x/&lt;/a&gt;组织上查看任何拉取请求，以查看它的实际运行情况。我们使用的是&lt;a href=&#34;https://github.com/jenkins-x/draft-packs/blob/prow/packs/javascript/Jenkinsfile&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;declarative style Jenkinsfile&lt;/a&gt;（这是我们在将新项目导入 Jenkins X 时添加的），这意味着迁移到 Serverless Jenkins 只需要对 Jenkins 文件进行一些调整：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;将代理类型更改为“any”，以便在一个临时的单独的Jenkins上执行管道&lt;/li&gt;
-&lt;li&gt;现在删除所有Jenkinsfile容器块，假设所有步骤都在一个单独的Jenkins管道引擎中执行。&lt;/li&gt;
-&lt;li&gt;对于任何发布分支管道都应该有一个标记（它们都应该创建一个git标签！），然后我们必须进行从checkout scm 到 git&amp;rsquo;github / foo.git&amp;rsquo;的切换，因为重新使用来自Knative和Jenkinsfile runner的克隆repo有问题，好像是因为将repo添加到Jenkins工作区时使用的是符号链接。 我们希望解决这个问题。&lt;/li&gt;
+&lt;li&gt;将代理类型更改为“any”，以便在一个临时的单独的 Jenkins 上执行管道&lt;/li&gt;
+&lt;li&gt;现在删除所有 Jenkinsfile 容器块，假设所有步骤都在一个单独的 Jenkins 管道引擎中执行。&lt;/li&gt;
+&lt;li&gt;对于任何发布分支管道都应该有一个标记（它们都应该创建一个 git 标签！），然后我们必须进行从 checkout scm 到 git&amp;rsquo;github / foo.git&amp;rsquo;的切换，因为重新使用来自 Knative 和 Jenkinsfile runner 的克隆 repo 有问题，好像是因为将 repo 添加到 Jenkins 工作区时使用的是符号链接。我们希望解决这个问题。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-platform/commit/ca9e0a58a76519193a2c7a0d8cf277dfc11babe4&#34; title=&#34;这里&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;可以看到上述变化的一个例子。要启用prow的ChatOps &lt;code&gt;/approve&lt;/code&gt;注释，您还需要一个类似的OWNERS文件到该链接，该文件使用批准者GitHub ID。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/jenkins-x/jenkins-x-platform/commit/ca9e0a58a76519193a2c7a0d8cf277dfc11babe4&#34; title=&#34;这里&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;可以看到上述变化的一个例子。要启用 prow 的 ChatOps &lt;code&gt;/approve&lt;/code&gt;注释，您还需要一个类似的 OWNERS 文件到该链接，该文件使用批准者 GitHub ID。&lt;/p&gt;
 &lt;h2 id=&#34;当前的限制&#34;&gt;当前的限制&lt;/h2&gt;
 &lt;ul&gt;
-&lt;li&gt;目前只有GitHub，我们将为多个git提供者提供支持&lt;/li&gt;
-&lt;li&gt;Jenkins X使用了另一个分支，但是在接下来的几周内它将被切换回使用上游的prow repo&lt;/li&gt;
-&lt;li&gt;默认情况下，Jenkins X会创建一个声明性管道Jenkinsfiles，这尚未在脚本和共享库Jenkinsfile管道上进行测试，但如果按预期工作，我们很想收到反馈。&lt;/li&gt;
-&lt;li&gt;Kubernetes Plugin PodTemplates尚不支持。 我们不确定这是否是一个好主意。 这意味着如果要迁移具有多个不同容器{&amp;hellip;}块的现有Jenkinsfiles，则需要将每个容器的构建工具添加到上面由CWP创建的单个一次性Jenkins中。&lt;/li&gt;
+&lt;li&gt;目前只有 GitHub，我们将为多个 git 提供者提供支持&lt;/li&gt;
+&lt;li&gt;Jenkins X 使用了另一个分支，但是在接下来的几周内它将被切换回使用上游的 prow repo&lt;/li&gt;
+&lt;li&gt;默认情况下，Jenkins X 会创建一个声明性管道 Jenkinsfiles，这尚未在脚本和共享库 Jenkinsfile 管道上进行测试，但如果按预期工作，我们很想收到反馈。&lt;/li&gt;
+&lt;li&gt;Kubernetes Plugin PodTemplates 尚不支持。我们不确定这是否是一个好主意。这意味着如果要迁移具有多个不同容器{&amp;hellip;}块的现有 Jenkinsfiles，则需要将每个容器的构建工具添加到上面由 CWP 创建的单个一次性 Jenkins 中。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;还有工作要做，所以如果你想参与其中，请在&lt;a href=&#34;https://jenkins-x.io/community/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Jenkins X Kubernetes slack rooms&lt;/a&gt;打个招呼来帮助解决问题，或先试试，让我们知道你是怎么做到的。&lt;/p&gt;
 &lt;p&gt;现在和我们一起参加&lt;a href=&#34;https://www.cloudbees.com/devops-world/nice&#34; title=&#34; Jenkins World Nice&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Jenkins World Nice&lt;/a&gt;并不会太晚，我们将在现场演示中展示这个以及其他精彩的演讲！&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;Jenkins X是可供团队使用的一站式服务，可用来进行Prow ChatOps编排静态、无服务器或Knative构建作业，其中包括用于Kubernetes工作负载的自动化CI/CD以及更多自动化。&lt;/p&gt;
+&lt;p&gt;Jenkins X 是可供团队使用的一站式服务，可用来进行 Prow ChatOps 编排静态、无服务器或 Knative 构建作业，其中包括用于 Kubernetes 工作负载的自动化 CI/CD 以及更多自动化。&lt;/p&gt;
 </description>
     </item>
     

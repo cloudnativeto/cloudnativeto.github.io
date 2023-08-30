@@ -17,7 +17,7 @@
       <link>https://cloudnative.to/blog/apisix-source-code-reading/</link>
       <pubDate>Sun, 24 Oct 2021 14:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/apisix-source-code-reading/</guid>
-      <description>&lt;p&gt;本文基于 &lt;a href=&#34;https://github.com/apache/apisix&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;APISIX&lt;/a&gt; 2.6 版本进行源码分析，源码阅读注释仓库: &lt;a href=&#34;https://github.com/mayocream/apisix/tree/review&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;review&lt;/a&gt;，分析主要流程以及核心机制。&lt;/p&gt;
+      <description>&lt;p&gt;本文基于 &lt;a href=&#34;https://github.com/apache/apisix&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;APISIX&lt;/a&gt; 2.6 版本进行源码分析，源码阅读注释仓库：&lt;a href=&#34;https://github.com/mayocream/apisix/tree/review&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;review&lt;/a&gt;，分析主要流程以及核心机制。&lt;/p&gt;
 &lt;h2 id=&#34;1-apisix-概述&#34;&gt;1. APISIX 概述&lt;/h2&gt;
 &lt;p&gt;APISIX 与 Kong 类似，是一个基于 OpenResty 构建的 API 网关，如果你熟悉 OpenResty，你大概能猜到本文会讲述 APISIX 在 OpenResty 的几大生命周期中，
 做了什么动作来进行路由匹配、服务发现、负载均衡以及加载插件。
@@ -574,7 +574,7 @@
 &lt;blockquote&gt;
 &lt;p&gt;Use &lt;code&gt;ngx.ctx&lt;/code&gt; wherever you can. &lt;code&gt;ngx.var&lt;/code&gt; is much  more expensive and is also limited to string values. The latter should  only be used to exchange data with other nginx C modules.&lt;sup id=&#34;fnref:7&#34;&gt;&lt;a href=&#34;#fn:7&#34; class=&#34;footnote-ref&#34; role=&#34;doc-noteref&#34;&gt;7&lt;/a&gt;&lt;/sup&gt;&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;APISIX 中使用缓存 &lt;code&gt;ngx.var&lt;/code&gt; 获取的结果， 在不同生命周期中传递。使用 &lt;a href=&#34;https://github.com/api7/lua-var-nginx-module&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;lua-var-nginx-module&lt;/a&gt; Nginx C 模块和 FFI 获取变量，在没有开启 Nginx C 模块的情况下回退到 &lt;code&gt;ngx.var&lt;/code&gt; 方式获取。APISIX 默认没有在构建脚本中加载 C 模块，提交的 PR &lt;a href=&#34;https://github.com/api7/apisix-build-tools/pull/44&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;feat: add lua-var-nginx-module&lt;/a&gt; 在编译 OpenResty 时添加了该模块。&lt;/p&gt;
+&lt;p&gt;APISIX 中使用缓存 &lt;code&gt;ngx.var&lt;/code&gt; 获取的结果，在不同生命周期中传递。使用 &lt;a href=&#34;https://github.com/api7/lua-var-nginx-module&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;lua-var-nginx-module&lt;/a&gt; Nginx C 模块和 FFI 获取变量，在没有开启 Nginx C 模块的情况下回退到 &lt;code&gt;ngx.var&lt;/code&gt; 方式获取。APISIX 默认没有在构建脚本中加载 C 模块，提交的 PR &lt;a href=&#34;https://github.com/api7/apisix-build-tools/pull/44&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;feat: add lua-var-nginx-module&lt;/a&gt; 在编译 OpenResty 时添加了该模块。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-lua&#34; data-lang=&#34;lua&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;_M&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;set_vars_meta&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ctx&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;-- 从 table 池中获取/创建一个 hash 长度为 32 的 table&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;local&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tablepool.fetch&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;ctx_var&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;32&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
@@ -1185,7 +1185,7 @@
 &lt;p&gt;Balancer 部分与 Kong 逻辑一致，甚至代码里函数名都一样，主要逻辑是 Service/Upstream 节点解析、负载均衡策略、健康检查与失败重试。&lt;/p&gt;
 &lt;p&gt;APISIX 支持的一特性是外部服务发现，Kong 中默认支持通过 DNS 解析 Service host，根据 AAAA、A、SRV 记录添加 IP 与优先级，APISIX 支持了从 consul、eruka 和其他注册中心获取 IP 地址列表，并同步节点数据（长轮询）。&lt;/p&gt;
 &lt;h3 id=&#34;81-服务发现&#34;&gt;8.1. 服务发现&lt;/h3&gt;
-&lt;p&gt;如果 serivce host 是域名, 通过外部注册中心进行服务发现，获取上游 IP 列表。&lt;/p&gt;
+&lt;p&gt;如果 serivce host 是域名，通过外部注册中心进行服务发现，获取上游 IP 列表。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-lua&#34; data-lang=&#34;lua&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kr&#34;&gt;function&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;_M&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;set_by_route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;route&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;api_ctx&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   	&lt;span class=&#34;p&#34;&gt;...&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;-- 如果 serivce host 是域名, 通过 discovery 发现, dns 解析&lt;/span&gt;
@@ -1783,7 +1783,7 @@
 最终在 &lt;a href=&#34;https://github.com/api7/wasm-nginx-module&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;api7/wasm-nginx-module&lt;/a&gt; 插件中，
 还是使用 wasmtime 运行时实现了对 WebAssembly 的支持。&lt;/p&gt;
 &lt;h3 id=&#34;114-service-mesh&#34;&gt;11.4. Service Mesh&lt;/h3&gt;
-&lt;p&gt;APISIX 的 Service Mesh 项目 &lt;a href=&#34;https://github.com/api7/apisix-mesh-agent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;api7/apisix-mesh-agent&lt;/a&gt;，将 APISIX Proxy 作为 Sidecar 运作在数据平面。通过实现控制平面的接口，接入类似 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 或 &lt;a href=&#34;https://github.com/kumahq/kuma&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kuma&lt;/a&gt;（由 Kong 创建捐赠给 CNCF） 的控制平面，形成一套完整的 Service Mesh 方案。
+&lt;p&gt;APISIX 的 Service Mesh 项目 &lt;a href=&#34;https://github.com/api7/apisix-mesh-agent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;api7/apisix-mesh-agent&lt;/a&gt;，将 APISIX Proxy 作为 Sidecar 运作在数据平面。通过实现控制平面的接口，接入类似 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 或 &lt;a href=&#34;https://github.com/kumahq/kuma&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kuma&lt;/a&gt;（由 Kong 创建捐赠给 CNCF）的控制平面，形成一套完整的 Service Mesh 方案。
 该项目本质上是使用 APISIX 替换了 Istio 中的 Envoy。&lt;/p&gt;
 &lt;p&gt;
 
@@ -1852,7 +1852,7 @@
 &lt;p&gt;&lt;a href=&#34;https://segmentfault.com/a/1190000016149595&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LuaJIT FFI 介绍，及其在 OpenResty 中的应用（下）&lt;/a&gt;&amp;#160;&lt;a href=&#34;#fnref:2&#34; class=&#34;footnote-backref&#34; role=&#34;doc-backlink&#34;&gt;&amp;#x21a9;&amp;#xfe0e;&lt;/a&gt;&lt;/p&gt;
 &lt;/li&gt;
 &lt;li id=&#34;fn:3&#34;&gt;
-&lt;p&gt;&lt;a href=&#34;https://yxudong.github.io/%E3%80%8AOpenResty%E7%B2%BE%E5%8D%8E%E6%95%B4%E7%90%86%E3%80%8B6.%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;《OpenResty精华整理》6.性能优化 &lt;/a&gt;&amp;#160;&lt;a href=&#34;#fnref:3&#34; class=&#34;footnote-backref&#34; role=&#34;doc-backlink&#34;&gt;&amp;#x21a9;&amp;#xfe0e;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://yxudong.github.io/%E3%80%8AOpenResty%E7%B2%BE%E5%8D%8E%E6%95%B4%E7%90%86%E3%80%8B6.%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;《OpenResty 精华整理》6.性能优化 &lt;/a&gt;&amp;#160;&lt;a href=&#34;#fnref:3&#34; class=&#34;footnote-backref&#34; role=&#34;doc-backlink&#34;&gt;&amp;#x21a9;&amp;#xfe0e;&lt;/a&gt;&lt;/p&gt;
 &lt;/li&gt;
 &lt;li id=&#34;fn:4&#34;&gt;
 &lt;p&gt;&lt;a href=&#34;https://github.com/openresty/luajit2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;openresty/luajit2&lt;/a&gt;&amp;#160;&lt;a href=&#34;#fnref:4&#34; class=&#34;footnote-backref&#34; role=&#34;doc-backlink&#34;&gt;&amp;#x21a9;&amp;#xfe0e;&lt;/a&gt;&lt;/p&gt;

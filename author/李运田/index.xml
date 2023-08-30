@@ -20,7 +20,7 @@
       <description>&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
 &lt;p&gt;在生产环境使用 Istio 的时候，可能最需要考虑的问题一个是安全问题一个是性能问题，在这里和大家一起探讨下一个安全问题，如何在 Istio 网格中访问外部服务。Istio 提供了两种模式来配置对外部请求的访问策略，并通过配置项 outboundTrafficPolicy.mode 来指定。 默认的模式是 ALLOW_ANY，也就是允许在网格内请求所有外部的未知服务；另外一个模式是 REGISTRY_ONLY，表示只允许请求注册到服务网格注册表中的服务。默认的 ALLOW_ANY 模式虽然使用方便，但是存在一定的安全隐患，建议的做法是切换到 REGISTRY_ONLY 模式。那么在 REGISTRY_ONLY 模式下如何访问外部服务？实现机制是什么呢？在这里针对这两个问题和大家一起探讨下。&lt;/p&gt;
 &lt;h2 id=&#34;方案调研&#34;&gt;方案调研&lt;/h2&gt;
-&lt;p&gt;目前我们安装部署 Istio 使用的是helm，可以在安装中添加相应的配置 &lt;code&gt;--set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 修改 outboundTrafficPolicy.mode 的值；如果 Istio 已经安装好，通过 &lt;code&gt;kubectl edit cm istio -n istio-system&lt;/code&gt; 可以动态修改此值。&lt;/p&gt;
+&lt;p&gt;目前我们安装部署 Istio 使用的是 helm，可以在安装中添加相应的配置 &lt;code&gt;--set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 修改 outboundTrafficPolicy.mode 的值；如果 Istio 已经安装好，通过 &lt;code&gt;kubectl edit cm istio -n istio-system&lt;/code&gt; 可以动态修改此值。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;mesh&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;|-&lt;/span&gt;&lt;span class=&#34;sd&#34;&gt;
@@ -101,14 +101,14 @@
 &lt;li&gt;reviews 服务访问外部服务，这一步对 reviews 服务来说属于出口流量，被 iptables 规则拦截转发至出口流量 OUTPUT 链。&lt;/li&gt;
 &lt;li&gt;OUTPUT 链转发流量至 ISTIO_OUTPUT 链。&lt;/li&gt;
 &lt;li&gt;在 ISTIO_OUTPUT 链中默认有九个规则，决定 reviews 服务访问外部服务的流量发往何处，在这里我们可以自定义一个规则 &lt;code&gt;-A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;，使访问 36.152.44.96 这个外部服务的流量跳出当前链，调用 &lt;code&gt;POSTROUTING 链&lt;/code&gt;，直接访问外部服务；如果使用默认规则，流量被转发至 ISTIO_REDIRECT 链。&lt;/li&gt;
-&lt;li&gt;ISTIO_REDIRECT链直接重定向至 Envoy监听的15001出口流量端口。&lt;/li&gt;
+&lt;li&gt;ISTIO_REDIRECT 链直接重定向至 Envoy 监听的 15001 出口流量端口。&lt;/li&gt;
 &lt;li&gt;外部服务的流量策略并不在 Istio 服务网格中，如果不进行相关配置把外部服务注册到服务网格内，经过 Envoy 一系列出口流量治理动作后将会返回错误信息。因此这里我们需要配置 &lt;code&gt;ServiceEntry&lt;/code&gt;，把外部服务纳入服务网格中，然后通过 Envoy 的流量治理后可以继续发送外部请求，访问外部请求时又会被 iptables 拦截转发至出口流量 OUTPUT 链。&lt;/li&gt;
 &lt;li&gt;OUTPUT 链转发流量至 ISTIO_OUTPUT 链。&lt;/li&gt;
 &lt;li&gt;在这里会匹配到 ISTIO_OUTPUT 链的第四条规则 &lt;code&gt;-A ISTIO_OUTPUT -m owner --uid-owner 1337 -j RETURN&lt;/code&gt;，流量直接 RETURN 到下一个链 &lt;code&gt;POSTROUTING 链&lt;/code&gt;，经 POSTROUTING 链流出访问外部服务。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;我们看到通过第11步、第13步两种方式修改配置都可以使 Istio 内部的服务访问外部服务，具体应该怎么做呢？&lt;/p&gt;
-&lt;h2 id=&#34;通过iptables规则访问&#34;&gt;通过iptables规则访问&lt;/h2&gt;
-&lt;p&gt;如果想在第11步直接跳出 ISTIO_OUT 链调用 POSTROUTING 链，需要添加一个自定义的 iptables 规则 &lt;code&gt;-A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;，我们知道 iptables 规则是在 istio-init 里定义的，istio-init 启动时执行的是 istio-iptables 命令，我们在 manifests 的 &lt;code&gt;injection-template.yaml&lt;/code&gt; 文件里看到 istio-iptables 默认的部分配置。&lt;/p&gt;
+&lt;p&gt;我们看到通过第 11 步、第 13 步两种方式修改配置都可以使 Istio 内部的服务访问外部服务，具体应该怎么做呢？&lt;/p&gt;
+&lt;h2 id=&#34;通过-iptables-规则访问&#34;&gt;通过 iptables 规则访问&lt;/h2&gt;
+&lt;p&gt;如果想在第 11 步直接跳出 ISTIO_OUT 链调用 POSTROUTING 链，需要添加一个自定义的 iptables 规则 &lt;code&gt;-A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN&lt;/code&gt;，我们知道 iptables 规则是在 istio-init 里定义的，istio-init 启动时执行的是 istio-iptables 命令，我们在 manifests 的 &lt;code&gt;injection-template.yaml&lt;/code&gt; 文件里看到 istio-iptables 默认的部分配置。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-i&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;{{ annotation .ObjectMeta `traffic.sidecar.istio.io/includeOutboundIPRanges` .Values.global.proxy.includeIPRanges }}&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;-x&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -122,9 +122,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;15090,15021,15020&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;&lt;code&gt;-i&lt;/code&gt; 默认为&lt;code&gt;*&lt;/code&gt;，所有出站流量都会被重定向到 Envoy 代理&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;-x&lt;/code&gt; 默认为空，当-i参数为&lt;code&gt;*&lt;/code&gt;时，用来指明哪些地址不用重定向 Envoy 代理，直接进行转发&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-x&lt;/code&gt; 默认为空，当-i 参数为&lt;code&gt;*&lt;/code&gt;时，用来指明哪些地址不用重定向 Envoy 代理，直接进行转发&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;-b&lt;/code&gt; 默认为&lt;code&gt;*&lt;/code&gt;，逗号分隔的端口，指定端口的流量将重定向到 Envoy&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;-d&lt;/code&gt; 默认为15090,15021,15020，逗号分隔的端口，指定哪些端口的流量不用重定向到 Envoy&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-d&lt;/code&gt; 默认为 15090,15021,15020，逗号分隔的端口，指定哪些端口的流量不用重定向到 Envoy&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;根据上面配置我们可以在 Istio 服务中通过 global.proxy.* 进行全局配置，还可以在服务的 deployment 里通过 &lt;code&gt;traffic.sidecar.istio.io/*&lt;/code&gt; 配置相应的参数。我们现在的目的是需要把访问 36.152.44.96 的请求不重定向到 Envoy 代理，直接进行转发，因此我们在 deployment 里添加 &lt;code&gt;traffic.sidecar.istio.io/excludeOutboundIPRanges: 36.152.44.0/24&lt;/code&gt;，执行完后我们 describe pod 的详细信息，获取到 pod 中的部分配置如下，可以看到设置生效，36.152.44.0/24 不会重定向到 Envoy 中&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;-&lt;span class=&#34;l&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -146,7 +146,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -d 127.0.0.1/32 -j RETURN
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -d 36.152.44.0/24 -j RETURN
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; -A ISTIO_OUTPUT -j ISTIO_REDIRECT
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;通过serviceentry访问&#34;&gt;通过ServiceEntry访问&lt;/h2&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;通过-serviceentry-访问&#34;&gt;通过 ServiceEntry 访问&lt;/h2&gt;
 &lt;p&gt;Istio 在 15001 端口使用 VirtualOutboundListener 处理出向请求，Iptable 将 Envoy 所在 Pod 的对外请求拦截后发向本地的 15001 端口，该监听器接收后并不进行业务处理，而是根据请求的目的端口分发给其他独立的监听器处理。 我们访问的外部服务为 36.152.44.96:80，因此 Envoy 根据目的端口匹配到 &lt;code&gt;0.0.0.0_80&lt;/code&gt; 这个 Outbound listener，并转交给该 listener。&lt;/p&gt;
 &lt;p&gt;
 
@@ -164,9 +164,9 @@
 
 
 
-&lt;figure  id=&#34;figure-envoy_listener配置&#34;&gt;
+&lt;figure  id=&#34;figure-envoy_listener-配置&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener配置&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener 配置&#34; srcset=&#34;
                /blog/istio-access-external-services/envoy_listener_hu50924f09040030b4a5656c78086bc2b9_47613_cc0fb23433095410986e02f0f8264b00.webp 400w,
                /blog/istio-access-external-services/envoy_listener_hu50924f09040030b4a5656c78086bc2b9_47613_28f2c1150d5c2634cfb8a0042dfc7eee.webp 760w,
                /blog/istio-access-external-services/envoy_listener_hu50924f09040030b4a5656c78086bc2b9_47613_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -175,10 +175,10 @@
                height=&#34;566&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Envoy_listener配置
+      Envoy_listener 配置
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;当 0.0.0.0_80 接收到出向请求后，并不会直接发送到目的 cluster，其实通过查看 0.0.0.0_80 的 listener 的信息，我们也找不到目的 cluster 或 endpoint，在这个 listener 中配置了一个路由规则80，在该路由规则中会根据不同的请求目的地进行路由匹配处理。&lt;/p&gt;
+&lt;p&gt;当 0.0.0.0_80 接收到出向请求后，并不会直接发送到目的 cluster，其实通过查看 0.0.0.0_80 的 listener 的信息，我们也找不到目的 cluster 或 endpoint，在这个 listener 中配置了一个路由规则 80，在该路由规则中会根据不同的请求目的地进行路由匹配处理。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -195,9 +195,9 @@
 
 
 
-&lt;figure  id=&#34;figure-envoy_listener配置&#34;&gt;
+&lt;figure  id=&#34;figure-envoy_listener-配置&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener配置&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Envoy_listener 配置&#34; srcset=&#34;
                /blog/istio-access-external-services/envoy_route_hu3aff90c76de32c46d535df4b3ca27fa7_11073_cfef1834a91e295278fa9a037da4d8fa.webp 400w,
                /blog/istio-access-external-services/envoy_route_hu3aff90c76de32c46d535df4b3ca27fa7_11073_f0adf5d46d6cd6ad7c3e2b6bda3e7acc.webp 760w,
                /blog/istio-access-external-services/envoy_route_hu3aff90c76de32c46d535df4b3ca27fa7_11073_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -206,13 +206,13 @@
                height=&#34;223&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Envoy_listener配置
+      Envoy_listener 配置
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;通过 name 为80的路由规则我们没找到符合 36.152.44.96 的请求，因此会被 listener 里的 &lt;code&gt;default_filter_match&lt;/code&gt; 处理，进入到 BlackHoleCluster 集群里，请求被丢弃。
+&lt;p&gt;通过 name 为 80 的路由规则我们没找到符合 36.152.44.96 的请求，因此会被 listener 里的 &lt;code&gt;default_filter_match&lt;/code&gt; 处理，进入到 BlackHoleCluster 集群里，请求被丢弃。
 这里我们简单介绍下 Envoy 中的两个特殊 cluster：&lt;code&gt;BlackHoleCluster&lt;/code&gt; 和 &lt;code&gt;PassthroughCluster&lt;/code&gt;，
-&lt;code&gt;BlackHoleCluster&lt;/code&gt; 中没有配置任何处理请求的host。请求进入该 cluster 后将被丢弃掉，而不是发向一个 host，如果 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt;，默认情况下请求的外部服务都会直接进入 BlackHoleCluster 中丢掉。&lt;code&gt;PassthroughCluster&lt;/code&gt; 的 type 被设置为 &lt;code&gt;ORIGINAL_DST&lt;/code&gt;，表明任何发向该 cluster 的请求都会被直接发送到其请求中的原始目的地，如果 &lt;code&gt;outboundTrafficPolicy.mode=ALLOW_ANY&lt;/code&gt;，Envoy 不会对请求进行重新路由直接发送到原始目的地。&lt;/p&gt;
-&lt;p&gt;在 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 模式下，为了流量不进入 &lt;code&gt;BlackHoleCluster&lt;/code&gt; 中，我们需要添加 ServiceEntry，把外部请求注册到服务网格中，以便Envoy可以找到外部服务的 route 进行流量处理。&lt;/p&gt;
+&lt;code&gt;BlackHoleCluster&lt;/code&gt; 中没有配置任何处理请求的 host。请求进入该 cluster 后将被丢弃掉，而不是发向一个 host，如果 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt;，默认情况下请求的外部服务都会直接进入 BlackHoleCluster 中丢掉。&lt;code&gt;PassthroughCluster&lt;/code&gt; 的 type 被设置为 &lt;code&gt;ORIGINAL_DST&lt;/code&gt;，表明任何发向该 cluster 的请求都会被直接发送到其请求中的原始目的地，如果 &lt;code&gt;outboundTrafficPolicy.mode=ALLOW_ANY&lt;/code&gt;，Envoy 不会对请求进行重新路由直接发送到原始目的地。&lt;/p&gt;
+&lt;p&gt;在 &lt;code&gt;outboundTrafficPolicy.mode=REGISTRY_ONLY&lt;/code&gt; 模式下，为了流量不进入 &lt;code&gt;BlackHoleCluster&lt;/code&gt; 中，我们需要添加 ServiceEntry，把外部请求注册到服务网格中，以便 Envoy 可以找到外部服务的 route 进行流量处理。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceEntry&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -228,7 +228,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;baidu-http&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;HTTP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resolution&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;NONE&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置完 ServiceEntry 后我们再次查询 review 的 route 信息，可以看到36.152.44.96已经被加入 route 中了，直接在pod中访问外部服务36.152.44.96可以得到正确的请求。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;配置完 ServiceEntry 后我们再次查询 review 的 route 信息，可以看到 36.152.44.96 已经被加入 route 中了，直接在 pod 中访问外部服务 36.152.44.96 可以得到正确的请求。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -245,9 +245,9 @@
 
 
 
-&lt;figure  id=&#34;figure-添加完envoy&#34;&gt;
+&lt;figure  id=&#34;figure-添加完-envoy&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;添加完Envoy&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;添加完 Envoy&#34; srcset=&#34;
                /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_ce0f033281cae1dada4685f015cee970.webp 400w,
                /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_002256f4ec4c9295ba4147fc08c2d85e.webp 760w,
                /blog/istio-access-external-services/envoy_route_baidu_hu9b91f4bf7e6435f7d35cb02fea23ccaf_23822_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -256,7 +256,7 @@
                height=&#34;429&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      添加完Envoy
+      添加完 Envoy
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
@@ -519,7 +519,7 @@
       <guid>https://cloudnative.to/blog/istio-traffic-management-series-route-management/</guid>
       <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
 &lt;p&gt;本文将和大家一起探讨下 Istio 的路由管理，介绍使用 Istio 灰度发布的过程中，有哪些需要注意的地方。&lt;/p&gt;
-&lt;p&gt;流量治理用于控制服务之间的流量和接口调用。Istio 可以通过服务级别的配置，实现蓝绿发布、灰度发布以及百分比流量策略发布等，Istio 还可以实现诸如故障注入、熔断限流、超时重试等流量治理功能。 那么 Istio 如何具有如此强大的功能，它的路由管理是如何实现的，生产中使用 Istio 需要注意的要点有哪些呢？&lt;/p&gt;
+&lt;p&gt;流量治理用于控制服务之间的流量和接口调用。Istio 可以通过服务级别的配置，实现蓝绿发布、灰度发布以及百分比流量策略发布等，Istio 还可以实现诸如故障注入、熔断限流、超时重试等流量治理功能。那么 Istio 如何具有如此强大的功能，它的路由管理是如何实现的，生产中使用 Istio 需要注意的要点有哪些呢？&lt;/p&gt;
 &lt;h2 id=&#34;istio-为什么可以实现流量治理&#34;&gt;Istio 为什么可以实现流量治理&lt;/h2&gt;
 &lt;p&gt;Istio 中路由策略的转发处理都是通过 Envoy 实现，Envoy 作为 Sidecar 和每个服务容器部署在同一个 pod 中，Sidecar 在注入到 pod 之后，将原有服务调用从源容器 -&amp;gt; 目标容器的通信方式改变为源容器 -&amp;gt; Sidecar (源端) -&amp;gt; Sidecar (目的端) -&amp;gt; 目的容器，只要我们配置了正确的流量策略，通过 pilot 与 Envoy 之间建立的长连接，Envoy 可以实时获取最新的网络路由策略，这样 Envoy 接管了流入流出用户服务的流量，持有流量策略。并且 Istio 会自动探测 kubernetes 集群的 services 和 endpoints，从而可以获取 services 与 endpoints 之间的关系，Envoy 配置里既有流量策略，又有 endpoints 自然可以实现流量的转发处理。&lt;/p&gt;
 &lt;p&gt;Envoy 可代理的流量包括从服务网格外部到其内部运行的服务，服务网格内部之间的服务，以及服务网格内部到外部的服务。下图展示了 Istio 完整的路由管理。&lt;/p&gt;
@@ -539,9 +539,9 @@
 
 
 
-&lt;figure  id=&#34;figure-istio路由管理&#34;&gt;
+&lt;figure  id=&#34;figure-istio-路由管理&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio路由管理&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio 路由管理&#34; srcset=&#34;
                /blog/istio-traffic-management-series-route-management/Istio-route-management_huadbfa26d1c5d4271297f154b4416ab9d_235823_f276631c0af236dceb52c4cda9ffdd0d.webp 400w,
                /blog/istio-traffic-management-series-route-management/Istio-route-management_huadbfa26d1c5d4271297f154b4416ab9d_235823_d32ebab279bb2f11965d5dffd121e039.webp 760w,
                /blog/istio-traffic-management-series-route-management/Istio-route-management_huadbfa26d1c5d4271297f154b4416ab9d_235823_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -550,7 +550,7 @@
                height=&#34;243&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Istio路由管理
+      Istio 路由管理
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ol&gt;
@@ -634,9 +634,9 @@
 
 
 
-&lt;figure  id=&#34;figure-product服务调用reviews服务&#34;&gt;
+&lt;figure  id=&#34;figure-product-服务调用-reviews-服务&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Product服务调用Reviews服务&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Product 服务调用 Reviews 服务&#34; srcset=&#34;
                /blog/istio-traffic-management-series-route-management/Product-reviews_hu0e338d50386099b0b39f105a1f9ddc2c_53744_59417647c4a99fbae17ff02fcff99e2a.webp 400w,
                /blog/istio-traffic-management-series-route-management/Product-reviews_hu0e338d50386099b0b39f105a1f9ddc2c_53744_3471084e1fe08bab56d6e30879149f8c.webp 760w,
                /blog/istio-traffic-management-series-route-management/Product-reviews_hu0e338d50386099b0b39f105a1f9ddc2c_53744_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -645,7 +645,7 @@
                height=&#34;448&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Product服务调用Reviews服务
+      Product 服务调用 Reviews 服务
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ol&gt;
@@ -659,7 +659,7 @@
 &lt;li&gt;请求被转发到 Reviews 服务所在的 pod，被 iptable 规则拦截，转发到 15001 端口。&lt;/li&gt;
 &lt;li&gt;Envoy 的 Virtual Listener 在 15001 端口上监听，收到了该请求。&lt;/li&gt;
 &lt;li&gt;请求被 Virtual Listener 根据请求原目标地址 IP（192.168.206.21）和端口（9080）转发到 192.168.206.21_9080 这个 listener。&lt;/li&gt;
-&lt;li&gt;根据 192.168.206.21_9080 listener 的 http_connection_manager filter 配置，该请求对应的 cluster 为 inbound|9080|v1|reviews.default.svc.cluster.local 。&lt;/li&gt;
+&lt;li&gt;根据 192.168.206.21_9080 listener 的 http_connection_manager filter 配置，该请求对应的 cluster 为 inbound|9080|v1|reviews.default.svc.cluster.local。&lt;/li&gt;
 &lt;li&gt;inbound|9080|v1|reviews.default.svc.cluster.local cluster 配置的 host 为 127.0.0.1:9080。&lt;/li&gt;
 &lt;li&gt;请求被转发到 127.0.0.1:9080，即 Reviews 服务进行处理。&lt;/li&gt;
 &lt;/ol&gt;

@@ -326,7 +326,7 @@
         content="2021-09-29T00:00:00&#43;08:00"
       />
     
-    <meta property="article:modified_time" content="2023-08-29T10:08:12&#43;08:00">
+    <meta property="article:modified_time" content="2023-08-30T20:44:49&#43;08:00">
   
 
   
@@ -355,7 +355,7 @@
   "headline": "在非容器环境上实现散装的 IPVS SVC",
   
   "datePublished": "2021-09-29T00:00:00+08:00",
-  "dateModified": "2023-08-29T10:08:12+08:00",
+  "dateModified": "2023-08-30T20:44:49+08:00",
   
   "author": {
     "@type": "Person",
@@ -848,7 +848,7 @@
 
   
   <span class="middot-divider"></span>
-  字数 4295
+  字数 4383
   <span class="middot-divider"></span>
   <span class="article-reading-time">
       阅读时长 20 分钟
@@ -937,8 +937,8 @@
 
                     
                     <h2 id="前言">前言</h2>
-<p>内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP ，然后 NGINX 根据 <code>server_name</code> 去 proxy 不同的 upstream 。 开始还是能用的，但是后面结果后面很多服务依赖 <code>host</code> 这个 header ，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 <code>ClusterIP</code> 的 SVC 扣到非 K8S 环境上使用。</p>
-<p>kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 <code>SVC IP:SVC PORT</code> 会被 dnat 成 <code>endpoint</code> ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP 。在 K8S 里，endpoint 的 ip 无非就是 <code>POD IP</code>，<code>host IP</code>。前者就是 SVC 选中 POD ，后者例如 <code>kubernetes</code> 这个 SVC ，会 DNAT 成每个 <code>kube-apiserver</code> 的 <code>host IP:6443</code> 端口，也可能是 <code>ExternalName</code> 或者手动创建的 endpoint 。既然 <code>kubernetes</code> 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。</p>
+<p>内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP，然后 NGINX 根据 <code>server_name</code> 去 proxy 不同的 upstream。开始还是能用的，但是后面结果后面很多服务依赖 <code>host</code> 这个 header，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 <code>ClusterIP</code> 的 SVC 扣到非 K8S 环境上使用。</p>
+<p>kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 <code>SVC IP:SVC PORT</code> 会被 dnat 成 <code>endpoint</code> ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP。在 K8S 里，endpoint 的 ip 无非就是 <code>POD IP</code>，<code>host IP</code>。前者就是 SVC 选中 POD，后者例如 <code>kubernetes</code> 这个 SVC，会 DNAT 成每个 <code>kube-apiserver</code> 的 <code>host IP:6443</code> 端口，也可能是 <code>ExternalName</code> 或者手动创建的 endpoint。既然 <code>kubernetes</code> 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。</p>
 <h2 id="环境信息">环境信息</h2>
 <p>前面说的 SVC 现象是和 <code>kube-proxy</code> 的模式无关的。<code>iptables</code> 模式排查不直观，我更倾向于 <code>IPVS</code> 去搞，它更直观，而且支持更多的调度算法。管理 IPVS 规则的话我们需要安装 <code>ipvsadm</code> ，这里我是两台干净的 CentOS 7.8 来做环境。</p>
 <table>
@@ -974,7 +974,7 @@
 </span></span><span class="line"><span class="cl">-P OUTPUT ACCEPT
 </span></span><span class="line"><span class="cl">-P POSTROUTING ACCEPT
 </span></span></code></pre></div><h2 id="过程">过程</h2>
-<p>先思考下 kube-proxy 的 IPVS ，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 <code>nat</code> 模式。暂且打算添加一个下面类似的 SVC ：</p>
+<p>先思考下 kube-proxy 的 IPVS，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 <code>nat</code> 模式。暂且打算添加一个下面类似的 SVC：</p>
 <pre tabindex="0"><code>IP:                169.254.11.2
 Port:              https  80/TCP
 TargetPort:        6443/TCP
@@ -993,9 +993,9 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl">./ran_linux_amd64 -port <span class="m">8080</span> -listdir www
 </span></span></code></pre></div><p>两个机器的这个 web 都起来后我们开个窗口去 <code>192.168.2.111</code> 上继续后面的操作。</p>
 <h3 id="lvs-nat">lvs nat</h3>
-<p>kube-proxy 并没有像 lvs nat 那样有单独的机器做 <code>NAT GW</code>，或者认为每个 node 都是自己的 <code>NAT GW</code>。现在来添加 <code>169.254.11.2:80</code> 这个 SVC ，使用 ipvsadm 添加：</p>
+<p>kube-proxy 并没有像 lvs nat 那样有单独的机器做 <code>NAT GW</code>，或者认为每个 node 都是自己的 <code>NAT GW</code>。现在来添加 <code>169.254.11.2:80</code> 这个 SVC，使用 ipvsadm 添加：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">ipvsadm --add-service --tcp-service 169.254.11.2:80 --scheduler rr
-</span></span></code></pre></div><p>先添加本地的 web 作为 real server ，下面含义是添加为一个 nat 类型的 real server ：</p>
+</span></span></code></pre></div><p>先添加本地的 web 作为 real server，下面含义是添加为一个 nat 类型的 real server：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">ipvsadm --add-server --tcp-service 169.254.11.2:80 <span class="se">\
 </span></span></span><span class="line"><span class="cl"><span class="se"></span>  --real-server 192.168.2.111:8080 --masquerading --weight <span class="m">1</span>
 </span></span></code></pre></div><p>查看下当前列表：</p>
@@ -1023,7 +1023,7 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl">  -&gt; 192.168.2.222:8080           Masq    <span class="m">1</span>      <span class="m">0</span>          <span class="m">0</span>
 </span></span></code></pre></div><p>测试下访问看看：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ curl 169.254.11.2/www/test
-</span></span></code></pre></div><p>发现 curl 在卡住和能访问返回 <code>192.168.2.111</code> 之间切换，没有返回 <code>192.168.2.222</code> 的。查看下 IPVS 的 connection ，发现调度到非本机才会卡住：</p>
+</span></span></code></pre></div><p>发现 curl 在卡住和能访问返回 <code>192.168.2.111</code> 之间切换，没有返回 <code>192.168.2.222</code> 的。查看下 IPVS 的 connection，发现调度到非本机才会卡住：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ ipvsadm -lnc
 </span></span><span class="line"><span class="cl">IPVS connection entries
 </span></span><span class="line"><span class="cl">pro expire state       <span class="nb">source</span>             virtual            destination
@@ -1043,7 +1043,7 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl">07:38:33.376829 IP 169.254.11.2.50710 &gt; 192.168.2.222.8080: Flags <span class="o">[</span>S<span class="o">]</span>, seq 768065283, win 43690, options <span class="o">[</span>mss 65495,sackOK,TS val <span class="m">12283200</span> ecr 0,nop,wscale 7<span class="o">]</span>, length <span class="m">0</span>
 </span></span><span class="line"><span class="cl">07:38:33.376869 IP 192.168.2.222.8080 &gt; 169.254.11.2.50710: Flags <span class="o">[</span>S.<span class="o">]</span>, seq 2142784980, ack 768065284, win 28960, options <span class="o">[</span>mss 1460,sackOK,TS val <span class="m">676525160</span> ecr 12276183,nop,wscale 7<span class="o">]</span>, length <span class="m">0</span>
 </span></span><span class="line"><span class="cl">07:38:37.562632 IP 192.168.2.222.8080 &gt; 169.254.11.2.50710: Flags <span class="o">[</span>S.<span class="o">]</span>, seq 2142784980, ack 768065284, win 28960, options <span class="o">[</span>mss 1460,sackOK,TS val <span class="m">676529346</span> ecr 12276183,nop,wscale 7<span class="o">]</span>, length <span class="m">0</span>
-</span></span></code></pre></div><p>从 <code>Flags</code> 看，就是 tcp 重传，并且 <code>SRC IP</code> 是 VIP 。节点 <code>192.168.2.222.8080</code> 给 <code>169.254.11.2.50710</code> 回包会走到网关上去。网关上抓包也看到确实如此：</p>
+</span></span></code></pre></div><p>从 <code>Flags</code> 看，就是 tcp 重传，并且 <code>SRC IP</code> 是 VIP。节点 <code>192.168.2.222.8080</code> 给 <code>169.254.11.2.50710</code> 回包会走到网关上去。网关上抓包也看到确实如此：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ tcpdump -nn -i eth0 host 169.254.11.2
 </span></span><span class="line"><span class="cl">tcpdump: verbose output suppressed, use -v or -vv <span class="k">for</span> full protocol decode
 </span></span><span class="line"><span class="cl">listening on eth0, link-type EN10MB <span class="o">(</span>Ethernet<span class="o">)</span>, capture size <span class="m">262144</span> bytes
@@ -1054,7 +1054,7 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl">19:39:49.569667 IP 192.168.2.222.8080 &gt; 169.254.11.2.50714: Flags <span class="o">[</span>S.<span class="o">]</span>, seq 4149799699, ack 251479303, win 28960, options <span class="o">[</span>mss 1460,sackOK,TS val <span class="m">676601346</span> ecr 12357303,nop,wscale 7<span class="o">]</span>, length <span class="m">0</span>
 </span></span><span class="line"><span class="cl">19:39:49.569699 IP 192.168.2.222.8080 &gt; 169.254.11.2.50714: Flags <span class="o">[</span>S.<span class="o">]</span>, seq 4149799699, ack 251479303, win 28960, options <span class="o">[</span>mss 1460,sackOK,TS val <span class="m">676601346</span> ecr 12357303,nop,wscale 7<span class="o">]</span>, length <span class="m">0</span>
 </span></span></code></pre></div><h4 id="lvs-和-netfilter">lvs 和 netfilter</h4>
-<p>在介绍 lvs 的实现之前，我们需要了解 netfilter ，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。</p>
+<p>在介绍 lvs 的实现之前，我们需要了解 netfilter，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。</p>
 <p>下面是 IPVS 在 netfilter 里的模型图，IPVS 也是基于 netfilter 框架的，但只工作在 <code>INPUT</code> 链上，通过注册 <code>ip_vs_in</code> 钩子函数来处理请求。因为 VIP 我们配置在机器上（常规的 lvs nat 的 VIP 是在 NAT GW 上，我们这里是自己），我们 curl 的时候就会进到 <code>INPUT</code> 链，<code>ip_vs_in</code> 会匹配然后直接跳转触发 <code>POSTROUTING</code> 链，跳过 iptables 规则。</p>
 <p>
 
@@ -1101,7 +1101,7 @@ Session Affinity:  None
 	   | CIP:CPORT -&gt; RIP:RPORT
 	   +
 	REAL SERVER
-</code></pre><p>lvs 做了 DNAT 并没有做 SNAT ，所以我们利用 iptables 做 SNAT ：</p>
+</code></pre><p>lvs 做了 DNAT 并没有做 SNAT，所以我们利用 iptables 做 SNAT：</p>
 <pre tabindex="0"><code>$ iptables -t nat -A POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
 </code></pre><p>访问看看还是不通，抓包看还是没生效，nat 是依赖 <code>conntrack</code> 的，而 IPVS 默认不会记录 conntrack，我们需要开启 IPVS 的 conntrack 才可以让 MASQUERADE 生效。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># 让 Netfilter 的 conntrack 状态管理功能也能应用于 IPVS 模块</span>
@@ -1152,7 +1152,7 @@ Session Affinity:  None
 </p>
 <p>iptables 的五链四表如上图所示，我们先删掉原有的规则：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ iptables -t nat -D POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport <span class="m">80</span> -j MASQUERADE
-</span></span></code></pre></div><p>平时自己家里使用了 openwrt ，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 <code>INPUT</code> 规则：</p>
+</span></span></code></pre></div><p>平时自己家里使用了 openwrt，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 <code>INPUT</code> 规则：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">-A INPUT -i eth0 -m comment --comment <span class="s2">&#34;!fw3&#34;</span> -j zone_lan_input
 </span></span><span class="line"><span class="cl">...
 </span></span><span class="line"><span class="cl">-A zone_lan_input -m comment --comment <span class="s2">&#34;!fw3: Custom lan input rule chain&#34;</span> -j input_lan_rule
@@ -1242,7 +1242,7 @@ Session Affinity:  None
 </tr>
 </tbody>
 </table>
-<p>然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 <code>OUTPUT</code> 链，不会过 <code>PREROUTING</code> ，不过我们上面的 <code>PREROUTING</code> 链可以处理后续的 docker 容器。 调试了下发现确实会走 <code>OUTPUT</code> 链：</p>
+<p>然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 <code>OUTPUT</code> 链，不会过 <code>PREROUTING</code> ，不过我们上面的 <code>PREROUTING</code> 链可以处理后续的 docker 容器。调试了下发现确实会走 <code>OUTPUT</code> 链：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ <span class="nb">echo</span> <span class="s1">&#39;kern.warning /var/log/iptables.log&#39;</span> &gt;&gt; /etc/rsyslog.conf
 </span></span><span class="line"><span class="cl">$ systemctl restart rsyslog
 </span></span><span class="line"><span class="cl">$ iptables -t nat -I OUTPUT -m <span class="nb">set</span> --match-set ZGZ-CLUSTER-IP dst,dst  -j LOG --log-prefix <span class="s1">&#39;**log-test**&#39;</span>
@@ -1261,7 +1261,7 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl"><span class="c1"># 备份下自带的配置文件</span>
 </span></span><span class="line"><span class="cl">cp /etc/keepalived/keepalived.conf<span class="o">{</span>,.bak<span class="o">}</span>
 </span></span></code></pre></div><h4 id="配置-keepalived">配置 keepalived</h4>
-<p>我们需要配置下 keepalived ，修改之前先看下默认相关的：</p>
+<p>我们需要配置下 keepalived，修改之前先看下默认相关的：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ systemctl cat keepalived
 </span></span><span class="line"><span class="cl"><span class="c1"># /usr/lib/systemd/system/keepalived.service</span>
 </span></span><span class="line"><span class="cl"><span class="o">[</span>Unit<span class="o">]</span>
@@ -1294,7 +1294,7 @@ Session Affinity:  None
 </span></span><span class="line"><span class="cl"><span class="nv">KEEPALIVED_OPTIONS</span><span class="o">=</span><span class="s2">&#34;-D&#34;</span>
 </span></span></code></pre></div><p><code>/etc/sysconfig/keepalived</code> 里修改为下面：</p>
 <pre tabindex="0"><code class="language-conf" data-lang="conf">KEEPALIVED_OPTIONS=&#34;-D --log-console --log-detail --use-file=/etc/keepalived/keepalived.conf&#34;
-</code></pre><p>我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 <code>kill -HUP</code> 信号触发 reload ，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。</p>
+</code></pre><p>我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 <code>kill -HUP</code> 信号触发 reload，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">cat &gt; /etc/keepalived/keepalived.conf <span class="s">&lt;&lt; EOF
 </span></span></span><span class="line"><span class="cl"><span class="s">! Configuration File for keepalived
 </span></span></span><span class="line"><span class="cl"><span class="s">
@@ -1462,7 +1462,7 @@ $ ip a s SVC
     link/ether e6:a3:29:07:fa:57 brd ff:ff:ff:ff:ff:ff
     inet 169.254.11.2/32 scope global SVC
        valid_lft forever preferred_lft forever
-</code></pre><p>停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs ：</p>
+</code></pre><p>停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs：</p>
 <div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">$ curl 169.254.11.2/www/test
 </span></span><span class="line"><span class="cl">curl: <span class="o">(</span>7<span class="o">)</span> Failed connect to 169.254.11.2:80<span class="p">;</span> Connection refused
 </span></span><span class="line"><span class="cl">$ curl 169.254.11.2/www/test
@@ -1596,7 +1596,7 @@ $ ip a s SVC
   
   <a class="col-6 post-nav-item btn btn-lg mb-md-1" href="/blog/edge-sig-learn-20/" rel="next">
     <div class="meta-nav">下一页</div>
-    <p>边缘计算专家长成计划入门20篇</p></a>
+    <p>边缘计算专家长成计划入门 20 篇</p></a>
   
   
   
@@ -1634,15 +1634,15 @@ $ ip a s SVC
     <p class="related-title">相关推荐</p>
     <ul>
       
-      <li><a href="/blog/cloudnative-ci-argo-workflow/">Argo Workflow介绍：一款强大的云原生持续集成工具</a></li>
+      <li><a href="/blog/gateway-api-release/">Gateway API v0.8.0: 引入服务网格支持</a></li>
+      
+      <li><a href="/blog/cloudnative-ci-argo-workflow/">Argo Workflow 介绍：一款强大的云原生持续集成工具</a></li>
       
       <li><a href="/blog/kubernetes-gateway-api-explained/">Kubernetes Gateway API 深入解读和落地指南</a></li>
       
       <li><a href="/blog/egress-for-k8s/">是时候思考 Kubernetes 出向流量安全了</a></li>
       
       <li><a href="/blog/does-kubernetes-really-give-you-multicloud-portability/">Kubernetes 真的能提供多云可移植性吗？</a></li>
-      
-      <li><a href="/blog/container-insights-2022/">2022 年容器生态系统的 9 大趋势洞察</a></li>
       
     </ul>
   </div>

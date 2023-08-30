@@ -37,7 +37,7 @@
 &lt;li&gt;线程隔离：每个线程中都有独立的 &lt;code&gt;PrioritySet&lt;/code&gt;；&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;而要实现有状态会话保持，首先，必须要提供快速的实例搜索能力，这是开源 &lt;code&gt;PrioritySet&lt;/code&gt; 并不具备的。为此，数据面扩展增强了 &lt;code&gt;PrioritySet&lt;/code&gt;，在其中实现了一个以实例地址为 Key 的 HostMap，来提供跨优先级的快速搜索能力。&lt;/p&gt;
-&lt;p&gt;同时，为了尽可能的减小该项增强带来的额外内存开销，HostMap在各个线程的 &lt;code&gt;PrioritySet&lt;/code&gt; 中共享。但是需要注意到，Envoy 特色功能之一就是可以动态更新后端实例列表，所以这个 HostMap 也需要更新（更新都在主线程中）并且面临线程安全问题。&lt;/p&gt;
+&lt;p&gt;同时，为了尽可能的减小该项增强带来的额外内存开销，HostMap 在各个线程的 &lt;code&gt;PrioritySet&lt;/code&gt; 中共享。但是需要注意到，Envoy 特色功能之一就是可以动态更新后端实例列表，所以这个 HostMap 也需要更新（更新都在主线程中）并且面临线程安全问题。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;一般来说，面对此类一写多读的数据更新，一个读写锁是一个不错的选择。但是在有状态会话保持中，HostMap 的搜索是高频操作，每个请求都是至少操作一次。而实例表更新则是一个相对来说非常低频的操作。为了一个低频的实例更新，而在每次请求中都引入一次读锁的开销，对于高性能网络代理来说，是很难让人接受的。所以为此需要设计一套机制来保证线程安全的实例更新的同时，保证搜索的无锁和高性能。&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;
 
@@ -96,7 +96,7 @@
 &lt;/p&gt;
 &lt;p&gt;该方案简单有效，而且最重的是 Envoy 将会话状态保存的责任转嫁给了客户端，保持了自身的无状态。这样做不但使得实现上更为简单，最重要的是，该方案天然的支持跨实例的会话保持。也即是说，当存在多个 Envoy 实例时，请求无论在 Envoy A 或者 Envoy B 上被处理，都不影响会话保持的结果。
 不过这个方案，也有它的缺陷。它的灵活性相对较弱。对于每个没有有效指定 Cookie 的新请求，Envoy 都会为它添加对应的 Cookie 并将之作为一个新的会话处理。它无法更加灵活的使用请求源 IP、请求头等信息来作为识别会话的特征。&lt;/p&gt;
-&lt;p&gt;为此，数据面提出了另一种基于存储/缓存的方案作为上一方案的补充。该方案会根据请求指定的特征（如源 IP、请求头等）计算特征值，并且保存特征值和目标实例的映射（内存缓存+中心缓存）。如此，就可以实现根据任意的请求特征来作为会话保持的依据。&lt;/p&gt;
+&lt;p&gt;为此，数据面提出了另一种基于存储/缓存的方案作为上一方案的补充。该方案会根据请求指定的特征（如源 IP、请求头等）计算特征值，并且保存特征值和目标实例的映射（内存缓存 + 中心缓存）。如此，就可以实现根据任意的请求特征来作为会话保持的依据。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -183,7 +183,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;6-全文小结&#34;&gt;6. 全文小结&lt;/h2&gt;
 &lt;p&gt;整个有状态会话保持机制主要分为三个部分，分别是：在 Upstream 模块中实现线程安全的高性能 HostMap 以便于快速的实例搜索以及实例状态限制；在 L4/L7 Filter 中实现会话状态的记录、提取，且提供了非常良好的扩展性，且支持多种有状态会话实现；扩展  &lt;code&gt;LoadBalancerContext&lt;/code&gt;  以实现两个模块交互上下游模块交互，允许 Filter 指定目标实例覆盖负载均衡结果。&lt;/p&gt;
 &lt;p&gt;Envoy 有状态会话保持机制弥补了 Envoy 在会话保持机制方面相对薄弱的缺陷。解决了在部分传统场景下 Envoy 的短板。而且，目前轻舟微服务团队已经将整个有状态会话保持机制都贡献给了 Envoy 开源社区，并持续维护。有兴趣或者有这方面需求的同学可以直接使用，如果其中有不足之处，也可以直接向社区反馈 :)。&lt;/p&gt;
-&lt;p&gt;9 月 23 日，2022 网易数字+大会将在杭州康莱德酒店召开，届时我们团队和中国信通院、中泰证券、吉利集团、安信证券的相关负责人会分享更多云原生技术与实践。欢迎感兴趣的朋友&lt;a href=&#34;https://yc.sf.163.com/?tag=ppzu_prpromote_mediacooperate_0908shuzi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;提前关注&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;9 月 23 日，2022 网易数字 + 大会将在杭州康莱德酒店召开，届时我们团队和中国信通院、中泰证券、吉利集团、安信证券的相关负责人会分享更多云原生技术与实践。欢迎感兴趣的朋友&lt;a href=&#34;https://yc.sf.163.com/?tag=ppzu_prpromote_mediacooperate_0908shuzi&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;提前关注&lt;/a&gt;。&lt;/p&gt;
 </description>
     </item>
     
@@ -212,9 +212,9 @@
 
 
 
-&lt;figure  id=&#34;figure-显示websockets工作原理的图表&#34;&gt;
+&lt;figure  id=&#34;figure-显示-websockets-工作原理的图表&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;显示websockets工作原理的图表&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;显示 websockets 工作原理的图表&#34; srcset=&#34;
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277posyqj20cg0b8dfz_hu7458e3ce3021aedb0c1d1cc83687f4c6_15076_2a20b78aa8df46485340ee7bf498c68b.webp 400w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277posyqj20cg0b8dfz_hu7458e3ce3021aedb0c1d1cc83687f4c6_15076_781b2428de2b829327547b72bb64879e.webp 760w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277posyqj20cg0b8dfz_hu7458e3ce3021aedb0c1d1cc83687f4c6_15076_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -223,7 +223,7 @@
                height=&#34;404&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      显示websockets工作原理的图表
+      显示 websockets 工作原理的图表
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;Websocket 连接一开始是普通的 HTTPS 连接，然后客户端发出协议切换请求，将连接升级为 Websocket。在 Slack，我们有不同的 websocket 服务，专门用于消息、在线（列出哪些联系人在线）和其他服务。其中一个 websocket 端点是专门为需要与 Slack 互动的应用程序制作的（因为应用程序也想要实时通信）。&lt;/p&gt;
@@ -331,9 +331,9 @@
 
 
 
-&lt;figure  id=&#34;figure-调用chef资源以创建带有集群和路由的监听器的例子&#34;&gt;
+&lt;figure  id=&#34;figure-调用-chef-资源以创建带有集群和路由的监听器的例子&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;调用Chef资源以创建带有集群和路由的监听器的例子&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;调用 Chef 资源以创建带有集群和路由的监听器的例子&#34; srcset=&#34;
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277otk25j20hs0ao74o_hud2ebd77a55ed41b5f8de579721b3ba03_23114_32e50a982040c604228080e85164bf26.webp 400w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277otk25j20hs0ao74o_hud2ebd77a55ed41b5f8de579721b3ba03_23114_2cdc116dd2cbbc9049f235c69f90387b.webp 760w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277otk25j20hs0ao74o_hud2ebd77a55ed41b5f8de579721b3ba03_23114_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -342,7 +342,7 @@
                height=&#34;384&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      调用Chef资源以创建带有集群和路由的监听器的例子
+      调用 Chef 资源以创建带有集群和路由的监听器的例子
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;要在 Envoy 中复制我们复杂的 HAProxy 配置需要一些努力。大部分需要的功能在 Envoy 中已经有了，所以只需要在 chef 库中加入对它的支持就可以了。我们实现了一些缺失的 Envoy 功能（有些是&lt;a href=&#34;https://github.com/envoyproxy/envoy/pull/12206&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;上游&lt;/a&gt;贡献的，有些是内部维护的扩展）。&lt;/p&gt;
@@ -386,9 +386,9 @@
 
 
 
-&lt;figure  id=&#34;figure-流程图显示dns迁移过程中涉及的组件和步骤&#34;&gt;
+&lt;figure  id=&#34;figure-流程图显示-dns-迁移过程中涉及的组件和步骤&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;流程图显示DNS迁移过程中涉及的组件和步骤&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;流程图显示 DNS 迁移过程中涉及的组件和步骤&#34; srcset=&#34;
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277p8k19j20hs07c3yp_hu8dbdeb8b10fd6b75b776536dab81c36d_16804_f56f3b4b7df6d9bab4f21c0b62d40875.webp 400w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277p8k19j20hs07c3yp_hu8dbdeb8b10fd6b75b776536dab81c36d_16804_15a07482708b9585e83ff83d618596d9.webp 760w,
                /blog/migrating-millions-of-concurrent-websockets-to-envoy/e6c9d24ely1h1277p8k19j20hs07c3yp_hu8dbdeb8b10fd6b75b776536dab81c36d_16804_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -397,7 +397,7 @@
                height=&#34;264&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      流程图显示DNS迁移过程中涉及的组件和步骤
+      流程图显示 DNS 迁移过程中涉及的组件和步骤
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;经过漫长而激动人心的 6 个月，迁移完成了，整个 HAProxy websocket 堆栈在全球范围内被 Envoy Proxy 取代，对客户的&lt;strong&gt;影响为零&lt;/strong&gt;。&lt;/p&gt;
@@ -516,7 +516,7 @@
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;社区 Lua 扩展一方面提供给了用户基于 Lua 语言开发插件的能力，相比 C++ 要简单很多，另一方面支持 Envoy 动态加载 Lua 脚本，无需重新编译升级。但同时由于 C++ 和 Lua 虚拟机交互带来的开销，Lua 扩展的性能自然会比原生 C++ 扩展差，而且 Envoy 社区当前的 Lua CAPI 交互方式会进一步加剧性能问题。除了性能问题，社区的 Lua 扩展还有个更大的缺陷 —— 不支持插件配置，直接导致社区 Lua 扩展的实用性大大下降。相比之下，WASM 和 Rider 实现了插件的可配置化， 并且 Rider 针对 Lua 扩展的性能做了一定的优化，使得 Rider 的 Lua 扩展在性能和功能方面都能满足企业级扩展的需求。&lt;/p&gt;
+&lt;p&gt;社区 Lua 扩展一方面提供给了用户基于 Lua 语言开发插件的能力，相比 C++ 要简单很多，另一方面支持 Envoy 动态加载 Lua 脚本，无需重新编译升级。但同时由于 C++ 和 Lua 虚拟机交互带来的开销，Lua 扩展的性能自然会比原生 C++ 扩展差，而且 Envoy 社区当前的 Lua CAPI 交互方式会进一步加剧性能问题。除了性能问题，社区的 Lua 扩展还有个更大的缺陷 —— 不支持插件配置，直接导致社区 Lua 扩展的实用性大大下降。相比之下，WASM 和 Rider 实现了插件的可配置化，并且 Rider 针对 Lua 扩展的性能做了一定的优化，使得 Rider 的 Lua 扩展在性能和功能方面都能满足企业级扩展的需求。&lt;/p&gt;
 &lt;h3 id=&#34;13-社区-wasm-扩展&#34;&gt;1.3 社区 WASM 扩展&lt;/h3&gt;
 &lt;p&gt;WASM 是源自前端的技术，是为了解决日益复杂的前端 Web 应用以及有限的 JS 脚本解释性能而诞生的技术。WASM 并不是一种语言，而是字节码标准。理论上任何一种语言，都可以被编译成 WASM 字节码，然后在 WASM 虚拟机中执行。&lt;/p&gt;
 &lt;p&gt;WASM 扩展的实现原理和 Lua 扩展本质上差不多，在 Envoy 自身的四层或者七层插件中会实现一个 WASM 插件，该插件会嵌入 WASM 虚拟机用于动态加载和运行可拔插的扩展代码（被编译为 WASM 字节码），并且也会通过 WASM 虚拟机暴露获取 Envoy 内部数据和功能的接口。其原理如下图所示：&lt;/p&gt;
@@ -584,12 +584,12 @@
 &lt;td&gt;是&lt;/td&gt;
 &lt;td&gt;是&lt;/td&gt;
 &lt;td&gt;差&lt;/td&gt;
-&lt;td&gt;C++/Rust/Go等&lt;/td&gt;
+&lt;td&gt;C++/Rust/Go 等&lt;/td&gt;
 &lt;td&gt;中等&lt;/td&gt;
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;根据上述各种扩展性方案的优劣势，网易轻舟微服务设计并实现了自己的可扩展框架 Rider ，主要的设计目标如下：&lt;/p&gt;
+&lt;p&gt;根据上述各种扩展性方案的优劣势，网易轻舟微服务设计并实现了自己的可扩展框架 Rider，主要的设计目标如下：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;支持 Lua 语言扩展&lt;/li&gt;
 &lt;li&gt;支持 Envoy 动态加载、更新、移除 Lua 插件&lt;/li&gt;
@@ -600,9 +600,9 @@
 &lt;p&gt;接下来具体看一下 Rider 可扩展框架的设计、优化及实践。&lt;/p&gt;
 &lt;h2 id=&#34;2-rider-可扩展框架的设计优化及实践&#34;&gt;2. Rider 可扩展框架的设计、优化及实践&lt;/h2&gt;
 &lt;h3 id=&#34;21-早期探索&#34;&gt;2.1 早期探索&lt;/h3&gt;
-&lt;p&gt;针对社区 Lua 扩展存在的性能差、不支持插件配置的问题， Rider 早期架构设计并实现了两个模块：&lt;/p&gt;
+&lt;p&gt;针对社区 Lua 扩展存在的性能差、不支持插件配置的问题，Rider 早期架构设计并实现了两个模块：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Rider Filter：Rider Filter 是 Envoy 的七层插件，用于初始化和调用 Lua 代码，并且将 Envoy 内部的数据和功能通过Lua CAPI 或 FFI 接口的形式提供给 Lua SDK 调用。注意这里 Rider 利用 FFI 实现了大部分接口， 理论上性能优于基于 CAPI 实现的社区 Lua 扩展；&lt;/li&gt;
+&lt;li&gt;Rider Filter：Rider Filter 是 Envoy 的七层插件，用于初始化和调用 Lua 代码，并且将 Envoy 内部的数据和功能通过 Lua CAPI 或 FFI 接口的形式提供给 Lua SDK 调用。注意这里 Rider 利用 FFI 实现了大部分接口，理论上性能优于基于 CAPI 实现的社区 Lua 扩展；&lt;/li&gt;
 &lt;li&gt;Lua SDK：Lua SDK 是一个 Lua 插件代码框架，用户可以通过调用 Lua SDK 提供的 API 实现请求处理。注意 Lua SDK 提供了获取全局以及路由级插件配置的 API，使得 Rider 的 Lua 扩展支持插件配置的获取，解决了社区 Lua 扩展的大难题。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;下图是整体的架构图：&lt;/p&gt;
@@ -636,13 +636,13 @@
 &lt;/p&gt;
 &lt;p&gt;尽管我们的早期架构基本满足了 Envoy 可扩展性的需求：支持多语言 Lua、支持 Lua 插件动态加载、支持 Lua 插件配置等。但是仍然存在以下几个问题：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Rider Filter 仍然存在部分接口没有使用 FFI ，性能可能略有不足；&lt;/li&gt;
+&lt;li&gt;Rider Filter 仍然存在部分接口没有使用 FFI，性能可能略有不足；&lt;/li&gt;
 &lt;li&gt;Lua SDK 需要进一步完善以支持更多的插件功能开发；&lt;/li&gt;
 &lt;li&gt;在解决第一个问题过程中发现的 Rider 巨大性能问题。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;针对这几个问题，我们进一步细化了 Rider 的架构，详细分析了 Rider 的性能，并衍生出了新的架构。&lt;/p&gt;
 &lt;h3 id=&#34;22-实践优化&#34;&gt;2.2 实践优化&lt;/h3&gt;
-&lt;p&gt;Rider 新架构要解决的第一个问题就是试图将 FFI 进行到底，根据之前的调研，Lua 调用 C 有两种方式，一种是通过原生的 CAPI，每次调用时都会分配一个栈空间(和 Stack Frame 不同，是向 Heap 申请的一块连续内存)，通过栈空间传递参数和返回值。另一种方式是通过 Luajit 提供的 FFI 调用。FFI 的好处是，可以直接在 Lua 中调用 C 函数，使用 C 数据结构，代码可以获得 Jit 优化的 Buff，性能较原生的 Lua 有比较大的提升。因此，我们想把 Rider 中使用 CAPI 实现的接口改造成 FFI。&lt;/p&gt;
+&lt;p&gt;Rider 新架构要解决的第一个问题就是试图将 FFI 进行到底，根据之前的调研，Lua 调用 C 有两种方式，一种是通过原生的 CAPI，每次调用时都会分配一个栈空间 (和 Stack Frame 不同，是向 Heap 申请的一块连续内存)，通过栈空间传递参数和返回值。另一种方式是通过 Luajit 提供的 FFI 调用。FFI 的好处是，可以直接在 Lua 中调用 C 函数，使用 C 数据结构，代码可以获得 Jit 优化的 Buff，性能较原生的 Lua 有比较大的提升。因此，我们想把 Rider 中使用 CAPI 实现的接口改造成 FFI。&lt;/p&gt;
 &lt;p&gt;改造的第一步便遇到了问题，早期的 Rider 架构貌似无法使用 FFI 实现 Envoy Body 相关接口的暴露，我们先看一下早期 Rider 不得不使用原生的 CAPI 暴露 Envoy Body 相关接口的原因。早期 Rider 的架构图中 Lua Code 有两个主要的函数：on_request 和 on_response，这两个函数是 Rider 架构规定的 Lua 代码中需要实现的函数，因为 Rider Filter 在执行 Lua Code 时，Rider Filter 只会尝试从 Lua 虚拟机中获取这两个函数，然后分别在 decodeHeaders 阶段和 encodeHeaders 阶段执行，那么如果在 on_request 或者 on_response 函数中有 Body 相关的接口调用，此时 Rider Filter 还没执行到 decodeData 或者 encodeData 阶段，Body 的数据还获取不到，只能将 Lua 协程先挂起，等到 Rider Filter 执行到 decodeData 或者 encodeData 阶段时再 Resume，而这种方式 FFI 实现不了，只能通过和 Lua 虚拟机交互的方式实现。&lt;/p&gt;
 &lt;p&gt;
 
@@ -674,7 +674,7 @@
 &lt;/p&gt;
 &lt;p&gt;基于上述问题，Rider 新架构在早期架构基础上进行了一些细化，如上图所示，整体架构的模块没有改变，改变的是 Rider 框架规定的 Lua 插件中需要实现的函数以及这些函数在 Rider Filter 中的执行时机。如上图所示，将原来 on_request 和 on_response 函数进一步拆分成 Header 和 Body 的阶段函数，并且在 Rider Filter 处理 Header 和 Body 阶段分别去调用，这样可以避免 Body 的处理需要挂起 Lua 协程（后来发现 WASM 的实现也是类似的细分）。因此新架构的请求处理流程如下：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Rider 插件配置(其中包含 Lua 插件配置)作为 LDS 和 RDS 的一部分，通过 Pilot 下发；&lt;/li&gt;
+&lt;li&gt;Rider 插件配置 (其中包含 Lua 插件配置) 作为 LDS 和 RDS 的一部分，通过 Pilot 下发；&lt;/li&gt;
 &lt;li&gt;Envoy 对每个 HTTP 请求构造一条七层 Filter Chain, 其中包含 Rider Filter。Rider Filter 初始化时，会将 Lua SDK 模块和相应的插件从文件系统加载到 Lua VM 中；&lt;/li&gt;
 &lt;li&gt;在请求处理阶段，Rider Filter 会在 Decode 和 Encode 阶段分别调用 Lua 代码的 on_request_header、on_request_body 和 on_response_header、on_response_body 方法；&lt;/li&gt;
 &lt;li&gt;在用户 Lua 代码执行过程中，通过 Lua SDK 调用 Rider Filter 封装的相应接口，如获取，修改请求、响应信息，调用外部服务等，打印日志等。&lt;/li&gt;
@@ -683,8 +683,8 @@
 &lt;p&gt;新架构设计的初衷是性能的提升，因此我们在新架构开发完第一时间便进行了性能测试，测试场景：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;环境：本地容器环境&lt;/li&gt;
-&lt;li&gt;后端：Nginx 4核&lt;/li&gt;
-&lt;li&gt;Envoy：4核&lt;/li&gt;
+&lt;li&gt;后端：Nginx 4 核&lt;/li&gt;
+&lt;li&gt;Envoy：4 核&lt;/li&gt;
 &lt;li&gt;Client：Wrk 4t 32c&lt;/li&gt;
 &lt;li&gt;Lua 插件：调用 100 次 get_body 接口&lt;/li&gt;
 &lt;/ul&gt;
@@ -693,7 +693,7 @@
 &lt;li&gt;CAPI：Rider 的 CAPI 实现，原始的 Lua 和 C 的交互方式，通过栈空间传递参数和返回值；&lt;/li&gt;
 &lt;li&gt;FFIOld：Rider 的早期 FFI 实现。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;测试结果如下图，经典负优化，而且负的很多（当然也是因为调用了 100 次的原因），FFIOld 相比 CAPI QPS 下降了 30%。 第一想法是不是代码写的有问题，新架构引入了很多开销？所以又测试了一下 Rider 之前基于 FFIOld 实现的 Header API，性能和基于 FFIOld 实现的 Body API 差不多，那说明 FFIOld 出问题了，早期的 Rider FFI 实现的 API 可能性能都还不如 CAPI ！&lt;/p&gt;
+&lt;p&gt;测试结果如下图，经典负优化，而且负的很多（当然也是因为调用了 100 次的原因），FFIOld 相比 CAPI QPS 下降了 30%。第一想法是不是代码写的有问题，新架构引入了很多开销？所以又测试了一下 Rider 之前基于 FFIOld 实现的 Header API，性能和基于 FFIOld 实现的 Body API 差不多，那说明 FFIOld 出问题了，早期的 Rider FFI 实现的 API 可能性能都还不如 CAPI！&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -809,7 +809,7 @@ verbo.start()
 &lt;li&gt;normal filter：调用 20 次 set_header，调用 10 次 get_header，最后再 remove 掉这 20 个 header；&lt;/li&gt;
 &lt;li&gt;complex filter：normal filter + 调用 30 次 get_body；&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;结果如下图所示，FFINew 的性能都优于 FFIOld 的性能，分别有 15% ， 22% ， 29% 的性能提升。&lt;/p&gt;
+&lt;p&gt;结果如下图所示，FFINew 的性能都优于 FFIOld 的性能，分别有 15% ，22% ，29% 的性能提升。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -876,7 +876,7 @@ verbo.start()
 &lt;/p&gt;
 &lt;p&gt;如上图所示，Rider 的性能优于社区的 WASM 和 Lua，大概有 10% 左右的性能提升，且相比于 Envoy 原生 C++ 插件性能也只有 10% 左右的下降。这里 WASM 的插件是用 C++ SDK 实现的，而根据我们的内部测试，WASM 其他语言 SDK 实现的插件性能会更差。另外，Rider 性能只比社区 Lua 提升了不到 10%，个人感觉是因为性能测试的插件在 Lua 和 C++ 之间的数据交互比较简单，基本都是简单字符串的传递，体现不出 FFI 的优势。&lt;/p&gt;
 &lt;h4 id=&#34;222-功能增强&#34;&gt;2.2.2 功能增强&lt;/h4&gt;
-&lt;p&gt;性能问题解决后，接下来就是功能的增强，也就是 Lua SDK 的丰富，这里总结了当前 Rider 支持的所有 Lua SDK ：&lt;/p&gt;
+&lt;p&gt;性能问题解决后，接下来就是功能的增强，也就是 Lua SDK 的丰富，这里总结了当前 Rider 支持的所有 Lua SDK：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;envoy.req.get_header(name)&lt;/li&gt;
 &lt;li&gt;envoy.req.get_header_size(name)&lt;/li&gt;
@@ -920,7 +920,7 @@ verbo.start()
 &lt;p&gt;未来我们会在稳定性、性能、功能等方面持续进行 Rider 的维护和优化：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;稳定性：目前 Rider 已经在网易内外部多个业务方大规模落地，后续我们也会进一步提升并保障 Rider 稳定性；&lt;/li&gt;
-&lt;li&gt;性能：尽管 Rider 的性能已经优于社区 Lua 和 WASM ，但后续我们会持续进行性能优化，进一步缩小和原生 C++ 扩展的性能差距；&lt;/li&gt;
+&lt;li&gt;性能：尽管 Rider 的性能已经优于社区 Lua 和 WASM，但后续我们会持续进行性能优化，进一步缩小和原生 C++ 扩展的性能差距；&lt;/li&gt;
 &lt;li&gt;功能：在 Rider API 方面和社区 Lua 以及 WASM 对齐，提供最全面的 API 能力。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;更多&#34;&gt;更多&lt;/h2&gt;
@@ -943,7 +943,7 @@ verbo.start()
 &lt;h2 id=&#34;前传和历史&#34;&gt;前传和历史&lt;/h2&gt;
 &lt;h3 id=&#34;前传&#34;&gt;前传&lt;/h3&gt;
 &lt;p&gt;除了一些小的弯路，我在技术行业二十年的职业生涯一直专注于底层系统：嵌入式系统，操作系统，虚拟化，文件系统，以及最近的分布式系统网络。我的分布式系统网络之旅始于 2010 年初在亚马逊，我有幸帮助开发了第一批高性能计算（HPC）EC2 实例类型。我学到了大量的底层高性能计算机网络知识，尽管我对分布式系统的概念接触有限。&lt;/p&gt;
-&lt;p&gt;2012 年，我加入了 Twitter，在经历了几次错误的开始后，我最终加入了边缘网络团队。这是我第一次真正接触到分布式系统应用网络概念。我领导了一个新的 HTTP 边缘代理的开发，称为 Twitter 流式聚合器（TSA），它在 2013 年首次推出，以扩大 Twitter 的 “firehose” API（流式所有推文）的交付。在 2014 年世界杯前夕，我们决定将 TSA 作为一个通用的 HTTP/HTTP2/TLS 边缘代理，在靠近巴西赛事的存在点（POPs）推出。这样做的主要原因是不可能在 POP 的少量主机托管机架上部署现有的基于 JVM 的资源匮乏的边缘代理。项目周期特别紧张，我的团队成功地完成了一届没有事故的世界杯。（我还清楚地记得有一段时间，当软件崩溃时，不管是什么时候，我都会给自己打上一页，修复错误，然后重新进行金丝雀部署，继续测试）。在 Twitter 工作期间，我还接触到了该公司通过 Finagle 库进行服务间网络通信的方式，并取得了巨大成功。&lt;/p&gt;
+&lt;p&gt;2012 年，我加入了 Twitter，在经历了几次错误的开始后，我最终加入了边缘网络团队。这是我第一次真正接触到分布式系统应用网络概念。我领导了一个新的 HTTP 边缘代理的开发，称为 Twitter 流式聚合器（TSA），它在 2013 年首次推出，以扩大 Twitter 的“firehose”API（流式所有推文）的交付。在 2014 年世界杯前夕，我们决定将 TSA 作为一个通用的 HTTP/HTTP2/TLS 边缘代理，在靠近巴西赛事的存在点（POPs）推出。这样做的主要原因是不可能在 POP 的少量主机托管机架上部署现有的基于 JVM 的资源匮乏的边缘代理。项目周期特别紧张，我的团队成功地完成了一届没有事故的世界杯。（我还清楚地记得有一段时间，当软件崩溃时，不管是什么时候，我都会给自己打上一页，修复错误，然后重新进行金丝雀部署，继续测试）。在 Twitter 工作期间，我还接触到了该公司通过 Finagle 库进行服务间网络通信的方式，并取得了巨大成功。&lt;/p&gt;
 &lt;p&gt;2015 年元旦前后，我在 Twitter 的日子里，因为我写的一个 bug，TSA 系统故障导致数百万 Twitter 的安卓用户被下线，这将是我在 Twitter 工作的尾声。&lt;/p&gt;
 &lt;p&gt;
 
@@ -973,26 +973,26 @@ verbo.start()
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h3 id=&#34;加入-lyft-和创建-lyft-代理&#34;&gt;加入 Lyft 和创建 “Lyft 代理”&lt;/h3&gt;
+&lt;h3 id=&#34;加入-lyft-和创建lyft-代理&#34;&gt;加入 Lyft 和创建“Lyft 代理”&lt;/h3&gt;
 &lt;p&gt;我在 2015 年春天离开了 Twitter，部分原因是下线事件的影响，部分原因是对没有得到晋升的挫败感，部分原因是想尝试新的东西。我跟着我的老板从 Twitter 到了 Lyft，还有我在 Twitter 的其他同事。&lt;/p&gt;
-&lt;p&gt;当我加入 Lyft 时，公司规模相对较小（少于 100 名工程师），并且正在努力从单体架构迁移到微服务架构。我已经&lt;a href=&#34;https://mattklein123.dev/appearances/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多次&lt;/a&gt;谈到了 Envoy 的这部分历程，所以我不会再重述，在此简短的总结下，Lyft 遇到了所有典型的微服务迁移问题，主要是源于网络和可观察性。此外，Lyft 已经是 “多面手”（使用多种语言和框架），所以使用基于库的解决方案来解决这些问题似乎不切实际。因此，根据我以前建立 TSA 的经验和观察服务间通信在 Twitter 的工作方式，由于得到在 Lyft 的前 Twitter 同事们的信任，我提议建立一个新的应用网络系统，称为 “Lyft 代理”。&lt;/p&gt;
+&lt;p&gt;当我加入 Lyft 时，公司规模相对较小（少于 100 名工程师），并且正在努力从单体架构迁移到微服务架构。我已经&lt;a href=&#34;https://mattklein123.dev/appearances/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;多次&lt;/a&gt;谈到了 Envoy 的这部分历程，所以我不会再重述，在此简短的总结下，Lyft 遇到了所有典型的微服务迁移问题，主要是源于网络和可观察性。此外，Lyft 已经是“多面手”（使用多种语言和框架），所以使用基于库的解决方案来解决这些问题似乎不切实际。因此，根据我以前建立 TSA 的经验和观察服务间通信在 Twitter 的工作方式，由于得到在 Lyft 的前 Twitter 同事们的信任，我提议建立一个新的应用网络系统，称为“Lyft 代理”。&lt;/p&gt;
 &lt;p&gt;经过一些激烈的讨论，包括新的代理是否应该用 Python 构建（是的，真的），我们就项目的大致轮廓达成一致，并决定使用 C++ 作为实现语言。在当时，C++ 似乎是唯一合理的选择。今天我还会选择 C++ 吗？然而，如今已经不是 2015 年初了。&lt;/p&gt;
-&lt;p&gt;如果不说 “Envoy&amp;quot; 这个名字的由来，这部分的历史就不完整了。我们正在为这个项目建立最初的开发脚手架的时候，一个有远见的同事（Ryan Lane）说，我们不能把这个新项目叫做 “Lyft 代理”，我们必须选择一个更好的名字。我总是很实际，就去找辞典，查了一下 “代理”，然后决定用 Envoy 作为新名字。&lt;/p&gt;
+&lt;p&gt;如果不说“Envoy&amp;quot; 这个名字的由来，这部分的历史就不完整了。我们正在为这个项目建立最初的开发脚手架的时候，一个有远见的同事（Ryan Lane）说，我们不能把这个新项目叫做“Lyft 代理”，我们必须选择一个更好的名字。我总是很实际，就去找辞典，查了一下“代理”，然后决定用 Envoy 作为新名字。&lt;/p&gt;
 &lt;h3 id=&#34;在-lyft-上线&#34;&gt;在 Lyft 上线&lt;/h3&gt;
 &lt;p&gt;直到 2015 年夏天，我才开始认真地研究 Envoy 的源代码。那几个月是我职业生涯中最有趣的几个月。我们应该珍惜这段初创时期，因为它不会持续很久。我花了很长时间，争取在合理的时间内（根据我的定义，这种类型的项目需要 3-4 个月的时间）做出能给 Lyft 带来价值的东西。俗话说，Lyft 给了我大量的绳子来吊死自己，而我致力于确保这种吊死不会发生。&lt;/p&gt;
 &lt;p&gt;当然，我的效率主要归功于刚从压缩的开发时间表和许多错误（主要是我自己的）中走出来，在 Twitter 的 TSA。我知道哪些错误是不能犯的，哪些抽象是需要的，哪些测试有效，哪些无效，等等。&lt;/p&gt;
 &lt;p&gt;2015 年秋天准备投入生产的 Envoy 的最初版本只包含了该项目今天所包含的功能和复杂性的一小部分。它不支持 TLS，只支持 HTTP/1，并且有极其简单的路由和弹性功能。它所拥有的是你今天所看到的东西的骨架。在这个项目的历史上，很少有重大的重构，主要是因为，正如我之前所说的，我知道将要发生什么，以及为了支持这些功能，需要有哪些抽象。Envoy 从一开始就拥有一流的可观察性输出，以指标和日志的形式。在 2021 年，这种类型的网络可观察性是桌面上的赌注（这在很大程度上要归功于 Envoy 的成功），但在当时却不是这样。&lt;/p&gt;
 &lt;p&gt;Envoy 最初是作为边缘代理在 Lyft 上线的，位于提供 TLS 终止的 AWS ELB 后面。到 2015 年秋末，Envoy 为 Lyft 的 100% 流量提供服务，该系统产生的边缘仪表盘立即得到了回报（例如，提供 API 调用百分点延迟直方图，每个终端的成功率和请求率等）。&lt;/p&gt;
 &lt;p&gt;在最初推出后不久，另一位 Twitter 同事（Bill Gallagher）加入了我的项目，我们迅速增加了一些功能，如 TLS 终止、HTTP/2 支持、更多路由和负载平衡功能等。&lt;/p&gt;
-&lt;p&gt;与此同时，Lyft 基于 Envoy 的 “服务网格 &amp;quot; 也开始成形了。首先，Envoy 被部署在 PHP 单片机旁边，以取代 HAProxy 及其一些固有的运维问题（例如，当时 HAProxy 仍然是单线程的），以帮助 MongoDB 的代理。可以毫不夸张地说，Envoy 的早期开发有很大一部分是针对 MongoDB 的稳定性（负载均衡、速率限制、可观察性等）。&lt;/p&gt;
+&lt;p&gt;与此同时，Lyft 基于 Envoy 的“服务网格 &amp;quot; 也开始成形了。首先，Envoy 被部署在 PHP 单片机旁边，以取代 HAProxy 及其一些固有的运维问题（例如，当时 HAProxy 仍然是单线程的），以帮助 MongoDB 的代理。可以毫不夸张地说，Envoy 的早期开发有很大一部分是针对 MongoDB 的稳定性（负载均衡、速率限制、可观察性等）。&lt;/p&gt;
 &lt;p&gt;基于 Envoy 的边缘机群和单体之间的直接观察能力的好处是非常明显的。不久之后，我们在一些高 RPS 分解的微服务旁边部署了 Envoy，以帮助排除网络问题。这方面的价值也得到了证明。随着时间的推移，我们超越了对可观察性的关注，增加了帮助系统可靠性的功能，如直接连接和服务发现（跳过内部 ELB）、异常值检测、健康检查、重试、断路等。Lyft 的基于负载的重大事件的数量从每 1-2 周一次慢慢减少。当然，Envoy 不能将所有此类事件的减少归功于此，但它提供的网络抽象确实有很大的帮助。&lt;/p&gt;
-&lt;p&gt;2016 年初，我们决定推动一个 100% 覆盖的服务网格。最初，我们认为这将是一个艰难的过程，需要自上而下的授权。在实践中，&lt;strong&gt;团队报名参加了迁移，因为他们将得到的好处是显而易见的&lt;/strong&gt;。“胡萝卜 &amp;ldquo;式的迁移几乎总是成功的。而 “大棒&amp;rdquo; 式的迁移则很少成功，或者即使成功了，也会在组织内留下眼泪和愤怒。&lt;/p&gt;
+&lt;p&gt;2016 年初，我们决定推动一个 100% 覆盖的服务网格。最初，我们认为这将是一个艰难的过程，需要自上而下的授权。在实践中，&lt;strong&gt;团队报名参加了迁移，因为他们将得到的好处是显而易见的&lt;/strong&gt;。“胡萝卜 &amp;ldquo;式的迁移几乎总是成功的。而“大棒&amp;rdquo; 式的迁移则很少成功，或者即使成功了，也会在组织内留下眼泪和愤怒。&lt;/p&gt;
 &lt;p&gt;到 2016 年中期，Envoy 被用于 Lyft 的所有网络通信，包括边缘服务、服务间通信、数据库、外部合作伙伴等。无论从哪个角度来看，该项目都取得了巨大的成功，帮助 Lyft 完成了微服务的迁移，提高了整体的可靠性，并对网络进行了抽象，使大多数工程师不需要了解真实的系统拓扑结构。此后，Bill 离开了这个项目，在 Lyft 从事其他工作，接替他的是 Roman Dzhabarov 和 Constance Caramanolis 加入我的团队。我们的小团队为整个 Lyft 开发和运维 Envoy。&lt;/p&gt;
 &lt;h3 id=&#34;开放源码&#34;&gt;开放源码&lt;/h3&gt;
 &lt;p&gt;到 2016 年夏天，我们开始认真讨论开源 Envoy 的问题。早期的 Lyft 员工对开源和它为公司所做的事情很欣赏。很明显，Envoy 并不是 Lyft 的主要业务，那么为什么不把它放在那里并给予回报呢？我可以坦率地说，我们都带着不同的目标和期望来对待开放源代码的过程，以及对项目获得巨大成功后会发生什么感到非常天真。&lt;/p&gt;
 &lt;p&gt;在加入 Envoy 之前，我已经使用了相当多的开源软件，但我几乎没有开源贡献的经验，也没有维护者的经验。（虽然我在 Linux 内核中有过&lt;a href=&#34;https://github.com/torvalds/linux/commit/00370b8f8dd6e3171b8202f9c5187a5f73e99497&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一次提交&lt;/a&gt;！）开源 Envoy 似乎是一个很好的机会，可以扩展我的技能组合，学习新的东西，可能会促进我的职业生涯，坦率地说，我不希望有一个 TSA v3 在第三家公司出现。对于 Lyft 来说，Envoy 是一个重要的工程项目，领导层认为，开放源代码将使 Lyft 作为一个工程组织具有可信度，并有助于招聘工作。正如我之前所说，我们所有人都对创建成功的开源，更重要的是在它获得成功的情况下培育它所需要的东西感到天真。&lt;/p&gt;
 &lt;p&gt;但是，我们决定给它一个机会。我们在 2016 年夏天花了很大一部分时间来编写文档（Jose Nino 在这个时候加入了团队，他的第一个任务就是阅读并帮助改进所有的文档），清理存储库，使其 &amp;quot; 不那么尴尬”，制作网站，发布博文等等。我真的很感谢这段时间里我在 Lyft 的同事，他们不仅支持我们，还帮助我们完成了无数的任务，包括网站设计、logo 等等。即使在这个早期阶段，我们也觉得第一印象很重要，如果我们要在开源领域有所作为，就必须通过高质量的文档、网站等给人留下良好的第一印象。&lt;/p&gt;
-&lt;p&gt;在此期间，我们还利用我们的行业关系，与 Lyft 的一些 “同行公司”（湾区的 “独角兽 &amp;quot; 互联网创业公司）会面，向他们展示我们在 Envoy 方面所做的工作，并获得他们的反馈，我们认为如果我们在正式开源前成功获得一个启动合作伙伴，这将是对项目的一个重大帮助。所有这些会议都非常友好，总的来说，所有与我们会面的公司都对我们所取得的成就印象深刻。但是，事后看来，他们都表示，以他们的小型基础设施团队，不可能马上采用 Envoy。他们祝愿我们在开放源代码方面取得最好的成绩，并说他们以后会回来看看。我们不禁对这些会议的结果感到沮丧，但我们还是向前推进了。&lt;/p&gt;
+&lt;p&gt;在此期间，我们还利用我们的行业关系，与 Lyft 的一些“同行公司”（湾区的“独角兽 &amp;quot; 互联网创业公司）会面，向他们展示我们在 Envoy 方面所做的工作，并获得他们的反馈，我们认为如果我们在正式开源前成功获得一个启动合作伙伴，这将是对项目的一个重大帮助。所有这些会议都非常友好，总的来说，所有与我们会面的公司都对我们所取得的成就印象深刻。但是，事后看来，他们都表示，以他们的小型基础设施团队，不可能马上采用 Envoy。他们祝愿我们在开放源代码方面取得最好的成绩，并说他们以后会回来看看。我们不禁对这些会议的结果感到沮丧，但我们还是向前推进了。&lt;/p&gt;
 &lt;p&gt;2015 年 8 月，我与谷歌进行了第一次友好的会面。一个 Lyft 的同事（Chris Burnett）在一个 gRPC 聚会上发言，提到了 Envoy，因为它与 Envoy 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_protocols/grpc#grpc-bridging&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC 桥接&lt;/a&gt;支持有关。我不知道的是，谷歌在发现 Envoy 的时候，正准备在 NGINX 的基础上推出 Istio。一次会议引出了另一次会议，然后是更多的会议，在 Envoy 开源之前，大量的谷歌员工已经看到了源代码和文档。(稍后会有更多关于这方面的内容）。&lt;/p&gt;
 &lt;p&gt;到 9 月初，我们已经准备好了，并将开源日定为 9 月 14 日。总的来说，我是一个（过度？）自信的人，但在我的生活中，有几次我对自己成功的能力有很大的焦虑。我立即想到的是：开始上高中，开始上大学，以及大学毕业后在微软工作。而开源的 Envoy 就是其中之一。我记得我被公众的反应吓坏了。人们会怎么说？反馈会是积极的还是恶毒的？虽然我们在开源时是一个小团队，但我仍然写了 90% 或更多的代码，并且觉得把它放到公共领域是对我自己和我的能力的一种反映。&lt;/p&gt;
 &lt;p&gt;如期而至，&lt;a href=&#34;https://eng.lyft.com/announcing-envoy-c-l7-proxy-and-communication-bus-92520b6c8191&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 在 2016 年 9 月 14 日 &lt;a href=&#34;https://eng.lyft.com/announcing-envoy-c-l7-proxy-and-communication-bus-92520b6c8191&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;成为开源产品&lt;/a&gt;。我记得我和妻子一起庆祝，并说了一些话。“如果我们能让其他公司像 Lyft 一样使用 Envoy，我就会很高兴。”&lt;/p&gt;
@@ -1003,7 +1003,7 @@ verbo.start()
 &lt;p&gt;我将永远记得与谷歌互动的那段时间是我职业生涯中最紧张的时期之一。说实话，那感觉就像一个收购（审讯）过程。我记得长长的会议和电子邮件线程，以证明我们的技术决定，“面试 &amp;ldquo;中，谷歌试图确定我们是否会成为一个好的开源项目合作伙伴，等等。当时我们很痛苦地发现，这次&amp;rdquo; 收购 &amp;quot; 将使 Envoy 进入一个我们自己永远无法实现的轨道，所以我们尽一切努力使它获得成功，最终也获得了成功。而且，在过去 4 年多的时间里，我们与谷歌的合作确实是一种杰出的伙伴关系。早期的谷歌云工程师最终成为维护者，Harvey Tuch 和 Alyssa Wilk，为项目带来了大量的人才，包括技术上的，以及对开源和社区的支持。我对他们的感激之情溢于言表，没有他们，项目就不会有今天的成就。多年来为该项目做出贡献的其他谷歌工程师（现在有很多），除了普遍是优秀的社区管理者之外，还为该项目增加了大量的工程力量，否则该项目就不会有。我当然对最初的谷歌合作关系有顾虑（技术和理念上的分歧，等等），但我可以诚实地说，这些顾虑都没有成为现实。&lt;/p&gt;
 &lt;p&gt;除了确保 Istio 和 GCP 团队与谷歌合作的成功之外，我们还花了大量时间与其他公司和维护者合作并加入他们，其中许多人对项目产生了巨大的影响，至今仍作为维护者、贡献者或用户大量参与。如果没有这些早期的社区成员，这个项目就不会有今天，我也非常感谢他们对项目的信任。&lt;/p&gt;
 &lt;p&gt;同时，随着项目的不断深入，我开始收到大量投资者对 Envoy 的兴趣。有强烈的愿望让我离开 Lyft，围绕这个项目开一家公司。我&lt;a href=&#34;https://medium.com/@mattklein123/optimizing-impact-why-i-will-not-start-an-envoy-platform-company-8904286658cb&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;写过这部分的旅程&lt;/a&gt;，所以我不会在这里重述，留在 Lyft 我会有大量的时间和精力来处理所有这些互动。正如链接的文章所描述的，我最终决定留在 Lyft，不开公司，以支持 Envoy 的持续成功。&lt;/p&gt;
-&lt;p&gt;与此同时，我仍然在 Lyft 工作，正如我将在后面进一步讨论的那样，我越来越多地从事两份工作。我的第一份工作是在内部领导网络团队，并在运营上支持 Lyft 的 Envoy。我的第二份工作是作为 Envoy 的公众形象，包括 OSS 领导，代码审查，修复错误，编写可以促进项目的功能，在会议上发言，帮助其他公司采用和部署 Envoy，等等。我开始变得过于分散，并出现了倦怠的迹象。然而，到了 2017 年年中，不可否认的事实是，Envoy 的发展轨迹是大大的 “向上和向右”。各大公司、“同行公司”、垂直产品和服务等的采用率继续攀升。&lt;/p&gt;
+&lt;p&gt;与此同时，我仍然在 Lyft 工作，正如我将在后面进一步讨论的那样，我越来越多地从事两份工作。我的第一份工作是在内部领导网络团队，并在运营上支持 Lyft 的 Envoy。我的第二份工作是作为 Envoy 的公众形象，包括 OSS 领导，代码审查，修复错误，编写可以促进项目的功能，在会议上发言，帮助其他公司采用和部署 Envoy，等等。我开始变得过于分散，并出现了倦怠的迹象。然而，到了 2017 年年中，不可否认的事实是，Envoy 的发展轨迹是大大的“向上和向右”。各大公司、“同行公司”、垂直产品和服务等的采用率继续攀升。&lt;/p&gt;
 &lt;h3 id=&#34;捐赠给-cncf-且感到倦怠&#34;&gt;捐赠给 CNCF 且感到倦怠&lt;/h3&gt;
 &lt;p&gt;到 2017 年秋天，有两件事是清楚的。&lt;/p&gt;
 &lt;ol&gt;
@@ -1017,9 +1017,9 @@ verbo.start()
 &lt;p&gt;我的第一个孩子在 2018 年 2 月出生，Lyft 极其慷慨的陪产假政策为我提供了休息和放空自己的时间。我从 Lyft 获得了一些空间，并开始更深入地思考我想要什么以及什么对我来说是可持续的。&lt;/p&gt;
 &lt;p&gt;当我休完陪产假回来后，我与 Lyft 领导层明确表示，我不能再参与 Lyft 的 Envoy 的 &amp;ldquo;日常&amp;rdquo; 运维。相反，由于 2017 年底的一些后果，基础设施团队也希望与我分开一些。由于这个原因，&lt;strong&gt;我大幅后退，实际上完全停止了在 Lyft 的基础设施工作&lt;/strong&gt;，在 2018 年年中至年末的 Lyft Bikes 和 Scooters 初始版本中编写固件网络代码。这是一个了不起的团队努力，在压缩的时间范围内得到了一些东西，我真的很喜欢在几个月内做一些完全不同的事情。&lt;/p&gt;
 &lt;p&gt;2018 年也是我积极开始琢磨在 Envoy OSS 社区中 &amp;ldquo;取代自己&amp;rdquo; 的那一年。我花了大量的时间（并将继续花大量的时间）来培养维护者、新的贡献者，组织第一次专门的 EnvoyCon，等等。任何领导者都应该有一个目标，那就是确保该组织在有一天该领导者退位时能够继续良好地运作。&lt;/p&gt;
-&lt;p&gt;到 2018 年底，我的主要职业倦怠风险已经得到解决，我又开始了合理的工作时间，并花了很多时间与我的妻子和儿子在一起，我的时间大致在 Envoy OSS 工作和 Lyft 的一般基础设施领导之间各占一半。明确地说，Envoy 的成功带来的特权使我能够在 Lyft 的工作生活中取得这种平衡。随着时间的推移，随着我的行业地位的提高，我的影响力也在同步增加，这使得我更容易按照自己的意愿设定就业条款。没有多少人有这样的运气，我明白我是多么幸运，能够 “突破 “倦怠墙的另一边而不必离开我的工作。&lt;/p&gt;
+&lt;p&gt;到 2018 年底，我的主要职业倦怠风险已经得到解决，我又开始了合理的工作时间，并花了很多时间与我的妻子和儿子在一起，我的时间大致在 Envoy OSS 工作和 Lyft 的一般基础设施领导之间各占一半。明确地说，Envoy 的成功带来的特权使我能够在 Lyft 的工作生活中取得这种平衡。随着时间的推移，随着我的行业地位的提高，我的影响力也在同步增加，这使得我更容易按照自己的意愿设定就业条款。没有多少人有这样的运气，我明白我是多么幸运，能够“突破“倦怠墙的另一边而不必离开我的工作。&lt;/p&gt;
 &lt;h3 id=&#34;envoy-长大了&#34;&gt;Envoy 长大了&lt;/h3&gt;
-&lt;p&gt;自 2019 年以来，因为新冠疫情，我在 Lyft 的基础设施领导和 OSS 领导之间继续保持着我上面描述的五五开的比例。当然也有单调和渴望不同的时候（从历史上看，我是一个习惯性换工作的人，6.5 年是迄今为止我在一件事情上工作的最长时间），但总的来说，我很高兴看到 Envoy 从一个 “新秀 &amp;quot; 变成更多的 “少年”。我不再专注于做我所能想到的一切，使 Envoy 获得巨大的成功，因为坦率地说，Envoy 是一个巨大的成功，已经席卷了市场，并改变了用户对应用负载均衡工具的期望。相反，我更关注项目的可持续性。我们是在做长期的工作，这些天我觉得自己更像一个 CEO，看减员人数、优先级、预算编制、安全问题等等。这并不是说这不是有用的工作；它显然是有用的，它只是与早期的工作不同，早期的工作技术性更强，节奏更快。&lt;/p&gt;
+&lt;p&gt;自 2019 年以来，因为新冠疫情，我在 Lyft 的基础设施领导和 OSS 领导之间继续保持着我上面描述的五五开的比例。当然也有单调和渴望不同的时候（从历史上看，我是一个习惯性换工作的人，6.5 年是迄今为止我在一件事情上工作的最长时间），但总的来说，我很高兴看到 Envoy 从一个“新秀 &amp;quot; 变成更多的“少年”。我不再专注于做我所能想到的一切，使 Envoy 获得巨大的成功，因为坦率地说，Envoy 是一个巨大的成功，已经席卷了市场，并改变了用户对应用负载均衡工具的期望。相反，我更关注项目的可持续性。我们是在做长期的工作，这些天我觉得自己更像一个 CEO，看减员人数、优先级、预算编制、安全问题等等。这并不是说这不是有用的工作；它显然是有用的，它只是与早期的工作不同，早期的工作技术性更强，节奏更快。&lt;/p&gt;
 &lt;p&gt;截止到 2021 年末，我对 Envoy 最引以为豪的事情是，在我看来，这个社区已经可以自我维持了。我们有一群令人难以置信的维护者、贡献者和用户，他们对项目的成功充满热情，并在使 Envoy 成为今天的样子中发挥了作用。这确实是一个团队的努力。&lt;/p&gt;
 &lt;h2 id=&#34;经验教训&#34;&gt;经验教训&lt;/h2&gt;
 &lt;p&gt;过去的 5 年是一个史诗般的旅程。虽然我觉得我在技术上学到的东西相对较少，但我在领导力、社区建设和所有其他非技术性的东西方面都得到了成长和学习，这些都是建立一个成功的企业，无论是企业还是一个主要的开源成功故事。以下是我对一些主要学习内容的简短总结。&lt;/p&gt;
@@ -1038,14 +1038,14 @@ verbo.start()
 &lt;/ul&gt;
 &lt;p&gt;直观地说，我知道这一点，在最初为 Envoy 进行开源努力时，我积极地追求上述所有的领域，努力使项目从开始发展到今天的规模。上述列表中的每一项都很关键，如果没有所有这些，一个项目是不可能成功的，尤其是在技术领域有很多资金雄厚的公司竞争对手的情况下。&lt;/p&gt;
 &lt;p&gt;我强烈鼓励那些考虑进行大规模开源工作的人提前在上述领域进行投资，以便在第一天就给人留下最佳印象。此外，新的开源项目应该准备在项目成长并开始看到采用时，在上述领域进行更多的投资。&lt;/p&gt;
-&lt;p&gt;毫不奇怪，这些天我在 Envoy 上做的编码工作相对较少。我在项目上的时间主要是管理项目的所有非技术方面（上述列表中的所有内容，甚至更多！），并确保事情按计划进行。我所做的大多数编码项目都是 “清洁 &amp;quot; 的幕后项目，对项目有好处，但没有什么乐趣，也不可能激励其他贡献者（当然，我对他们每天的工作没有发言权，我有动力让他们尽可能的开心，这样他们就不会离开）。&lt;/p&gt;
+&lt;p&gt;毫不奇怪，这些天我在 Envoy 上做的编码工作相对较少。我在项目上的时间主要是管理项目的所有非技术方面（上述列表中的所有内容，甚至更多！），并确保事情按计划进行。我所做的大多数编码项目都是“清洁 &amp;quot; 的幕后项目，对项目有好处，但没有什么乐趣，也不可能激励其他贡献者（当然，我对他们每天的工作没有发言权，我有动力让他们尽可能的开心，这样他们就不会离开）。&lt;/p&gt;
 &lt;h3 id=&#34;终端用户驱动的开源软件是一种结构性优势&#34;&gt;终端用户驱动的开源软件是一种结构性优势&lt;/h3&gt;
-&lt;p&gt;这些天来，很多 “大的开源软件”，特别是在基础设施领域，是由大公司和风险投资支持的初创公司资助的。我不会绕到关于开源软件的困难经济的讨论，因为我&lt;a href=&#34;https://medium.com/@mattklein123/the-broken-economics-of-oss-5a1b31fc0182&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;已经写过了&lt;/a&gt;。我想说的是，&lt;strong&gt;我坚信终端用户的开源软件比企业和风险投资支持的开源软件有很大的优势&lt;/strong&gt;：最初的客户几乎肯定会从软件中获得价值，否则软件就不会得到资助。这种与客户一起建立东西的良性循环是非常强大的。它几乎普遍导致了更好的结果：软件更可靠、更专注、功能更少。有很多由最终用户驱动的开源软件的例子，然后取得了巨大的商业成功。鉴于坚实的基础和内在的产品市场适应性，这对我来说并不奇怪。我希望看到比今天更多的最终用户驱动的开源软件，尽管我认识到经济上是困难的。对于那些有机会的人来说，请向这种类型的软件所具有的结构性优势靠拢！&lt;/p&gt;
+&lt;p&gt;这些天来，很多“大的开源软件”，特别是在基础设施领域，是由大公司和风险投资支持的初创公司资助的。我不会绕到关于开源软件的困难经济的讨论，因为我&lt;a href=&#34;https://medium.com/@mattklein123/the-broken-economics-of-oss-5a1b31fc0182&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;已经写过了&lt;/a&gt;。我想说的是，&lt;strong&gt;我坚信终端用户的开源软件比企业和风险投资支持的开源软件有很大的优势&lt;/strong&gt;：最初的客户几乎肯定会从软件中获得价值，否则软件就不会得到资助。这种与客户一起建立东西的良性循环是非常强大的。它几乎普遍导致了更好的结果：软件更可靠、更专注、功能更少。有很多由最终用户驱动的开源软件的例子，然后取得了巨大的商业成功。鉴于坚实的基础和内在的产品市场适应性，这对我来说并不奇怪。我希望看到比今天更多的最终用户驱动的开源软件，尽管我认识到经济上是困难的。对于那些有机会的人来说，请向这种类型的软件所具有的结构性优势靠拢！&lt;/p&gt;
 &lt;h3 id=&#34;不要跟风要跟随客户&#34;&gt;不要跟风，要跟随客户&lt;/h3&gt;
-&lt;p&gt;这也许是 &amp;ldquo;成功的开源软件就像创业&amp;rdquo; 和 &amp;ldquo;最终用户驱动的开源软件是一种结构性优势&amp;rdquo; 的必然结果，但我无法强调坚持不懈地关注客户的实际需求而不是炒作周期所认为的客户需求是多么关键。例如，&lt;strong&gt;多年来，人们一直在嘲笑 Envoy 是用 C++ 编写的，这引起了无数的笑话&lt;/strong&gt;。我喜欢 C++ 吗？不，不是很喜欢。它是否在 2015 年完成了工作，并吸引了最初的一批主要用户？肯定是的。这是一个关注客户和市场的例子，而不是屈服于没有实际 “商业 &amp;quot; 影响的炒作。如果一个人把开源软件当做一个企业，就会立刻明白，&lt;strong&gt;以客户和市场为中心是取得巨大成功的唯一途径&lt;/strong&gt;。在 Envoy，我花了大量的时间为终端用户争论，以确保我们建立的东西能让所有人受益，而不仅仅是一小部分小众用户。&lt;/p&gt;
+&lt;p&gt;这也许是 &amp;ldquo;成功的开源软件就像创业&amp;rdquo; 和 &amp;ldquo;最终用户驱动的开源软件是一种结构性优势&amp;rdquo; 的必然结果，但我无法强调坚持不懈地关注客户的实际需求而不是炒作周期所认为的客户需求是多么关键。例如，&lt;strong&gt;多年来，人们一直在嘲笑 Envoy 是用 C++ 编写的，这引起了无数的笑话&lt;/strong&gt;。我喜欢 C++ 吗？不，不是很喜欢。它是否在 2015 年完成了工作，并吸引了最初的一批主要用户？肯定是的。这是一个关注客户和市场的例子，而不是屈服于没有实际“商业 &amp;quot; 影响的炒作。如果一个人把开源软件当做一个企业，就会立刻明白，&lt;strong&gt;以客户和市场为中心是取得巨大成功的唯一途径&lt;/strong&gt;。在 Envoy，我花了大量的时间为终端用户争论，以确保我们建立的东西能让所有人受益，而不仅仅是一小部分小众用户。&lt;/p&gt;
 &lt;h3 id=&#34;可扩展性是至关重要的&#34;&gt;可扩展性是至关重要的&lt;/h3&gt;
-&lt;p&gt;跟着客户走往往会导致客户的要求不能很好地融入项目的架构中。从开源软件的角度来看，失去对项目主要目标的关注会导致功能蔓延、软件无法维护和维护人员负担过重。同时，说 “不 &amp;quot; 也是失去潜在用户的一个保证。&lt;/p&gt;
-&lt;p&gt;对于 Envoy，我想确保我们至少可以说 “是的，但是……&amp;quot;，即提供一个强大的可扩展性模型，让用户可以满足他们的需求，而不需要将每一个改动和功能都推到上游。这种策略已经多次得到回报，它减轻了维护者的负担，让用户能够解决他们自己的问题，更重要的是，将 Envoy 推向了我在最初设计该软件时从未想象过的用例。&lt;/p&gt;
+&lt;p&gt;跟着客户走往往会导致客户的要求不能很好地融入项目的架构中。从开源软件的角度来看，失去对项目主要目标的关注会导致功能蔓延、软件无法维护和维护人员负担过重。同时，说“不 &amp;quot; 也是失去潜在用户的一个保证。&lt;/p&gt;
+&lt;p&gt;对于 Envoy，我想确保我们至少可以说“是的，但是……&amp;quot;，即提供一个强大的可扩展性模型，让用户可以满足他们的需求，而不需要将每一个改动和功能都推到上游。这种策略已经多次得到回报，它减轻了维护者的负担，让用户能够解决他们自己的问题，更重要的是，将 Envoy 推向了我在最初设计该软件时从未想象过的用例。&lt;/p&gt;
 &lt;p&gt;可扩展性，特别是对于开源软件的构建模块，是至关重要的。&lt;/p&gt;
 &lt;h3 id=&#34;质量问题&#34;&gt;质量问题&lt;/h3&gt;
 &lt;p&gt;跟随客户的另一个推论是，质量确实很重要。用户希望软件易于操作，相对来说没有错误，关心安全，等等。曾几何时很多人会觉得因为开源软件是 &amp;quot; 免费的”，所以质量就得不到保证。这在理论上也许是正确的，但实际上，在一个项目对软件质量认真对待之前，用户不会大量地聚集在一个软件上。因为获得用户是一个飞轮，可以获得更多的用户（特别是当从早期采用者转向晚期采用者时），所以确保为整个软件质量编列时间预算就更加关键了。&lt;/p&gt;
@@ -1061,7 +1061,7 @@ verbo.start()
 &lt;p&gt;任何成功的开源项目都会看到大量的商业 / 投资人的兴趣。如果一个项目的目标是保持一个充满活力的社区，同时又能取得商业上的成功（我认为这对整个项目的成功是必要的，因为钱必须来自某处），&lt;strong&gt;那么预先考虑如何将核心层和商业层分开是极其重要的&lt;/strong&gt;。这样做的实用性和策略会因项目和技术的不同而不同，但我相信专注于强大的 API / 扩展性的分割是一个富有成效的策略。&lt;/p&gt;
 &lt;h3 id=&#34;基金会是很棘手的&#34;&gt;基金会是很棘手的&lt;/h3&gt;
 &lt;p&gt;在现代的开源讨论中，有很多关于基金会的作用的讨论。我不打算对这一话题做大量的评论，&lt;strong&gt;但我的主要建议是不要被基金会和它们可能提供的理论利益所干扰&lt;/strong&gt;。相反，要积极地关注产品的市场适应性，生产高质量的软件，并为用户提供价值。如果这些事情得以实现，其余的事情就会自然而然地发生。&lt;/p&gt;
-&lt;p&gt;对于非常成功的项目来说，基金会，更确切地说，中立的商标持有地，是非常有用的，所以我肯定会在那个时候考虑加入一个。随着项目的成熟，Envoy 从成为 CNCF 的一部分所获得的价值也在不断增加。CNCF 雇佣了开源软件律师、营销人员、公共关系人员、一流的活动人员等等。这些额外的资源在 “经营业务 &amp;quot; 方面是非常宝贵的。&lt;/p&gt;
+&lt;p&gt;对于非常成功的项目来说，基金会，更确切地说，中立的商标持有地，是非常有用的，所以我肯定会在那个时候考虑加入一个。随着项目的成熟，Envoy 从成为 CNCF 的一部分所获得的价值也在不断增加。CNCF 雇佣了开源软件律师、营销人员、公共关系人员、一流的活动人员等等。这些额外的资源在“经营业务 &amp;quot; 方面是非常宝贵的。&lt;/p&gt;
 &lt;h3 id=&#34;提前考虑治理问题&#34;&gt;提前考虑治理问题&lt;/h3&gt;
 &lt;p&gt;
 
@@ -1090,7 +1090,7 @@ verbo.start()
                height=&#34;438&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
-开源治理是&lt;strong&gt;非常&lt;/strong&gt;困难的。就其本质而言，开放源代码是无政府的，没有明确的领导结构。没有一个适合所有项目的治理方法，每个项目都必须找到自己的前进方向，可以通过 “BDFL”/CEO 类型的模式、指导委员会、类似 Apache PMC 的程序等。所有的治理模式都有优点和缺点，并且有不同的失败模式。&lt;/p&gt;
+开源治理是&lt;strong&gt;非常&lt;/strong&gt;困难的。就其本质而言，开放源代码是无政府的，没有明确的领导结构。没有一个适合所有项目的治理方法，每个项目都必须找到自己的前进方向，可以通过“BDFL”/CEO 类型的模式、指导委员会、类似 Apache PMC 的程序等。所有的治理模式都有优点和缺点，并且有不同的失败模式。&lt;/p&gt;
 &lt;p&gt;最重要的是，在项目变得庞大和成功之前，先认真思考治理问题。写下一套规则和规范，特别是花时间记录项目的冲突解决过程。&lt;/p&gt;
 &lt;p&gt;同时也要意识到，根据我在上面关于社区规范如何在早期设定的评论，早期的项目维护者将对整个对话和冲突解决的风格产生巨大的影响，就像公司的早期员工对公司的文化产生巨大的影响一样。&lt;/p&gt;
 &lt;p&gt;在我的印象中，我们在 Envoy 内部非常幸运，没有发生过任何重大分歧，出现的问题也可以迅速友好地解决。在项目的历史上，我们从来没有需要援引&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/main/GOVERNANCE.md#conflict-resolution-and-voting&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;维护者投票程序来解决冲突&lt;/a&gt;。在我看来，这是一个巨大的成就，也是对所有维护者的素质和专业性的证明，尤其是考虑到该项目已经变得如此受欢迎，以及围绕它的所有商业利益。&lt;/p&gt;
@@ -1120,11 +1120,11 @@ verbo.start()
       <pubDate>Wed, 21 Apr 2021 10:03:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/introducing-getenvoy-extension-toolkit-for-webassembly-based-envoy-extensions/</guid>
       <description>&lt;p&gt;说一说来龙去脉，Envoy 是一个非常注重规模化业务的底层网络组件，令人激动且功能强大。然而它在用户体验方面一直很欠缺。&lt;/p&gt;
-&lt;p&gt;当用户开始使用一个新工具时，必然会从 “如何在自己的环境中安装” 这一问题开始。而 Envoy 之前并没有给出答案。&lt;/p&gt;
+&lt;p&gt;当用户开始使用一个新工具时，必然会从“如何在自己的环境中安装”这一问题开始。而 Envoy 之前并没有给出答案。&lt;/p&gt;
 &lt;p&gt;为了填补这一空白，Tetrate &lt;a href=&#34;https://www.getenvoy.io/blog/announcing-the-getenvoy-project/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;启动了&lt;/a&gt; GetEnvoy 项目并且 &lt;a href=&#34;https://www.getenvoy.io/blog/introducing-the-getenvoy-cli/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;推出了&lt;/a&gt; getenvoy CLI，作为提供给用户的组件。&lt;/p&gt;
 &lt;h3 id=&#34;新挑战&#34;&gt;新挑战&lt;/h3&gt;
-&lt;p&gt;下一个关于 Envoy 的常见需求是 “如何扩展”。&lt;/p&gt;
-&lt;p&gt;截止目前，如果想扩展或定制 Envoy，你将不得不 “越界” 成为实质上的 Envoy 开发者。&lt;/p&gt;
+&lt;p&gt;下一个关于 Envoy 的常见需求是“如何扩展”。&lt;/p&gt;
+&lt;p&gt;截止目前，如果想扩展或定制 Envoy，你将不得不“越界”成为实质上的 Envoy 开发者。&lt;/p&gt;
 &lt;p&gt;幸运的是，这种情况即将改变。一种名为 &lt;a href=&#34;https://webassembly.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;WebAssembly（Wasm）&lt;/a&gt; 的新技术即将纳入 Envoy。Wasm 让使用不同编程语言开发 Envoy 扩展成为可能。更重要的是，能以完全动态的方式部署这些扩展。&lt;/p&gt;
 &lt;h3 id=&#34;getenvoy-扩展工具包&#34;&gt;GetEnvoy 扩展工具包&lt;/h3&gt;
 &lt;p&gt;&lt;a href=&#34;https://www.getenvoy.io/reference/getenvoy_extension_toolkit_reference/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GetEnvoy 扩展工具包&lt;/a&gt; 的目的在于帮助有扩展 Envoy 需求的开发者，在短时间内完成扩展开发并启动运行。&lt;/p&gt;
@@ -1761,7 +1761,7 @@ verbo.start()
 &lt;p&gt;&lt;strong&gt;HTTP L7 路由&lt;/strong&gt;：当以 HTTP 模式运行时，Envoy 支持一种 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_routing#arch-overview-http-routing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由&lt;/a&gt; 子系统，能够根据路径、权限、内容类型、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/runtime#arch-overview-runtime&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;运行时&lt;/a&gt; 参数值等对请求进行路由和重定向。这项功能在将 Envoy 用作前端/边缘代理时非常有用，同时在构建服务网格时也会使用此功能。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;gRPC 支持&lt;/strong&gt;：&lt;a href=&#34;https://www.grpc.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt; 是一个来自 Google 的 RPC 框架，它使用 HTTP/2 作为底层多路复用传输协议。Envoy &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_protocols/grpc#arch-overview-grpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;支持&lt;/a&gt; 被 gRPC 请求和响应的作为路由和负载均衡底层的所有 HTTP/2 功能。这两个系统是非常互补的。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;服务发现和动态配置&lt;/strong&gt;：Envoy 可以选择使用一组分层的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/dynamic_configuration#arch-overview-dynamic-config&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态配置&lt;/a&gt; API 来实现集中化管理。这些层为 Envoy 提供了以下内容的动态更新：后端集群内的主机、后端集群本身、HTTP 路由、监听套接字和加密材料。对于更简单的部署，可以 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/service_discovery#arch-overview-service-discovery-types-strict-dns&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;通过 DNS 解析&lt;/a&gt;（甚至完全 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/service_discovery#arch-overview-service-discovery-types-static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;跳过&lt;/a&gt;）发现后端主机，使用静态配置文件将替代深层配置。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;健康检查&lt;/strong&gt;：&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/service_discovery#arch-overview-service-discovery-eventually-consistent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;推荐&lt;/a&gt; 使用将服务发现视为最终一致的过程的方式来建立 Envoy 网格。Envoy 包含了一个 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/health_checking#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;健康检查&lt;/a&gt;，可以选择对上游服务集群执行主动健康检查。然后， Envoy 联合使用服务发现和健康检查信息来确定健康的负载均衡目标。Envoy 还通过 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier#arch-overview-outlier-detection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;异常检查&lt;/a&gt; 子系统支持被动健康检查。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;健康检查&lt;/strong&gt;：&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/service_discovery#arch-overview-service-discovery-eventually-consistent&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;推荐&lt;/a&gt; 使用将服务发现视为最终一致的过程的方式来建立 Envoy 网格。Envoy 包含了一个 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/health_checking#arch-overview-health-checking&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;健康检查&lt;/a&gt;，可以选择对上游服务集群执行主动健康检查。然后，Envoy 联合使用服务发现和健康检查信息来确定健康的负载均衡目标。Envoy 还通过 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier#arch-overview-outlier-detection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;异常检查&lt;/a&gt; 子系统支持被动健康检查。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;高级负载均衡&lt;/strong&gt;：&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/overview#arch-overview-load-balancing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;负载均衡&lt;/a&gt; 是分布式系统中不同组件之间的一个复杂问题。由于 Envoy 是一个独立代理而不是软件库，因此可以独立实现高级负载均衡以供任何应用程序访问。目前，Envoy 支持 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_routing#arch-overview-http-routing-retry&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;自动重试&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/circuit_breaking#arch-overview-circuit-break&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;熔断&lt;/a&gt;、通过外部速率限制服务的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting#arch-overview-global-rate-limit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;全局限速&lt;/a&gt;、&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routeaction-requestmirrorpolicy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请求映射&lt;/a&gt; 和 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier#arch-overview-outlier-detection&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;异常检测&lt;/a&gt;。未来还计划支持请求竞争。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;前端/边缘代理支持&lt;/strong&gt;：在边缘使用相同的软件大有好处（可观察性、管理、相同的服务发现和负载均衡算法等）。Envoy 包含足够多的功能，可作为大多数现代 Web 应用程序的边缘代理。包括 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ssl#arch-overview-ssl&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TLS&lt;/a&gt; 终止、HTTP/1.1 和 HTTP/2 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_connection_management#arch-overview-http-protocols&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;支持&lt;/a&gt;，以及 HTTP L7 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_routing#arch-overview-http-routing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;最佳的可观察性&lt;/strong&gt;：如上所述，Envoy 的主要目标是让网络透明化。然而，在网络层面和应用层面都有可能出现问题。Envoy 包含对所有子系统的强大 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/observability/statistics#arch-overview-statistics&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;统计&lt;/a&gt; 支持。目前支持 &lt;a href=&#34;https://github.com/etsy/statsd&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;statsd&lt;/a&gt;（和兼容程序）作为统计信息接收器，但是插入不同的接收器并不困难。统计信息也可以通过 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/operations/admin#operations-admin-interface&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;管理&lt;/a&gt; 端口查看。通过第三方提供商，Envoy 还支持分布式 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/observability/tracing#arch-overview-tracing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;追踪&lt;/a&gt;。&lt;/p&gt;
@@ -1837,7 +1837,7 @@ verbo.start()
 &lt;h3 id=&#34;为什么一开始选择-c感觉性能比较差&#34;&gt;为什么一开始选择 C++，感觉性能比较差&lt;/h3&gt;
 &lt;p&gt;C++ 比绝大多数语言性能都好。当时没有更好的语言选择。有 GC 的语言会有大的 tail-latency。C 可能可以性能更好，但对内存管理更为苛刻，难维护。&lt;/p&gt;
 &lt;h2 id=&#34;关于-xds-的问题&#34;&gt;关于 xDS 的问题&lt;/h2&gt;
-&lt;h3 id=&#34;关于-on-demand目前已经有了-vhds其他-xds-会陆续支持吗-比如-on-demand-cdseds&#34;&gt;关于 on-demand，目前已经有了 VHDS，其他 xDS 会陆续支持吗？ 比如 on-demand CDS/EDS?&lt;/h3&gt;
+&lt;h3 id=&#34;关于-on-demand目前已经有了-vhds其他-xds-会陆续支持吗比如-on-demand-cdseds&#34;&gt;关于 on-demand，目前已经有了 VHDS，其他 xDS 会陆续支持吗？比如 on-demand CDS/EDS?&lt;/h3&gt;
 &lt;p&gt;VHDS 并不是 on-demand。现在主要是把 Delta xDS 做好。&lt;/p&gt;
 &lt;h3 id=&#34;envoy-如何根据请求参数的值动态过滤-endpoint-实例&#34;&gt;Envoy 如何根据请求参数的值，动态过滤 endpoint 实例？&lt;/h3&gt;
 &lt;p&gt;金丝雀发布 / 蓝绿发布。可以参照官方 Subset LB 资料。&lt;/p&gt;
@@ -1847,7 +1847,7 @@ verbo.start()
 &lt;h3 id=&#34;对于新手学习-envoy-有哪些建议&#34;&gt;对于新手学习 Envoy 有哪些建议？&lt;/h3&gt;
 &lt;p&gt;首先根据自己的用例和方向性来确定目标，Envoy 本身功能强大范围广，官网资料相对齐全。社区（Slack、GitHub）提问一般可以得到回答。&lt;/p&gt;
 &lt;h3 id=&#34;listenerfilter-前后顺序有影响吗&#34;&gt;ListenerFilter 前后顺序有影响吗？&lt;/h3&gt;
-&lt;p&gt;有的没有（如 HTTP），有的有影响（如 Proxy Protocol ）&lt;/p&gt;
+&lt;p&gt;有的没有（如 HTTP），有的有影响（如 Proxy Protocol）&lt;/p&gt;
 &lt;h3 id=&#34;listenerfilter-冲突会和时间有关吗现在有-debug-方案和过滤验证机制吗&#34;&gt;ListenerFilter 冲突会和时间有关吗？现在有 debug 方案和过滤验证机制吗？&lt;/h3&gt;
 &lt;p&gt;超时机制跟时间有关（server 主动发起的消息场景需要超时机制）&lt;/p&gt;
 &lt;h3 id=&#34;envoy-的运行时的动态配置为什么不做持久化处理动态更新的配置落盘&#34;&gt;Envoy 的运行时的动态配置为什么不做持久化处理（动态更新的配置落盘）？&lt;/h3&gt;
@@ -1907,7 +1907,7 @@ verbo.start()
       <pubDate>Mon, 12 Oct 2020 13:05:42 +0800</pubDate>
       <guid>https://cloudnative.to/blog/envoy-trans-recruit/</guid>
       <description>&lt;h2 id=&#34;背景&#34;&gt;背景&lt;/h2&gt;
-&lt;p&gt;Istio 一直是服务网格产品中的佼佼者，其数据面的组件—— Envoy 也受到很多互联网厂家及 IT 行业人员的追捧和青睐。云原生社区秉承普及和推广云原生相关技术的宗旨，已经在早些时候成立了&lt;a href=&#34;https://cloudnative.to/blog/sig-envoy-announcement/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy SIG&lt;/a&gt;。为了方便国内 IT 行业人员学习与研究 Envoy，云原生社区决定将&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 官网&lt;/a&gt;最新版本进行翻译（&lt;a href=&#34;https://www.servicemesher.com/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 有1.7中文版本&lt;/a&gt;，但是版本过老）。&lt;/p&gt;
+&lt;p&gt;Istio 一直是服务网格产品中的佼佼者，其数据面的组件—— Envoy 也受到很多互联网厂家及 IT 行业人员的追捧和青睐。云原生社区秉承普及和推广云原生相关技术的宗旨，已经在早些时候成立了&lt;a href=&#34;https://cloudnative.to/blog/sig-envoy-announcement/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy SIG&lt;/a&gt;。为了方便国内 IT 行业人员学习与研究 Envoy，云原生社区决定将&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 官网&lt;/a&gt;最新版本进行翻译（&lt;a href=&#34;https://www.servicemesher.com/envoy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 有 1.7 中文版本&lt;/a&gt;，但是版本过老）。&lt;/p&gt;
 &lt;h2 id=&#34;翻译志愿者的条件和收获&#34;&gt;翻译志愿者的条件和收获&lt;/h2&gt;
 &lt;p&gt;如果你满足以下几点要求：&lt;/p&gt;
 &lt;ul&gt;
@@ -1925,7 +1925,7 @@ verbo.start()
 &lt;h2 id=&#34;如何加入翻译志愿者团队&#34;&gt;如何加入翻译志愿者团队&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;加入云原生社区，&lt;a href=&#34;https://cloudnative.to/contact&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;加入我们&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;加入 Envoy SIG（添加微信 &lt;a href=&#34;https://jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysongio&lt;/a&gt; 或者 majinghe11，备注姓名-公司，并说明加入 Envoy SIG）。&lt;/li&gt;
+&lt;li&gt;加入 Envoy SIG（添加微信 &lt;a href=&#34;https://jimmysong.io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;jimmysongio&lt;/a&gt; 或者 majinghe11，备注姓名 - 公司，并说明加入 Envoy SIG）。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;翻译的相关事项都会在 Envoy SIG 群里公布，包括成员招募，启动翻译，进度跟踪等。&lt;/p&gt;
 &lt;h2 id=&#34;envoy-翻译仓库&#34;&gt;Envoy 翻译仓库&lt;/h2&gt;
@@ -1942,16 +1942,16 @@ verbo.start()
       <description>&lt;p&gt;本文作者：林静，F5 软件方向解决方案架构师，历任 F5 Global Service ENE，APAC Professional Service 顾问，技术专家。拥有超过 10 多年的应用交付领域工作经验，秉承持续学习和反馈的理念，致力于现代应用体系下的应用服务研究。CNCF Kubernetes CKA 664 号认证获得者，中国首位 F5 Security Solution Expert 认证获得者。&lt;/p&gt;
 &lt;p&gt;感谢邱世达对本文的审校。&lt;/p&gt;
 &lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;Envoy，使者，使节，代表！就像其单词含义本身一样，带着一种权威感，一种全代理的神圣感。结合其本身用途与角色，真是 “人如其名”，不禁为 Lyft 点赞，不知是得到了哪位大师的指点来起这个名字。在当前火热的微服务时代下，Envoy 是个绝对的明星，用众人皆知来形容可以说一点也不为过。曾有人问我如何看 Envoy 以及在云原生时代下是否 Envoy 将取代 F5 取代 NGINX，作为一个经历了两次应用交付技术领域更迭浪潮的老兵，在本文中我将来浅谈一下 Envoy，以及试图从个人角度来理解与回答一下这个问题。为什么说浅谈一下，这真的不是谦虚，而是客观上真的没有那么深入的大规模长时间使用和研究 Envoy 的所有技术细节，因此我将结合我的从业经历与经验来对 Envoy 做一个浅谈。&lt;/p&gt;
+&lt;p&gt;Envoy，使者，使节，代表！就像其单词含义本身一样，带着一种权威感，一种全代理的神圣感。结合其本身用途与角色，真是“人如其名”，不禁为 Lyft 点赞，不知是得到了哪位大师的指点来起这个名字。在当前火热的微服务时代下，Envoy 是个绝对的明星，用众人皆知来形容可以说一点也不为过。曾有人问我如何看 Envoy 以及在云原生时代下是否 Envoy 将取代 F5 取代 NGINX，作为一个经历了两次应用交付技术领域更迭浪潮的老兵，在本文中我将来浅谈一下 Envoy，以及试图从个人角度来理解与回答一下这个问题。为什么说浅谈一下，这真的不是谦虚，而是客观上真的没有那么深入的大规模长时间使用和研究 Envoy 的所有技术细节，因此我将结合我的从业经历与经验来对 Envoy 做一个浅谈。&lt;/p&gt;
 &lt;h2 id=&#34;星光熠熠的-envoy&#34;&gt;星光熠熠的 Envoy&lt;/h2&gt;
 &lt;p&gt;首先我们看一下 Envoy 官方是如何介绍 Envoy 的：&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;ENVOY IS AN OPEN SOURCE EDGE AND SERVICE PROXY, DESIGNED FOR CLOUD-NATIVE APPLICATIONS
 &lt;em&gt;Envoy 是一个开源的边缘以及服务代理，为云原生应用而生。&lt;/em&gt;&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;从网站首页的这一段描述可以清晰的看出官方对 Envoy 的定义，简单来说就是云原生时代下东西南北流量的代理。Lfyt 公司是微服务应用架构的先导者，在大量的微服务类布道文章中我们都可以看到 Lfyt 的身影，在从单体应用大规模转向微服务架构后，一个严重的问题摆在了开发与架构人员面前，一方面 Lyft 的服务采用了多种语言开发，而采用类库来解决分布式架构下的各种问题需要进行大量的语言适配以及对代码的侵入，另一方面 Lyft 的业务都是部署在 AWS 上的，大量依赖 AWS 的 ELB 以及 EC2，但是 ELB 以及 AWS 在当时所提供的服务间流量管控、洞察与问题排除都不能满足 Lyft 的需求，正是基于这样的背景，Lfyt 于 2015 年 5 月开始了 Envoy 的开发，最早是作为一个边缘代理进行部署并开始替代 ELB，随后开始作为 sidecar 方式进行大规模部署。2016 年 9 月 14 日，Lyft 在其博客上正式对外宣布了这一项目： &lt;a href=&#34;https://eng.lyft.com/announcing-envoy-c-l7-proxy-and-communication-bus-92520b6c8191&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy C++ L7 代理与通信总线&lt;/a&gt;。 一时间 Envoy 得到了大量的关注，Google 等公司开始贡献到这个项目里，并在一年后的 2017 年 9 月将项目捐献给 CNCF。有了 Lyft 这样一个好妈，又过继给了 CNCF 这样一个富爸，再加上同父异母的 Istio 明星兄弟的加持，可以说 Envoy 一时风光无两，赚足了眼球与开发者的支持，仅一年多点时间便从 CNCF 毕业了。&lt;/p&gt;
+&lt;p&gt;从网站首页的这一段描述可以清晰的看出官方对 Envoy 的定义，简单来说就是云原生时代下东西南北流量的代理。Lfyt 公司是微服务应用架构的先导者，在大量的微服务类布道文章中我们都可以看到 Lfyt 的身影，在从单体应用大规模转向微服务架构后，一个严重的问题摆在了开发与架构人员面前，一方面 Lyft 的服务采用了多种语言开发，而采用类库来解决分布式架构下的各种问题需要进行大量的语言适配以及对代码的侵入，另一方面 Lyft 的业务都是部署在 AWS 上的，大量依赖 AWS 的 ELB 以及 EC2，但是 ELB 以及 AWS 在当时所提供的服务间流量管控、洞察与问题排除都不能满足 Lyft 的需求，正是基于这样的背景，Lfyt 于 2015 年 5 月开始了 Envoy 的开发，最早是作为一个边缘代理进行部署并开始替代 ELB，随后开始作为 sidecar 方式进行大规模部署。2016 年 9 月 14 日，Lyft 在其博客上正式对外宣布了这一项目： &lt;a href=&#34;https://eng.lyft.com/announcing-envoy-c-l7-proxy-and-communication-bus-92520b6c8191&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy C++ L7 代理与通信总线&lt;/a&gt;。一时间 Envoy 得到了大量的关注，Google 等公司开始贡献到这个项目里，并在一年后的 2017 年 9 月将项目捐献给 CNCF。有了 Lyft 这样一个好妈，又过继给了 CNCF 这样一个富爸，再加上同父异母的 Istio 明星兄弟的加持，可以说 Envoy 一时风光无两，赚足了眼球与开发者的支持，仅一年多点时间便从 CNCF 毕业了。&lt;/p&gt;
 &lt;p&gt;容器技术助推了企业实践 Devops 与进行微服务改造，k8s 容器编排平台则让企业能够更加自信的将更多业务从传统架构迁移到基于容器的现代基础架构之上，k8s 解决了容器编排、应用发布等问题，但是当服务之间的通信从以前的内存之间调用变成了基于 TCP 的网络通信后，网络对应用服务的影响变得更加巨大与不确定，基于传统的应用架构的运维手段无法适应与解决巨大且复杂的服务间通信洞察、排错，为了解决这样的问题，sevice mesh 应用而生，并迅速成为关注的热。Istio 项目则是此生态中最重要的玩家，Istio 的架构是一个典型的管理平面与数据分离的架构，在数据平面的选择上是开放的，但是 Istio 默认选择了 Envoy 作为数据平面。两大人气明星强强联手，让几乎同一时期的 linkerd 变得黯然失色。而在这个时间点，NGINX 同样也曾短暂的进行了 Nginmesh 项目，试图让 NGINX 作为 Istio 的数据平面，但最终在 2018 年底放弃了，为什么会放弃，这个本文后面会提到。&lt;/p&gt;
-&lt;p&gt;当前除了 Istio 选择 Envoy 作为数据平面外，以 Envoy 为基础的项目还有很多，例如 k8s 的多个 Ingress Controller 项目：Gloo, Contur, Ambassador。 Istio 自身的 Ingress gateway 与 Egress gateway 同样选择的是 Envoy。来看下其官方首页列出的 Envoy 用户，说星光熠熠一点也不为过。注意列表里的 F5，是不是很有意思。
+&lt;p&gt;当前除了 Istio 选择 Envoy 作为数据平面外，以 Envoy 为基础的项目还有很多，例如 k8s 的多个 Ingress Controller 项目：Gloo, Contur, Ambassador。Istio 自身的 Ingress gateway 与 Egress gateway 同样选择的是 Envoy。来看下其官方首页列出的 Envoy 用户，说星光熠熠一点也不为过。注意列表里的 F5，是不是很有意思。
 
 
 
@@ -2038,7 +2038,7 @@ verbo.start()
     &lt;/figcaption&gt;&lt;/figure&gt;
 
 &lt;em&gt;(复杂的配置结构)&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;显然，Envoy 的设计天生就不是为手工而设，因此 Envoy 设计了大量的 xDS 协议接口，需要用户自行设计一个 xDS 的服务端实现对所有配置处理，Envoy 支持 gRPC 或者 REST 与服务端进行通信从而更新自身的配置。 xDS 是 Envoy DS（discover service）协议的统称，具体可分为 Listener DS（LDS), Route DS (RDS), Cluster DS (CDS), Endpoint DS (EDS), 此外还有 Secret DS，为了保证配置一致性的聚合 DS-ADS 等，更多的 xDS 可 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;查看这里&lt;/a&gt;。这些接口用于自动化产生各种具体不同的配置对象。可以看出，这是一个高度动态性的运行时配置，要想用好它则必须开发一个具有足够能力的 server 端，显然这不是传统反向代理软件的设计思维。
+&lt;p&gt;显然，Envoy 的设计天生就不是为手工而设，因此 Envoy 设计了大量的 xDS 协议接口，需要用户自行设计一个 xDS 的服务端实现对所有配置处理，Envoy 支持 gRPC 或者 REST 与服务端进行通信从而更新自身的配置。xDS 是 Envoy DS（discover service）协议的统称，具体可分为 Listener DS（LDS), Route DS (RDS), Cluster DS (CDS), Endpoint DS (EDS), 此外还有 Secret DS，为了保证配置一致性的聚合 DS-ADS 等，更多的 xDS 可 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;查看这里&lt;/a&gt;。这些接口用于自动化产生各种具体不同的配置对象。可以看出，这是一个高度动态性的运行时配置，要想用好它则必须开发一个具有足够能力的 server 端，显然这不是传统反向代理软件的设计思维。
 
 
 
@@ -2080,7 +2080,7 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-p+     &lt;span class=&#34;m&#34;&gt;14&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; Jun25 ?        00:05:31 /usr/local/bin/envoy -c etc/istio/proxy/envoy-rev0.json --restart-epoch &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; --drain-time-s &lt;span class=&#34;m&#34;&gt;45&lt;/span&gt; --parent-shutdown-time-s &lt;span class=&#34;m&#34;&gt;60&lt;/span&gt; --service-cluster productpage.istio-bookin
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-p+    &lt;span class=&#34;m&#34;&gt;142&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 15:38 pts/0    00:00:00 sh
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istio-p+    &lt;span class=&#34;m&#34;&gt;148&lt;/span&gt;    &lt;span class=&#34;m&#34;&gt;142&lt;/span&gt;  &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; 15:38 pts/0    00:00:00 ps -ef
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在下图的 envoy 整体配置 dump 中可以看到包含了 bootstrap 的内容以及其它静态以及动态配置:
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在下图的 envoy 整体配置 dump 中可以看到包含了 bootstrap 的内容以及其它静态以及动态配置：
 
 
 
@@ -2112,7 +2112,7 @@ verbo.start()
     &lt;/figcaption&gt;&lt;/figure&gt;
 
 &lt;em&gt;(Envoy 配置结构)&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;结合下图可以看出基本的 Envoy 配置结构及其逻辑，无论是入口 listener（类似 F5 的 VS 以及部分 profile 配置，NGINX 的 listener 以及部分 Server 段落配置）还是路由控制逻辑（类似 F5 LTM policy，NGINX 的各种 Locations 匹配等），还是 Clusters（类似 F5 pool， NGINX 的 upstream）、Endpoints（类似 F5 pool member，NGINX 的 upstream 里的 server），乃至 SSL 证书完全可以通过接口从服务侧自动化的发现过来
+&lt;p&gt;结合下图可以看出基本的 Envoy 配置结构及其逻辑，无论是入口 listener（类似 F5 的 VS 以及部分 profile 配置，NGINX 的 listener 以及部分 Server 段落配置）还是路由控制逻辑（类似 F5 LTM policy，NGINX 的各种 Locations 匹配等），还是 Clusters（类似 F5 pool，NGINX 的 upstream）、Endpoints（类似 F5 pool member，NGINX 的 upstream 里的 server），乃至 SSL 证书完全可以通过接口从服务侧自动化的发现过来
 
 
 
@@ -2145,8 +2145,8 @@ verbo.start()
 
 &lt;em&gt;(图片来自 &lt;a href=&#34;https://gist.github.com/nikhilsuvarna/bd0aa0ef01880270c13d145c61a4af22&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://gist.github.com/nikhilsuvarna/bd0aa0ef01880270c13d145c61a4af22&lt;/a&gt;)&lt;/em&gt;&lt;/p&gt;
 &lt;h4 id=&#34;扩展性&#34;&gt;扩展性&lt;/h4&gt;
-&lt;p&gt;Envoy 的配置中可以看到大量的 filter，这些都是其扩展性的表现，Envoy 学习了 F5 以及 NGINX 的架构，大量使用插件式，使得开发者可以更加容易的开发。 从 listener 开始就支持使用 filter，支持开发者开发 L3,L4,L7 的插件从而实现对协议扩展与更多控制。&lt;/p&gt;
-&lt;p&gt;在实际中，企业在 C++ 的开发储备方面可能远不如 JavaScript 等这样的语言多，因此 Envoy 还支持 Lua 以及 Webassembly 扩展， 这一方面使得无需经常重新编译二进制并重启，另一方面降低了企业插件开发难度，让企业可以使用更多兼容 Webassembly 的语言进行插件编写，然后编译为 Webassenmbly 机器码实现高效的运行。目前来说 Envoy 以及 Istio 利用 Webassembly 做扩展还在早期阶段，走向成熟还需一段时间。
+&lt;p&gt;Envoy 的配置中可以看到大量的 filter，这些都是其扩展性的表现，Envoy 学习了 F5 以及 NGINX 的架构，大量使用插件式，使得开发者可以更加容易的开发。从 listener 开始就支持使用 filter，支持开发者开发 L3,L4,L7 的插件从而实现对协议扩展与更多控制。&lt;/p&gt;
+&lt;p&gt;在实际中，企业在 C++ 的开发储备方面可能远不如 JavaScript 等这样的语言多，因此 Envoy 还支持 Lua 以及 Webassembly 扩展，这一方面使得无需经常重新编译二进制并重启，另一方面降低了企业插件开发难度，让企业可以使用更多兼容 Webassembly 的语言进行插件编写，然后编译为 Webassenmbly 机器码实现高效的运行。目前来说 Envoy 以及 Istio 利用 Webassembly 做扩展还在早期阶段，走向成熟还需一段时间。
 
 
 
@@ -2223,11 +2223,11 @@ verbo.start()
 &lt;li&gt;上游集群名称和地址。&lt;/li&gt;
 &lt;li&gt;HTTP 响应状态代码。&lt;/li&gt;
 &lt;li&gt;GRPC 响应状态和消息（如果可用）。&lt;/li&gt;
-&lt;li&gt;HTTP 状态为 5xx 或 GRPC 状态不是 “OK” 时的错误标记。&lt;/li&gt;
+&lt;li&gt;HTTP 状态为 5xx 或 GRPC 状态不是“OK”时的错误标记。&lt;/li&gt;
 &lt;li&gt;跟踪特定于系统的元数据。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h4 id=&#34;现代性&#34;&gt;现代性&lt;/h4&gt;
-&lt;p&gt;其实，说 Envoy 具有现代性显然是正确的废话，Envoy 天生为现代应用架构而生，这里主要是想从几个我们最容易能够感受到的方面来说明一下。首先是其特殊的结构设计，在 Envoy 里它支持利用 iptables 截取流量并做透明处理，其本身能够利用 getsockopt () 实现对 NAT 条目中原始目的信息的提取，并在 listener 监听上容许在从被跳转的端口 listener 中跳跃到实际能匹配原始目的信息的非绑定型 listener，尽管从反向代理角度看这就有点像 F5 的 VS 内部跳转，NGINX 的 subrequest，但是其最大的特点和能力在于对连接的透明性，这在 Pod sidecar 模式的部署中显得尤其重要， 具体原理可参考 &lt;a href=&#34;https://www.cnadn.net/post/2945.htm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;其实，说 Envoy 具有现代性显然是正确的废话，Envoy 天生为现代应用架构而生，这里主要是想从几个我们最容易能够感受到的方面来说明一下。首先是其特殊的结构设计，在 Envoy 里它支持利用 iptables 截取流量并做透明处理，其本身能够利用 getsockopt () 实现对 NAT 条目中原始目的信息的提取，并在 listener 监听上容许在从被跳转的端口 listener 中跳跃到实际能匹配原始目的信息的非绑定型 listener，尽管从反向代理角度看这就有点像 F5 的 VS 内部跳转，NGINX 的 subrequest，但是其最大的特点和能力在于对连接的透明性，这在 Pod sidecar 模式的部署中显得尤其重要，具体原理可参考 &lt;a href=&#34;https://www.cnadn.net/post/2945.htm&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;对于现代应用最爱的灰度发布，流量镜像，断路器，全局限流等等功能，其在配置上也非常的简洁，这一点尽管 F5/NGINX 等软件也能完成类似的工作，但在原生性上以及配置的难易程度上 Envoy 具有更大优势。&lt;/p&gt;
 &lt;p&gt;现代性的另一个表现就是对协议的支持，看看以下支持的协议，熟悉应用交付、反向代理软件的同学可能会情不自禁的表示赞叹，而这些协议的支持更从另一方面表现了 Envoy 作为更加面向开发者和 SRE 的一个特质。&lt;/p&gt;
 &lt;ul&gt;
@@ -2543,8 +2543,8 @@ verbo.start()
 &lt;/ul&gt;
 &lt;h2 id=&#34;前浪宝刀未老&#34;&gt;前浪：宝刀未老&lt;/h2&gt;
 &lt;p&gt;在了解完 Envoy 的技术特性及其架构后，我们再回到此文的原点。Envoy 从出生就带着现代应用架构的基因，是不是说对于 NGINX/F5 等这些前浪就落伍了呢。&lt;/p&gt;
-&lt;p&gt;记得 NGINX 的作者 Igor 在 F5 中国 520 大会上曾这样对大家介绍 NGINX 为何如此成功。他说，他没有想到会如此成功，究其原因是他在正确的时间点开发了一个正确的软件。 我们知道，在 2003 年左右那个时期，还谈不上什么分布式架构、微服务，那时候主要要解决的是单机性能问题，正是基于这样的背景，NGINX 无论从架构设计还是代码质量都严格苛求于性能。在功能上，NGINX 本来是一款 Web Server 软件，L7 反向代理则是其能力的延伸，而 L4 代理能力的增加则更晚，鉴于这样的背景，从现代应用架构角度来看，确实有一些能力是较难覆盖的。同样，Envoy 诞生和发展于现代应用架构时代，正如 Envoy 自我阐述，其参考了大量已有的软硬件反向代理、负载均衡产品，从上面的技术分析中也可以看出 Envoy 有很多 NGINX 以及 F5 架构理念，可以说 Envoy 从成熟的反向代理产品中吸取了诸多精华，并在设计时候充分考虑现代应用架构的需求，它也是一个在正确的时间的一个正确软件。&lt;/p&gt;
-&lt;p&gt;微服务架构下，很多问题都变成了如何控制服务之间的通信与流量洞察，这是典型的应用交付领域，作为这个领域的前浪一方面需积极拥抱和适应新时代的应用架构，一方面需要创新并继续引领新的方向。历史上这个领域发生了两次技术革新，第一次是在 2006 年左右，当时一度关于 “负载均衡已死” 话题被炒爆，实质是当时市场开始发生变换，大家不再满足于简单的负载均衡，需求衍生到应用安全、网络优化、应用优化、接入控制、流量控制等更多复杂的场景，应用交付概念开始被提出，可以说在 2006 年前，市场的主要概念和技术方向是以四层交换机为核心理念的负载均衡技术，大部分玩家是传统网络厂商，思维与概念都是以网络交换为基础，而 F5 就像一个奇怪的家伙，产品设计思想完全在另一个维度之上，自 2004 年就开始发布的 TMOS V9 操作系统自此开始引领市场，此后 10 年，无人超越。第二次技术革新发生在 2016 年左右，受云、微服务的影响，软件化、轻量化变为市场主流，同时 Devops 思想意味着使用者角色发生了变化，传统的面向网络运维人员的设计开始变得难以满足市场需求。以 F5 为主导的这个领域在市场上也发生了新的变化，Gartner 不再对应用交付领域发布魔力象限分析，转而形成以 Guide 方式的指导。
+&lt;p&gt;记得 NGINX 的作者 Igor 在 F5 中国 520 大会上曾这样对大家介绍 NGINX 为何如此成功。他说，他没有想到会如此成功，究其原因是他在正确的时间点开发了一个正确的软件。我们知道，在 2003 年左右那个时期，还谈不上什么分布式架构、微服务，那时候主要要解决的是单机性能问题，正是基于这样的背景，NGINX 无论从架构设计还是代码质量都严格苛求于性能。在功能上，NGINX 本来是一款 Web Server 软件，L7 反向代理则是其能力的延伸，而 L4 代理能力的增加则更晚，鉴于这样的背景，从现代应用架构角度来看，确实有一些能力是较难覆盖的。同样，Envoy 诞生和发展于现代应用架构时代，正如 Envoy 自我阐述，其参考了大量已有的软硬件反向代理、负载均衡产品，从上面的技术分析中也可以看出 Envoy 有很多 NGINX 以及 F5 架构理念，可以说 Envoy 从成熟的反向代理产品中吸取了诸多精华，并在设计时候充分考虑现代应用架构的需求，它也是一个在正确的时间的一个正确软件。&lt;/p&gt;
+&lt;p&gt;微服务架构下，很多问题都变成了如何控制服务之间的通信与流量洞察，这是典型的应用交付领域，作为这个领域的前浪一方面需积极拥抱和适应新时代的应用架构，一方面需要创新并继续引领新的方向。历史上这个领域发生了两次技术革新，第一次是在 2006 年左右，当时一度关于“负载均衡已死”话题被炒爆，实质是当时市场开始发生变换，大家不再满足于简单的负载均衡，需求衍生到应用安全、网络优化、应用优化、接入控制、流量控制等更多复杂的场景，应用交付概念开始被提出，可以说在 2006 年前，市场的主要概念和技术方向是以四层交换机为核心理念的负载均衡技术，大部分玩家是传统网络厂商，思维与概念都是以网络交换为基础，而 F5 就像一个奇怪的家伙，产品设计思想完全在另一个维度之上，自 2004 年就开始发布的 TMOS V9 操作系统自此开始引领市场，此后 10 年，无人超越。第二次技术革新发生在 2016 年左右，受云、微服务的影响，软件化、轻量化变为市场主流，同时 Devops 思想意味着使用者角色发生了变化，传统的面向网络运维人员的设计开始变得难以满足市场需求。以 F5 为主导的这个领域在市场上也发生了新的变化，Gartner 不再对应用交付领域发布魔力象限分析，转而形成以 Guide 方式的指导。
 
 
 
@@ -2611,10 +2611,10 @@ verbo.start()
 &lt;p&gt;F5 在收购 NGINX 与 Shape 之后，提出了新的 view，将充分利用可广泛触达的数据平面能力，借助 AI 进一步挖掘数据潜能帮助用户更好的掌握和了解应用行为、性能，为业务运营提出参考，并反馈到组件配置与运行管理，从而形成闭环。&lt;/p&gt;
 &lt;p&gt;现代应用交付依然不能缺少一个重要场景，那就是应用安全，尽管 Istio 等产品在安全通信，身份，策略方面做了不少的尝试，但是应用安全本身则比较缺乏，F5 作为 WAF 安全领域的领导厂商，通过将安全能力转移到 NGINX 上形成了新的 NGINX APP Protect，利用其跨平台的能力帮助用户更好的管理微服务场景下的应用安全能力，帮助企业更好的落地 DevSecOps。&lt;/p&gt;
 &lt;p&gt;如果将 Envoy 的那些技术特征与 F5 进行对比的话，我们可以看到 F5 一定程度上欠缺在扩展性与现代性上，F5 具有较好的编程控制能力，但是相对于更大的插件开发来说是不足的，这和现代性往往可以联系到一起看，比如想针对某个很新的协议做一个类似 Envoy 的复杂 7 层 filter 是无法实现的，尽管 iRule 或者 iRuleLX 可以一定程度上做一些事情。然而无论怎样，最终 F5 的产品形态本身决定了 F5 的 BIGIP 是无法完全跨平台的，因为它无法以容器来运行。值得期待的是，这样的形态限制将会被 F5 下一代 TMOS 系统打破。&lt;/p&gt;
-&lt;p&gt;Service Mesh 是当前热门的技术方向，F5 基于 Istio 打造了企业级的 Aspen Mesh 服务网格产品，帮助企业更好、更容易的部署和使用 Istio。 Aspen mesh 团队成员进入仅有 7 个位置的的 Istio Technical Oversight Committee，负责 Istio 的 RFCs/Designs/APIs 等方面的重要职责。尽管 Istio 在 service mesh 领域拥有绝对的生态与热度，但这并不表示 Istio 是唯一的选择，在很多时候客户可能希望采用一种更加简洁的 Service Mesh 去实现大部分所需功能而不是去部署一整套复杂的 Istio 方案，基于 NGINX 组件打造的 NGINX Service Mesh (NSM) 将为用户带来新的选择，一个更加简单易用的 Service Mesh 产品，这是我们在文章最开始提到 NGINX 终止 Nginmesh 的原因。&lt;/p&gt;
+&lt;p&gt;Service Mesh 是当前热门的技术方向，F5 基于 Istio 打造了企业级的 Aspen Mesh 服务网格产品，帮助企业更好、更容易的部署和使用 Istio。Aspen mesh 团队成员进入仅有 7 个位置的的 Istio Technical Oversight Committee，负责 Istio 的 RFCs/Designs/APIs 等方面的重要职责。尽管 Istio 在 service mesh 领域拥有绝对的生态与热度，但这并不表示 Istio 是唯一的选择，在很多时候客户可能希望采用一种更加简洁的 Service Mesh 去实现大部分所需功能而不是去部署一整套复杂的 Istio 方案，基于 NGINX 组件打造的 NGINX Service Mesh (NSM) 将为用户带来新的选择，一个更加简单易用的 Service Mesh 产品，这是我们在文章最开始提到 NGINX 终止 Nginmesh 的原因。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;技术发展是一个必然的过程，2006 年从传统的负载均衡技术演变为应用交付，除了负载均衡之外，引入安全、访问控制、接入控制、流量控制等诸多方面。2016 年左右，这个领域再次发生新的技术变革，大量新生代反向代理开源软件的出现对传统应用交付类产品产生了一次新的冲击，积极适应与改变并创新是制胜的关键。Envoy 作为新代表有着优秀的能力，但它也不是解决所有问题的银弹，Envoy 拥有更陡峭的学习曲线以及更高开发成本与维护成本，对于企业来说应根据实际情况选择合适的解决方案与产品来解决架构中的不同问题，避免追赶潮流而让自己陷入陷阱。&lt;/p&gt;
-&lt;p&gt;F5 则更加需要让开发人员了解 TMOS 系统所拥有的巨大潜能（特别是下一代产品在架构以及形态上的颠覆），了解其优秀全代理架构以及可以在任意层面进行的编程控制， 让开发者、SRE 以 F5 TMOS 作为一种能力平台和中间件进行开发，更好的利用 F5 自身已经拥有的应用交付能力来快速实现自身需求。&lt;/p&gt;
+&lt;p&gt;F5 则更加需要让开发人员了解 TMOS 系统所拥有的巨大潜能（特别是下一代产品在架构以及形态上的颠覆），了解其优秀全代理架构以及可以在任意层面进行的编程控制，让开发者、SRE 以 F5 TMOS 作为一种能力平台和中间件进行开发，更好的利用 F5 自身已经拥有的应用交付能力来快速实现自身需求。&lt;/p&gt;
 &lt;p&gt;最后，再次引用 Envoy 官方网站首页的一句话：&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;正如微服务从业者很快意识到的那样，当转移到分布式体系结构时出现的大多数操作问题最终都基于两个方面：网络和可观察性。&lt;/p&gt;
@@ -2626,16 +2626,16 @@ verbo.start()
     </item>
     
     <item>
-      <title>Envoy Proxy构建控制平面指南</title>
+      <title>Envoy Proxy 构建控制平面指南</title>
       <link>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</link>
       <pubDate>Wed, 06 Mar 2019 12:17:02 +0800</pubDate>
       <guid>https://cloudnative.to/blog/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://medium.com/solo-io/guidance-for-building-a-control-plane-to-manage-envoy-proxy-at-the-edge-as-a-gateway-or-in-a-mesh-badb6c36a2af&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;编者案&#34;&gt;编者案&lt;/h2&gt;
 &lt;blockquote&gt;
-&lt;p&gt;Envoy 作为最受欢迎的早期网络组件，现在已经可以说是云原生架构中的通用数据平面。本文作者指引我们更方便的使用Envoy，及其定制控制平面，作者通过收集到的数据给出定制控制平面不同的意见，非常中肯，后续系列会更深入，欢迎关注该系列文章。&lt;/p&gt;
+&lt;p&gt;Envoy 作为最受欢迎的早期网络组件，现在已经可以说是云原生架构中的通用数据平面。本文作者指引我们更方便的使用 Envoy，及其定制控制平面，作者通过收集到的数据给出定制控制平面不同的意见，非常中肯，后续系列会更深入，欢迎关注该系列文章。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 最近成为一个受欢迎的网络组件。 几年前 Matt Klein &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;写了一篇博客&lt;/a&gt; ，讨论了Envoy的动态配置API，以及Envoy发展的历史和动机。 他称该博客为“通用数据平面API”。 由于许多其他项目采用&lt;a href=&#34;https://www.envoyproxy.io/community&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 作为其产品的核心组件，因此对于应用程序/L7网络解决方案而言，毫不夸张地说，“Envoy已成为云原生架构中的通用数据平面”，而不仅仅是简单建立了API标准。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 最近成为一个受欢迎的网络组件。几年前 Matt Klein &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;写了一篇博客&lt;/a&gt; ，讨论了 Envoy 的动态配置 API，以及 Envoy 发展的历史和动机。他称该博客为“通用数据平面 API”。由于许多其他项目采用&lt;a href=&#34;https://www.envoyproxy.io/community&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt; 作为其产品的核心组件，因此对于应用程序/L7 网络解决方案而言，毫不夸张地说，“Envoy 已成为云原生架构中的通用数据平面”，而不仅仅是简单建立了 API 标准。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2664,12 +2664,12 @@ verbo.start()
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;此外，由于 &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy的通用数据平面API&lt;/a&gt; ，我们已经看到了许多 &lt;em&gt;管理层&lt;/em&gt; 的实现， 用于配置和驱动基于Envoy的基础架构。 我们将深入探讨为Envoy构建控制平面所需的内容，以便您可以使用此信息来评估哪种类型的基础架构最适合您的组织和使用情况。 因为这是一个广泛的主题，我们将在未来几天发布的多部系列博客中解决它。&lt;/p&gt;
-&lt;p&gt;在EnvoyCon/KubeCon上 有一些 &lt;a href=&#34;https://blog.envoyproxy.io/envoycon-recap-579d53576511&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;精彩的演讲&lt;/a&gt; ，一些组织分享了他们采用Envoy的经验，包括他们如何构建自己的控制平面。 人们选择自己建立控制平面的一些原因：&lt;/p&gt;
+&lt;p&gt;此外，由于 &lt;a href=&#34;https://blog.envoyproxy.io/the-universal-data-plane-api-d15cec7a&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 的通用数据平面 API&lt;/a&gt; ，我们已经看到了许多 &lt;em&gt;管理层&lt;/em&gt; 的实现，用于配置和驱动基于 Envoy 的基础架构。我们将深入探讨为 Envoy 构建控制平面所需的内容，以便您可以使用此信息来评估哪种类型的基础架构最适合您的组织和使用情况。因为这是一个广泛的主题，我们将在未来几天发布的多部系列博客中解决它。&lt;/p&gt;
+&lt;p&gt;在EnvoyCon/KubeCon上 有一些 &lt;a href=&#34;https://blog.envoyproxy.io/envoycon-recap-579d53576511&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;精彩的演讲&lt;/a&gt; ，一些组织分享了他们采用 Envoy 的经验，包括他们如何构建自己的控制平面。人们选择自己建立控制平面的一些原因：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;现有的解决方案，建立在已有不同数据平面的控制平面，需要改造Envoy（与已有方案且冲突）&lt;/li&gt;
-&lt;li&gt;为没有任何现有开源或其他Envoy控制平面（即VM，AWS ECS等）的基础架构构建（商业公司必须重新建方案）&lt;/li&gt;
-&lt;li&gt;不需要使用Envoy的所有功能; 只是一个子集（功能太多，需要精简）&lt;/li&gt;
+&lt;li&gt;现有的解决方案，建立在已有不同数据平面的控制平面，需要改造 Envoy（与已有方案且冲突）&lt;/li&gt;
+&lt;li&gt;为没有任何现有开源或其他 Envoy 控制平面（即 VM，AWS ECS 等）的基础架构构建（商业公司必须重新建方案）&lt;/li&gt;
+&lt;li&gt;不需要使用 Envoy 的所有功能; 只是一个子集（功能太多，需要精简）&lt;/li&gt;
 &lt;li&gt;首选适用于Envoy配置的特定于域的API/对象模型，以更好地适应其工作流程/世界观（与已有方案冲突）&lt;/li&gt;
 &lt;li&gt;当其组织准备部署时，暂时没有成熟的控制平面（走的太快）&lt;/li&gt;
 &lt;/ul&gt;
@@ -2701,8 +2701,8 @@ verbo.start()
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;若是因为一些早期采用者建立了他们自己的定制控制平面，并不意味着你现在也要自己重新开发控制平面。 因为Envoy构建控制平面的项目在去年已经成熟了很多，若你决定重新开发另一个控制平面前你应该探索使用它们。 其次，正如Datawire的人们发现的那样，&lt;a href=&#34;https://twitter.com/danielbryantuk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;丹尼尔·布莱恩特&lt;/a&gt; 最近明确表示， &lt;a href=&#34;https://www.infoq.com/articles/ambassador-api-gateway-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为Envoy建造一个控制平面并不适合胆小的人&lt;/a&gt; 。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我参与&lt;/a&gt; 了 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几个&lt;/a&gt;为Envoy构建控制平面的&lt;a href=&#34;https://github.com/solo-io/gloo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源项目&lt;/a&gt; 。 例如， &lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo&lt;/a&gt; 是 &lt;a href=&#34;https://medium.com/solo-io/announcing-gloo-the-function-gateway-3f0860ef6600&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个功能网关&lt;/a&gt; ，可以充当非常强大的Kubernetes入口，API网关或功能网关，以简化单体应用到微服务的过渡。 Gloo &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;有一个Envoy的控制平面&lt;/a&gt; ，我们可以在这一系列的帖子中作为一个例子来说明如何构建一个简单的抽象，允许在你需要的控制点上实现可插拔性和可扩展性。 您可以用作参考的其他可靠的控制平面实现是 &lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio Contour&lt;/a&gt; 我们将在整个系列博客中使用这些作为很好的例子。 如果不出意外，您可以了解Envoy控制平面存在哪些选项，并使用它来指导您的实施，如果您必须走这条路。&lt;/p&gt;
+&lt;p&gt;若是因为一些早期采用者建立了他们自己的定制控制平面，并不意味着你现在也要自己重新开发控制平面。因为 Envoy 构建控制平面的项目在去年已经成熟了很多，若你决定重新开发另一个控制平面前你应该探索使用它们。其次，正如 Datawire 的人们发现的那样，&lt;a href=&#34;https://twitter.com/danielbryantuk&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;丹尼尔·布莱恩特&lt;/a&gt; 最近明确表示， &lt;a href=&#34;https://www.infoq.com/articles/ambassador-api-gateway-kubernetes&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;为 Envoy 建造一个控制平面并不适合胆小的人&lt;/a&gt; 。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我参与&lt;/a&gt; 了 &lt;a href=&#34;https://github.com/istio/istio&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几个&lt;/a&gt;为 Envoy 构建控制平面的&lt;a href=&#34;https://github.com/solo-io/gloo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开源项目&lt;/a&gt; 。例如， &lt;a href=&#34;https://gloo.solo.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo&lt;/a&gt; 是 &lt;a href=&#34;https://medium.com/solo-io/announcing-gloo-the-function-gateway-3f0860ef6600&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;一个功能网关&lt;/a&gt; ，可以充当非常强大的 Kubernetes 入口，API 网关或功能网关，以简化单体应用到微服务的过渡。Gloo &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;有一个 Envoy 的控制平面&lt;/a&gt; ，我们可以在这一系列的帖子中作为一个例子来说明如何构建一个简单的抽象，允许在你需要的控制点上实现可插拔性和可扩展性。您可以用作参考的其他可靠的控制平面实现是 &lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt; 和 &lt;a href=&#34;https://github.com/heptio/contour&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Heptio Contour&lt;/a&gt; 我们将在整个系列博客中使用这些作为很好的例子。如果不出意外，您可以了解 Envoy 控制平面存在哪些选项，并使用它来指导您的实施，如果您必须走这条路。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2733,23 +2733,23 @@ verbo.start()
 &lt;/p&gt;
 &lt;p&gt;在这个博客系列中，我们将看看以下几个方面：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;采用动态更新机制的Envoy路由、服务发现和其他配置&lt;/li&gt;
-&lt;li&gt;确定构成控制平面的组件，包括后端存储、服务发现API、安全组件等。&lt;/li&gt;
-&lt;li&gt;为您和组织最适合的用例，建立任何特定于域的配置对象和API&lt;/li&gt;
+&lt;li&gt;采用动态更新机制的 Envoy 路由、服务发现和其他配置&lt;/li&gt;
+&lt;li&gt;确定构成控制平面的组件，包括后端存储、服务发现 API、安全组件等。&lt;/li&gt;
+&lt;li&gt;为您和组织最适合的用例，建立任何特定于域的配置对象和 API&lt;/li&gt;
 &lt;li&gt;考虑如何最好地将控制平面插入您需要的地方&lt;/li&gt;
 &lt;li&gt;部署各种控制平面组件的选项&lt;/li&gt;
 &lt;li&gt;通过控制平面的测试工具进行思考&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;为了开始这个系列，我们来看看使用Envoy的动态配置API在运行时更新Envoy以处理拓扑和部署的变化。&lt;/p&gt;
-&lt;h2 id=&#34;使用xds-api动态配置envoy&#34;&gt;使用xDS API动态配置Envoy&lt;/h2&gt;
-&lt;p&gt;构建在Envoy之上的主要优势之一是它的数据平面API。 使用数据平面API，我们可以 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态配置Envoy的大部分重要运行时设置&lt;/a&gt; 。 Envoy通过其xDS API的配置 &lt;a href=&#34;https://blog.envoyproxy.io/embracing-eventual-consistency-in-soa-networking-32a5ee5d443d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最终一致的&lt;/a&gt;  - 即无法影响集群中所有代理的“原子更新”。 当控制平面具有配置更新时，它通过xDS API使它们可用于数据平面代理，并且每个代理将彼此独立地应用这些更新。&lt;/p&gt;
-&lt;p&gt;以下是我们可以通过xDS动态配置的Envoy运行时模型的部分：&lt;/p&gt;
+&lt;p&gt;为了开始这个系列，我们来看看使用 Envoy 的动态配置 API 在运行时更新 Envoy 以处理拓扑和部署的变化。&lt;/p&gt;
+&lt;h2 id=&#34;使用-xds-api-动态配置-envoy&#34;&gt;使用 xDS API 动态配置 Envoy&lt;/h2&gt;
+&lt;p&gt;构建在 Envoy 之上的主要优势之一是它的数据平面 API。使用数据平面 API，我们可以 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/dynamic_configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;动态配置 Envoy 的大部分重要运行时设置&lt;/a&gt; 。Envoy 通过其 xDS API 的配置 &lt;a href=&#34;https://blog.envoyproxy.io/embracing-eventual-consistency-in-soa-networking-32a5ee5d443d&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最终一致的&lt;/a&gt;  - 即无法影响集群中所有代理的“原子更新”。当控制平面具有配置更新时，它通过 xDS API 使它们可用于数据平面代理，并且每个代理将彼此独立地应用这些更新。&lt;/p&gt;
+&lt;p&gt;以下是我们可以通过 xDS 动态配置的 Envoy 运行时模型的部分：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务API -&lt;/a&gt; 用于发布监听流量的端口的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LDS&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务API-&lt;/a&gt; 用于服务发现的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EDS&lt;/a&gt; ，&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/http_conn_man/rds#config-http-conn-man-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务API-RDS&lt;/a&gt; 用于流量路由决策&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;监听器发现服务 API -&lt;/a&gt; 用于发布监听流量的端口的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/listeners/lds#config-listeners-lds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;LDS&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务 API-&lt;/a&gt; 用于服务发现的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;EDS&lt;/a&gt; ，&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/http_conn_man/rds#config-http-conn-man-rds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;路由发现服务 API-RDS&lt;/a&gt; 用于流量路由决策&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务 -&lt;/a&gt; 用于后端服务的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CDS&lt;/a&gt; ，我们可以将流量路由到该服务&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;secret发现服务 -&lt;/a&gt; 用于分发Secret的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SDS&lt;/a&gt; （证书和密钥）&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;secret 发现服务 -&lt;/a&gt; 用于分发 Secret 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/secret&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SDS&lt;/a&gt; （证书和密钥）&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -2779,35 +2779,35 @@ verbo.start()
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;API使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/overview/v2_overview#config-overview-v2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proto3 Protocol Buffers&lt;/a&gt; 定义， 甚至还有一些参考实现可用于引导您自己的控制平面：&lt;/p&gt;
+&lt;p&gt;API 使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/overview/v2_overview#config-overview-v2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;proto3 Protocol Buffers&lt;/a&gt; 定义，甚至还有一些参考实现可用于引导您自己的控制平面：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go控制平面&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/java-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;java的控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go 控制平面&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://github.com/envoyproxy/java-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;java 的控制平面&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;虽然这些领域（LDS/EDS/RDS/CDS/SDS，一起“xDS”）中的每一个都是动态可配置的，但这并不意味着您必须动态配置所有内容。 您可以拥有静态定义的部分组合以及动态更新的部分组合。 例如，要实现一种 &lt;code&gt;endpoints&lt;/code&gt; 预期为动态但 &lt;code&gt;clusters&lt;/code&gt; 在部署时众所周知 的服务发现类型 ，您可以静态定义 &lt;code&gt;clusters&lt;/code&gt; 并使用 Envoy中 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务&lt;/a&gt; 。 如果您不确定在部署时将使用哪些 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/terminology&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;上游集群，&lt;/a&gt; 则可以使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务&lt;/a&gt; 动态地找到那些。 关键是，您可以构建一个工作流程和流程，静态配置您需要的部分，同时使用动态xDS服务来发现运行时所需的部分。 您看到不同的控制平面实现的原因之一并不是每个人都有一个完全动态和可互换的环境，其中所有部分都应该是动态的。 在给定现有约束和可用工作流程的情况下，采用最适合您系统的动态级别。&lt;/p&gt;
-&lt;p&gt;在Gloo的情况下，我们使用&lt;a href=&#34;https://github.com/solo-io/gloo/blob/ac3bddf202423b297fb909eb6eff498745a8c015/projects/gloo/pkg/xds/envoy.go#L76&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于go-control-plane的控制平面&lt;/a&gt; 来实现xDS API以服务Envoy的动态配置。 与Heptio Contour一样，Istio也使用此实现。 此控制平面API利用 &lt;a href=&#34;https://grpc.io/docs/guides/concepts.html#server-streaming-rpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC流&lt;/a&gt; 调用和存根API，因此您可以使用实现填充它。 &lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Turbine Labs’ Rotor项目&lt;/a&gt; 是另一个不幸被弃用但可以用来学习的&lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;项目&lt;/a&gt; 。 这是将Envoy的数据平面API与控制平面集成的高效方法。&lt;/p&gt;
-&lt;p&gt;gRPC流不是更新Envoy配置的唯一方式。 在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.5.0/api-v1/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以前版本的Envoy xDS API中&lt;/a&gt; ，轮询是确定新配置是否可用的唯一选项。 虽然这是可以接受的，并且符合“最终一致”配置更新的标准，但它在网络和计算使用方面效率都较低。 也可能难以适当地调整轮询配置以减少浪费的资源。&lt;/p&gt;
-&lt;p&gt;最后，一些Envoy管理实施选择生成 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态Envoy配置文件，&lt;/a&gt; 并定期替换Envoy磁盘上的配置文件，然后执行 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy进程&lt;/a&gt; 的 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热重新加载&lt;/a&gt; 。 在高度动态的环境中（如Kubernetes，但实际上是任何基于ephemeral-compute的平台），此文件生成，交付，热重启等的管理可能变得难以处理。 Envoy最初是在一个执行此类更新的环境中运行的（Lyft，它是在哪里创建的），但它们逐渐转向使用xDS API。&lt;/p&gt;
+&lt;p&gt;虽然这些领域（LDS/EDS/RDS/CDS/SDS，一起“xDS”）中的每一个都是动态可配置的，但这并不意味着您必须动态配置所有内容。您可以拥有静态定义的部分组合以及动态更新的部分组合。例如，要实现一种 &lt;code&gt;endpoints&lt;/code&gt; 预期为动态但 &lt;code&gt;clusters&lt;/code&gt; 在部署时众所周知 的服务发现类型，您可以静态定义 &lt;code&gt;clusters&lt;/code&gt; 并使用 Envoy 中 的 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/api-v2/api/v2/eds.proto#envoy-api-file-envoy-api-v2-eds-proto&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;端点发现服务&lt;/a&gt; 。如果您不确定在部署时将使用哪些 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/intro/arch_overview/terminology&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;上游集群，&lt;/a&gt; 则可以使用 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.9.0/configuration/cluster_manager/cds#config-cluster-manager-cds&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;集群发现服务&lt;/a&gt; 动态地找到那些。关键是，您可以构建一个工作流程和流程，静态配置您需要的部分，同时使用动态 xDS 服务来发现运行时所需的部分。您看到不同的控制平面实现的原因之一并不是每个人都有一个完全动态和可互换的环境，其中所有部分都应该是动态的。在给定现有约束和可用工作流程的情况下，采用最适合您系统的动态级别。&lt;/p&gt;
+&lt;p&gt;在 Gloo 的情况下，我们使用&lt;a href=&#34;https://github.com/solo-io/gloo/blob/ac3bddf202423b297fb909eb6eff498745a8c015/projects/gloo/pkg/xds/envoy.go#L76&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;基于 go-control-plane 的控制平面&lt;/a&gt; 来实现 xDS API 以服务 Envoy 的动态配置。与 Heptio Contour 一样，Istio 也使用此实现。此控制平面 API 利用 &lt;a href=&#34;https://grpc.io/docs/guides/concepts.html#server-streaming-rpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC 流&lt;/a&gt; 调用和存根 API，因此您可以使用实现填充它。 &lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt; Turbine Labs’Rotor 项目&lt;/a&gt; 是另一个不幸被弃用但可以用来学习的&lt;a href=&#34;https://github.com/turbinelabs/rotor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;项目&lt;/a&gt; 。这是将 Envoy 的数据平面 API 与控制平面集成的高效方法。&lt;/p&gt;
+&lt;p&gt;gRPC 流不是更新 Envoy 配置的唯一方式。在&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/v1.5.0/api-v1/api&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以前版本的 Envoy xDS API 中&lt;/a&gt; ，轮询是确定新配置是否可用的唯一选项。虽然这是可以接受的，并且符合“最终一致”配置更新的标准，但它在网络和计算使用方面效率都较低。也可能难以适当地调整轮询配置以减少浪费的资源。&lt;/p&gt;
+&lt;p&gt;最后，一些 Envoy 管理实施选择生成 &lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/overview/v2_overview#static&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;静态 Envoy 配置文件，&lt;/a&gt; 并定期替换 Envoy 磁盘上的配置文件，然后执行 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 进程&lt;/a&gt; 的 &lt;a href=&#34;https://blog.envoyproxy.io/envoy-hot-restart-1d16b14555b5&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;热重新加载&lt;/a&gt; 。在高度动态的环境中（如 Kubernetes，但实际上是任何基于 ephemeral-compute 的平台），此文件生成，交付，热重启等的管理可能变得难以处理。Envoy 最初是在一个执行此类更新的环境中运行的（Lyft，它是在哪里创建的），但它们逐渐转向使用 xDS API。&lt;/p&gt;
 &lt;h2 id=&#34;takeaway&#34;&gt;Takeaway&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo团队&lt;/a&gt; 认为使用gRPC流和xDS API是实现Envoy动态配置和控制的理想方式。 同样，如果您不需要，并非所有Envoy配置都应动态提供，但是如果您在高度动态的环境中运行（例如，Kubernetes），则动态配置Envoy的选项至关重要。 其他环境可能没有这种需求。 无论哪种方式，动态的g​​RPC流API都是理想的选择。 这种方法的一些好处：&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/solo-io/gloo/graphs/contributors&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Gloo 团队&lt;/a&gt; 认为使用 gRPC 流和 xDS API 是实现 Envoy 动态配置和控制的理想方式。同样，如果您不需要，并非所有 Envoy 配置都应动态提供，但是如果您在高度动态的环境中运行（例如，Kubernetes），则动态配置 Envoy 的选项至关重要。其他环境可能没有这种需求。无论哪种方式，动态的 g​​RPC 流 API 都是理想的选择。这种方法的一些好处：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;事件驱动的配置更新; 当配置在控制平面中可用时，配置被推送到Envoy&lt;/li&gt;
+&lt;li&gt;事件驱动的配置更新; 当配置在控制平面中可用时，配置被推送到 Envoy&lt;/li&gt;
 &lt;li&gt;无需轮询更改&lt;/li&gt;
-&lt;li&gt;没有必要热加载Envoy&lt;/li&gt;
+&lt;li&gt;没有必要热加载 Envoy&lt;/li&gt;
 &lt;li&gt;没有中断流量&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;下一步是什么&#34;&gt;下一步是什么&lt;/h2&gt;
-&lt;p&gt;在第一部分中，我们通过介绍xDS API以及为Envoy提供动态配置的不同选项，为如何为Envoy构建控制平面建立了一些基本背景。 在接下来的部分中，将在几天内发布，将涵盖将您的控制平面分解为可部署组件，确定您需要哪些部分，特定于域的配置对象模型，以及如何考虑控件的可插拔性平面。 关注twitter（ &lt;a href=&#34;https://twitter.com/christianposta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@christianposta&lt;/a&gt; ， &lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@ solio_in&lt;/a&gt; ）或博客（ &lt;a href=&#34;https://medium.com/solo-io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://medium.com/solo-io&lt;/a&gt; ）&lt;/p&gt;
+&lt;p&gt;在第一部分中，我们通过介绍 xDS API 以及为 Envoy 提供动态配置的不同选项，为如何为 Envoy 构建控制平面建立了一些基本背景。在接下来的部分中，将在几天内发布，将涵盖将您的控制平面分解为可部署组件，确定您需要哪些部分，特定于域的配置对象模型，以及如何考虑控件的可插拔性平面。关注 twitter（ &lt;a href=&#34;https://twitter.com/christianposta&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@christianposta&lt;/a&gt; ， &lt;a href=&#34;https://twitter.com/soloio_inc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;@ solio_in&lt;/a&gt; ）或博客（ &lt;a href=&#34;https://medium.com/solo-io&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://medium.com/solo-io&lt;/a&gt; ）&lt;/p&gt;
 </description>
     </item>
     
     <item>
-      <title>Envoy，gRPC和速率限制</title>
+      <title>Envoy，gRPC 和速率限制</title>
       <link>https://cloudnative.to/blog/envoy-grpc-and-rate-limiting/</link>
       <pubDate>Thu, 15 Nov 2018 13:20:46 +0800</pubDate>
       <guid>https://cloudnative.to/blog/envoy-grpc-and-rate-limiting/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://venilnoronha.io/envoy-grpc-and-rate-limiting&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;是专为Cloud Native应用设计的轻量级服务代理，也是为数不多的支持&lt;a href=&#34;https://grpc.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;的代理之一。gRPC是一个基于&lt;a href=&#34;https://en.wikipedia.org/wiki/HTTP/2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP/2&lt;/a&gt;的高性能RPC（&lt;a href=&#34;https://en.wikipedia.org/wiki/Remote_procedure_call&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;远程过程调用&lt;/a&gt;）框架，支持多种语言。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.envoyproxy.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy&lt;/a&gt;是专为 Cloud Native 应用设计的轻量级服务代理，也是为数不多的支持&lt;a href=&#34;https://grpc.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;的代理之一。gRPC 是一个基于&lt;a href=&#34;https://en.wikipedia.org/wiki/HTTP/2&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP/2&lt;/a&gt;的高性能 RPC（&lt;a href=&#34;https://en.wikipedia.org/wiki/Remote_procedure_call&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;远程过程调用&lt;/a&gt;）框架，支持多种语言。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2838,10 +2838,10 @@ verbo.start()
       Envoy
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;在这篇文章中，我们将使用gRPC和&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Protocol Buffers&lt;/a&gt;构建C++语言版本的&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Greeter应用&lt;/a&gt;，使用&lt;a href=&#34;https://golang.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;语言构建另一个gRPC应用，实现Envoy的&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/71152b710e3543732464fca57c8f07b7395de68d/api/envoy/service/ratelimit/v2/rls.proto#L11-L15&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RateLimitService&lt;/a&gt;接口。最后，将Envoy部署为Greeter应用的代理，使用我们的速率限制服务实现&lt;a href=&#34;https://www.learnenvoy.io/articles/backpressure.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;反压机制&lt;/a&gt;（backpressure）。&lt;/p&gt;
-&lt;h2 id=&#34;grpc-greeter应用&#34;&gt;gRPC Greeter应用&lt;/h2&gt;
-&lt;p&gt;我们首先安装&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#install-grpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;和&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#install-protocol-buffers-v3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Protobuf&lt;/a&gt;，然后&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#build-the-example&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;构建C++语言版本的Greeter应用&lt;/a&gt;。您还可以通过选择&lt;a href=&#34;https://grpc.io/docs/quickstart/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档中列出的其他语言&lt;/a&gt;来构建此应用程序; 但是，我将在本文中使用C++。&lt;/p&gt;
-&lt;p&gt;以下是Greeter应用的示意图。&lt;/p&gt;
+&lt;p&gt;在这篇文章中，我们将使用 gRPC 和&lt;a href=&#34;https://developers.google.com/protocol-buffers/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Protocol Buffers&lt;/a&gt;构建 C++语言版本的&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Greeter 应用&lt;/a&gt;，使用&lt;a href=&#34;https://golang.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;语言构建另一个 gRPC 应用，实现 Envoy 的&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/71152b710e3543732464fca57c8f07b7395de68d/api/envoy/service/ratelimit/v2/rls.proto#L11-L15&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RateLimitService&lt;/a&gt;接口。最后，将 Envoy 部署为 Greeter 应用的代理，使用我们的速率限制服务实现&lt;a href=&#34;https://www.learnenvoy.io/articles/backpressure.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;反压机制&lt;/a&gt;（backpressure）。&lt;/p&gt;
+&lt;h2 id=&#34;grpc-greeter-应用&#34;&gt;gRPC Greeter 应用&lt;/h2&gt;
+&lt;p&gt;我们首先安装&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#install-grpc&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;gRPC&lt;/a&gt;和&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#install-protocol-buffers-v3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Protobuf&lt;/a&gt;，然后&lt;a href=&#34;https://grpc.io/docs/quickstart/cpp.html#build-the-example&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;构建 C++语言版本的 Greeter 应用&lt;/a&gt;。您还可以通过选择&lt;a href=&#34;https://grpc.io/docs/quickstart/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;文档中列出的其他语言&lt;/a&gt;来构建此应用程序; 但是，我将在本文中使用 C++。&lt;/p&gt;
+&lt;p&gt;以下是 Greeter 应用的示意图。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2872,13 +2872,13 @@ verbo.start()
       Greeter
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;运行Greeter应用时，终端中会有以下输出：&lt;/p&gt;
+&lt;p&gt;运行 Greeter 应用时，终端中会有以下输出：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ./greeter_server
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Server listening on 0.0.0.0:50051
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ./greeter_client
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: Hello world
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;升级grpc-greeter应用&#34;&gt;升级gRPC Greeter应用&lt;/h2&gt;
-&lt;p&gt;现在，我们通过使用带有请求计数前缀的返回值替代静态的“Hello”前缀，来增强Greeter应用。只需更新&lt;code&gt;greeter_server.cc&lt;/code&gt;文件，如下所示。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;升级-grpc-greeter-应用&#34;&gt;升级 gRPC Greeter 应用&lt;/h2&gt;
+&lt;p&gt;现在，我们通过使用带有请求计数前缀的返回值替代静态的“Hello”前缀，来增强 Greeter 应用。只需更新&lt;code&gt;greeter_server.cc&lt;/code&gt;文件，如下所示。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-diff&#34; data-lang=&#34;diff&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; // Logic and data behind the server&amp;#39;s behavior.
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; class GreeterServiceImpl final : public Greeter::Service {
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;gi&#34;&gt;+  int counter = 0;
@@ -2895,7 +2895,7 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: &lt;span class=&#34;m&#34;&gt;2&lt;/span&gt; world
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt; world
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;简单速率限制服务&#34;&gt;简单速率限制服务&lt;/h2&gt;
-&lt;p&gt;接下来，我们通过扩展Envoy的&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/71152b710e3543732464fca57c8f07b7395de68d/api/envoy/service/ratelimit/v2/rls.proto#L11-L15&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RateLimitService&lt;/a&gt;原型接口，用Go语言实现一个简单的速率限制服务。为此，我们创建一个名为&lt;code&gt;rate-limit-service&lt;/code&gt;的Go项目，并引入Envoy的&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go-control-plane&lt;/a&gt;和其它相关依赖。&lt;code&gt;go-control-plane&lt;/code&gt;项目为Envoy原型提供了Go语言绑定。为了后续实现速率限制服务，我们还需创建&lt;code&gt;cmd/server/main.go&lt;/code&gt;和&lt;code&gt;cmd/client/main.go&lt;/code&gt;两个文件。&lt;/p&gt;
+&lt;p&gt;接下来，我们通过扩展 Envoy 的&lt;a href=&#34;https://github.com/envoyproxy/envoy/blob/71152b710e3543732464fca57c8f07b7395de68d/api/envoy/service/ratelimit/v2/rls.proto#L11-L15&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;RateLimitService&lt;/a&gt;原型接口，用 Go 语言实现一个简单的速率限制服务。为此，我们创建一个名为&lt;code&gt;rate-limit-service&lt;/code&gt;的 Go 项目，并引入 Envoy 的&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;go-control-plane&lt;/a&gt;和其它相关依赖。&lt;code&gt;go-control-plane&lt;/code&gt;项目为 Envoy 原型提供了 Go 语言绑定。为了后续实现速率限制服务，我们还需创建&lt;code&gt;cmd/server/main.go&lt;/code&gt;和&lt;code&gt;cmd/client/main.go&lt;/code&gt;两个文件。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ mkdir -p &lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/src/github.com/venilnoronha/rate-limit-service/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;cd&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;$GOPATH&lt;/span&gt;/src/github.com/venilnoronha/rate-limit-service/
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ mkdir -p cmd/server/ &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; touch cmd/server/main.go
@@ -2921,7 +2921,7 @@ verbo.start()
            ├── genproto
            └── grpc
 &lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;速率限制服务端&#34;&gt;速率限制服务端&lt;/h3&gt;
-&lt;p&gt;现在，我们创建一个简单的gRPC速率限制服务，来限制每秒的请求数（译者注：例子实现是交替限制请求）。&lt;/p&gt;
+&lt;p&gt;现在，我们创建一个简单的 gRPC 速率限制服务，来限制每秒的请求数（译者注：例子实现是交替限制请求）。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;package&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;main&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kn&#34;&gt;import&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;
@@ -3022,8 +3022,8 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2018/10/27 17:32:26 response: overall_code:OK
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2018/10/27 17:32:28 request: domain:&lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;2018/10/27 17:32:28 response: overall_code:OVER_LIMIT
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;envoy代理&#34;&gt;Envoy代理&lt;/h2&gt;
-&lt;p&gt;现在我们引入Envoy代理，它将来自Greeter客户端的请求路由到Greeter服务端，同时使用我们的速率限制服务检查速率。下图描述了我们最终的部署结构。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;envoy-代理&#34;&gt;Envoy 代理&lt;/h2&gt;
+&lt;p&gt;现在我们引入 Envoy 代理，它将来自 Greeter 客户端的请求路由到 Greeter 服务端，同时使用我们的速率限制服务检查速率。下图描述了我们最终的部署结构。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -3055,7 +3055,7 @@ verbo.start()
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h3 id=&#34;代理配置&#34;&gt;代理配置&lt;/h3&gt;
-&lt;p&gt;我们使用如下Envoy配置来注册Greeter和RateLimitService服务并启用限速检查。注意，由于我们是将Envoy部署在&lt;a href=&#34;https://docs.docker.com/docker-for-mac/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker for Mac&lt;/a&gt;上，本地部署的服务是通过&lt;code&gt;docker.for.mac.localhost&lt;/code&gt;地址引用的。&lt;/p&gt;
+&lt;p&gt;我们使用如下 Envoy 配置来注册 Greeter 和 RateLimitService 服务并启用限速检查。注意，由于我们是将 Envoy 部署在&lt;a href=&#34;https://docs.docker.com/docker-for-mac/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Docker for Mac&lt;/a&gt;上，本地部署的服务是通过&lt;code&gt;docker.for.mac.localhost&lt;/code&gt;地址引用的。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;static_resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;listeners&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;address&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -3117,8 +3117,8 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;grpc_service&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;envoy_grpc&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;cluster_name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rate_limit_service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署envoy代理&#34;&gt;部署Envoy代理&lt;/h3&gt;
-&lt;p&gt;为了部署Envoy代理，我们将上述配置拷贝到&lt;code&gt;envoy.yaml&lt;/code&gt;文件。然后我们使用如下的&lt;code&gt;Dockerfile&lt;/code&gt;构建Docker镜像。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;部署-envoy-代理&#34;&gt;部署 Envoy 代理&lt;/h3&gt;
+&lt;p&gt;为了部署 Envoy 代理，我们将上述配置拷贝到&lt;code&gt;envoy.yaml&lt;/code&gt;文件。然后我们使用如下的&lt;code&gt;Dockerfile&lt;/code&gt;构建 Docker 镜像。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-dockerfile&#34; data-lang=&#34;dockerfile&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;FROM&lt;/span&gt;&lt;span class=&#34;s&#34;&gt; envoyproxy/envoy:latest&lt;/span&gt;&lt;span class=&#34;err&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;err&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;COPY&lt;/span&gt; envoy.yaml /etc/envoy/envoy.yaml&lt;span class=&#34;err&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;使用如下命令构建镜像：&lt;/p&gt;
@@ -3137,15 +3137,15 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2018-10-28 02:59:20.553&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;000008&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;info&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;upstream&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;source/common/upstream/cluster_manager_impl.cc:135&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; cm init: all clusters initialized
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2018-10-28 02:59:20.554&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;000008&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;info&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;main&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;source/server/server.cc:425&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; all clusters initialized. initializing init manager
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2018-10-28 02:59:20.554&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;000008&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;info&lt;span class=&#34;o&#34;&gt;][&lt;/span&gt;config&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;source/server/listener_manager_impl.cc:908&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; all dependencies initialized. starting workers
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;更新greeter客户端&#34;&gt;更新Greeter客户端&lt;/h3&gt;
-&lt;p&gt;由于要使用Envoy路由Greeter客户端的请求，我们将客户端代码中的服务端端口从&lt;code&gt;50051&lt;/code&gt;改为&lt;code&gt;9211&lt;/code&gt;，并重新build。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;更新-greeter-客户端&#34;&gt;更新 Greeter 客户端&lt;/h3&gt;
+&lt;p&gt;由于要使用 Envoy 路由 Greeter 客户端的请求，我们将客户端代码中的服务端端口从&lt;code&gt;50051&lt;/code&gt;改为&lt;code&gt;9211&lt;/code&gt;，并重新 build。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-diff&#34; data-lang=&#34;diff&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   GreeterClient greeter(grpc::CreateChannel(
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;gd&#34;&gt;-      &amp;#34;localhost:50051&amp;#34;, grpc::InsecureChannelCredentials()));
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;gd&#34;&gt;&lt;/span&gt;&lt;span class=&#34;gi&#34;&gt;+      &amp;#34;localhost:9211&amp;#34;, grpc::InsecureChannelCredentials()));
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;gi&#34;&gt;&lt;/span&gt;   std::string user(&amp;#34;world&amp;#34;);
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   std::string reply = greeter.SayHello(user);
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;最终测试&#34;&gt;最终测试&lt;/h2&gt;
-&lt;p&gt;此时，我们已经有了Greeter服务端、RateLimitService服务和一个Envoy代理，是时候验证整个部署了。为此，我们使用更新后的Greeter客户端发送几个如下所示的请求（译者注：前面Greeter服务端没有停，counter已经到了3）。&lt;/p&gt;
+&lt;p&gt;此时，我们已经有了 Greeter 服务端、RateLimitService 服务和一个 Envoy 代理，是时候验证整个部署了。为此，我们使用更新后的 Greeter 客户端发送几个如下所示的请求（译者注：前面 Greeter 服务端没有停，counter 已经到了 3）。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; i in &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;1..10&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;do&lt;/span&gt; ./greeter_client&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; sleep 1&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;done&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: &lt;span class=&#34;m&#34;&gt;4&lt;/span&gt; world
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;14:
@@ -3162,9 +3162,9 @@ verbo.start()
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: &lt;span class=&#34;m&#34;&gt;8&lt;/span&gt; world
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;14:
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Greeter received: RPC failed
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如你所见，10个请求中的5个是成功的，交替出现gRPC状态码为&lt;code&gt;14&lt;/code&gt;的&lt;code&gt;RPC failed&lt;/code&gt;失败请求。这表明速率限制服务按照设计限制了请求，Envoy正确地终止了之后的请求。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如你所见，10 个请求中的 5 个是成功的，交替出现 gRPC 状态码为&lt;code&gt;14&lt;/code&gt;的&lt;code&gt;RPC failed&lt;/code&gt;失败请求。这表明速率限制服务按照设计限制了请求，Envoy 正确地终止了之后的请求。&lt;/p&gt;
 &lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
-&lt;p&gt;这篇文章让你对如何使用Envoy作为应用代理有了一个高层次的认识，也能帮助你理解Envoy的限速过滤器如何跟gRPC协议协同工作。&lt;/p&gt;
+&lt;p&gt;这篇文章让你对如何使用 Envoy 作为应用代理有了一个高层次的认识，也能帮助你理解 Envoy 的限速过滤器如何跟 gRPC 协议协同工作。&lt;/p&gt;
 </description>
     </item>
     

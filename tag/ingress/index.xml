@@ -17,20 +17,20 @@
       <link>https://cloudnative.to/blog/how-to-pick-gateway-for-service-mesh/</link>
       <pubDate>Wed, 15 May 2019 12:23:01 +0800</pubDate>
       <guid>https://cloudnative.to/blog/how-to-pick-gateway-for-service-mesh/</guid>
-      <description>&lt;p&gt;在启用了Istio服务网格的Kubernetes集群中，缺省情况下只能在集群内部访问网格中的服务，要如何才能从外部网络访问这些服务呢？ Kubernetes和Istio提供了NodePort，LoadBalancer，Kubernetes Ingress，Istio Gateway等多种外部流量入口的方式，面对这么多种方式，我们在产品部署中应该如何选择？&lt;/p&gt;
-&lt;p&gt;本文将对Kubernetes和Istio对外提供服务的各种方式进行详细介绍和对比分析，并根据分析结果提出一个可用于产品部署的解决方案。&lt;/p&gt;
+      <description>&lt;p&gt;在启用了 Istio 服务网格的 Kubernetes 集群中，缺省情况下只能在集群内部访问网格中的服务，要如何才能从外部网络访问这些服务呢？Kubernetes 和 Istio 提供了 NodePort，LoadBalancer，Kubernetes Ingress，Istio Gateway 等多种外部流量入口的方式，面对这么多种方式，我们在产品部署中应该如何选择？&lt;/p&gt;
+&lt;p&gt;本文将对 Kubernetes 和 Istio 对外提供服务的各种方式进行详细介绍和对比分析，并根据分析结果提出一个可用于产品部署的解决方案。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;说明：阅读本文要求读者了解Kubernetes和Istio的基本概念，包括Pod、Service、NodePort、LoadBalancer、Ingress、Gateway、VirtualService等。如对这些概念不熟悉，可以在阅读过程中参考文后的相关链接。&lt;/p&gt;
+&lt;p&gt;说明：阅读本文要求读者了解 Kubernetes 和 Istio 的基本概念，包括 Pod、Service、NodePort、LoadBalancer、Ingress、Gateway、VirtualService 等。如对这些概念不熟悉，可以在阅读过程中参考文后的相关链接。&lt;/p&gt;
 &lt;/blockquote&gt;
 &lt;h2 id=&#34;内部服务间的通信&#34;&gt;内部服务间的通信&lt;/h2&gt;
-&lt;p&gt;首先，我们来回顾一下Kubernetes集群内部各个服务之间相互访问的方法。&lt;/p&gt;
+&lt;p&gt;首先，我们来回顾一下 Kubernetes 集群内部各个服务之间相互访问的方法。&lt;/p&gt;
 &lt;h2 id=&#34;cluster-ip&#34;&gt;Cluster IP&lt;/h2&gt;
-&lt;p&gt;Kubernetes以Pod作为应用部署的最小单位。Kubernetes会根据Pod的声明对其进行调度，包括创建、销毁、迁移、水平伸缩等，因此Pod的IP地址不是固定的，不方便直接采用Pod IP对服务进行访问。&lt;/p&gt;
-&lt;p&gt;为解决该问题，Kubernetes提供了Service资源，Service对提供同一个服务的多个Pod进行聚合。一个Service提供一个虚拟的Cluster IP，后端对应一个或者多个提供服务的Pod。在集群中访问该Service时，采用Cluster IP即可，Kube-proxy负责将发送到Cluster IP的请求转发到后端的Pod上。&lt;/p&gt;
-&lt;p&gt;Kube-proxy是一个运行在每个节点上的go应用程序，支持三种工作模式：&lt;/p&gt;
+&lt;p&gt;Kubernetes 以 Pod 作为应用部署的最小单位。Kubernetes 会根据 Pod 的声明对其进行调度，包括创建、销毁、迁移、水平伸缩等，因此 Pod 的 IP 地址不是固定的，不方便直接采用 Pod IP 对服务进行访问。&lt;/p&gt;
+&lt;p&gt;为解决该问题，Kubernetes 提供了 Service 资源，Service 对提供同一个服务的多个 Pod 进行聚合。一个 Service 提供一个虚拟的 Cluster IP，后端对应一个或者多个提供服务的 Pod。在集群中访问该 Service 时，采用 Cluster IP 即可，Kube-proxy 负责将发送到 Cluster IP 的请求转发到后端的 Pod 上。&lt;/p&gt;
+&lt;p&gt;Kube-proxy 是一个运行在每个节点上的 go 应用程序，支持三种工作模式：&lt;/p&gt;
 &lt;h3 id=&#34;userspace-模式&#34;&gt;userspace 模式&lt;/h3&gt;
-&lt;p&gt;该模式下Kube-proxy会为每一个Service创建一个监听端口。发向Cluster IP的请求被Iptables规则重定向到Kube-proxy监听的端口上，Kube-proxy根据LB算法选择一个提供服务的Pod并和其建立链接，以将请求转发到Pod上。&lt;br&gt;
-该模式下，Kube-proxy充当了一个四层Load balancer的角色。由于Kube-proxy运行在userspace中，在进行转发处理时会增加两次内核和用户空间之间的数据拷贝，效率较另外两种模式低一些；好处是当后端的Pod不可用时，Kube-proxy可以重试其他Pod。&lt;/p&gt;
+&lt;p&gt;该模式下 Kube-proxy 会为每一个 Service 创建一个监听端口。发向 Cluster IP 的请求被 Iptables 规则重定向到 Kube-proxy 监听的端口上，Kube-proxy 根据 LB 算法选择一个提供服务的 Pod 并和其建立链接，以将请求转发到 Pod 上。&lt;br&gt;
+该模式下，Kube-proxy 充当了一个四层 Load balancer 的角色。由于 Kube-proxy 运行在 userspace 中，在进行转发处理时会增加两次内核和用户空间之间的数据拷贝，效率较另外两种模式低一些；好处是当后端的 Pod 不可用时，Kube-proxy 可以重试其他 Pod。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -47,9 +47,9 @@
 
 
 
-&lt;figure  id=&#34;figure-kube-proxy-userspace模式&#34;&gt;
+&lt;figure  id=&#34;figure-kube-proxy-userspace-模式&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy userspace模式&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy userspace 模式&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4lmw4z7j20m80cj0tq_hu004e566ffbb697606d214d97c7c998ef_173749_258d4c6b58c6c4521f1bbcd7367f27b7.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4lmw4z7j20m80cj0tq_hu004e566ffbb697606d214d97c7c998ef_173749_9cb85c216dcb7949a0277cb2a4e9c96c.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4lmw4z7j20m80cj0tq_hu004e566ffbb697606d214d97c7c998ef_173749_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -58,13 +58,13 @@
                height=&#34;428&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Kube-proxy userspace模式
+      Kube-proxy userspace 模式
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes官网文档&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 官网文档&lt;/a&gt;&lt;/p&gt;
 &lt;h3 id=&#34;iptables-模式&#34;&gt;iptables 模式&lt;/h3&gt;
-&lt;p&gt;为了避免增加内核和用户空间的数据拷贝操作，提高转发效率，Kube-proxy提供了iptables模式。在该模式下，Kube-proxy为service后端的每个Pod创建对应的iptables规则，直接将发向Cluster IP的请求重定向到一个Pod IP。&lt;br&gt;
-该模式下Kube-proxy不承担四层代理的角色，只负责创建iptables规则。该模式的优点是较userspace模式效率更高，但不能提供灵活的LB策略，当后端Pod不可用时也无法进行重试。&lt;/p&gt;
+&lt;p&gt;为了避免增加内核和用户空间的数据拷贝操作，提高转发效率，Kube-proxy 提供了 iptables 模式。在该模式下，Kube-proxy 为 service 后端的每个 Pod 创建对应的 iptables 规则，直接将发向 Cluster IP 的请求重定向到一个 Pod IP。&lt;br&gt;
+该模式下 Kube-proxy 不承担四层代理的角色，只负责创建 iptables 规则。该模式的优点是较 userspace 模式效率更高，但不能提供灵活的 LB 策略，当后端 Pod 不可用时也无法进行重试。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -81,9 +81,9 @@
 
 
 
-&lt;figure  id=&#34;figure-kube-proxy-iptables模式&#34;&gt;
+&lt;figure  id=&#34;figure-kube-proxy-iptables-模式&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy iptables模式&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy iptables 模式&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4n2vx1tj20ol0h0dh3_hua2531e630bdc8006015b2559d568efcc_213686_1be72a27081caba131a5f81c6608854b.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4n2vx1tj20ol0h0dh3_hua2531e630bdc8006015b2559d568efcc_213686_21265347f7e9647db3d7616e4074809c.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4n2vx1tj20ol0h0dh3_hua2531e630bdc8006015b2559d568efcc_213686_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -92,12 +92,12 @@
                height=&#34;526&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Kube-proxy iptables模式
+      Kube-proxy iptables 模式
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes官网文档&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 官网文档&lt;/a&gt;&lt;/p&gt;
 &lt;h3 id=&#34;ipvs-模式&#34;&gt;ipvs 模式&lt;/h3&gt;
-&lt;p&gt;该模式和iptables类似，Kube-proxy监控Pod的变化并创建相应的ipvs rules。ipvs也是在kernel模式下通过netfilter实现的，但采用了hash table来存储规则，因此在规则较多的情况下，Ipvs相对iptables转发效率更高。除此以外，ipvs支持更多的LB算法。如果要设置Kube-proxy为ipvs模式，必须在操作系统中安装IPVS内核模块。&lt;/p&gt;
+&lt;p&gt;该模式和 iptables 类似，Kube-proxy 监控 Pod 的变化并创建相应的 ipvs rules。ipvs 也是在 kernel 模式下通过 netfilter 实现的，但采用了 hash table 来存储规则，因此在规则较多的情况下，Ipvs 相对 iptables 转发效率更高。除此以外，ipvs 支持更多的 LB 算法。如果要设置 Kube-proxy 为 ipvs 模式，必须在操作系统中安装 IPVS 内核模块。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -114,9 +114,9 @@
 
 
 
-&lt;figure  id=&#34;figure-kube-proxy-ipvs模式&#34;&gt;
+&lt;figure  id=&#34;figure-kube-proxy-ipvs-模式&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy ipvs模式&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kube-proxy ipvs 模式&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4nvyl1vj20nj0g83zi_hud3f3bc54abecdb13e6526c2355d0fa65_173996_c3e1d6f442f8f41b41265d563a1bf57a.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4nvyl1vj20nj0g83zi_hud3f3bc54abecdb13e6526c2355d0fa65_173996_04f228eb72690b42be57168f95bd1ccb.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46gy1g1l4nvyl1vj20nj0g83zi_hud3f3bc54abecdb13e6526c2355d0fa65_173996_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -125,14 +125,14 @@
                height=&#34;524&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Kube-proxy ipvs模式
+      Kube-proxy ipvs 模式
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes官网文档&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;图片来自：&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes 官网文档&lt;/a&gt;&lt;/p&gt;
 &lt;h2 id=&#34;istio-sidecar-proxy&#34;&gt;Istio Sidecar Proxy&lt;/h2&gt;
-&lt;p&gt;Cluster IP解决了服务之间相互访问的问题，但从上面Kube-proxy的三种模式可以看到，Cluster IP的方式只提供了服务发现和基本的LB功能。如果要为服务间的通信应用灵活的路由规则以及提供Metrics collection，distributed tracing等服务管控功能，就必须得依靠Istio提供的服务网格能力了。&lt;/p&gt;
-&lt;p&gt;在Kubernetes中部署Istio后，Istio通过iptables和Sidecar Proxy接管服务之间的通信，服务间的相互通信不再通过Kube-proxy，而是通过Istio的Sidecar Proxy进行。请求流程是这样的：Client发起的请求被iptables重定向到Sidecar Proxy，Sidecar Proxy根据从控制面获取的服务发现信息和路由规则，选择一个后端的Server Pod创建连接，代理并转发Client的请求。&lt;/p&gt;
-&lt;p&gt;Istio Sidecar Proxy和Kube-proxy的userspace模式的工作机制类似，都是通过在用户空间的一个代理来实现客户端请求的转发和后端多个Pod之间的负载均衡。两者的不同点是：Kube-Proxy工作在四层，而Sidecar Proxy则是一个七层代理，可以针对HTTP，gRPC等应用层的语义进行处理和转发，因此功能更为强大，可以配合控制面实现更为灵活的路由规则和服务管控功能。&lt;/p&gt;
+&lt;p&gt;Cluster IP 解决了服务之间相互访问的问题，但从上面 Kube-proxy 的三种模式可以看到，Cluster IP 的方式只提供了服务发现和基本的 LB 功能。如果要为服务间的通信应用灵活的路由规则以及提供 Metrics collection，distributed tracing 等服务管控功能，就必须得依靠 Istio 提供的服务网格能力了。&lt;/p&gt;
+&lt;p&gt;在 Kubernetes 中部署 Istio 后，Istio 通过 iptables 和 Sidecar Proxy 接管服务之间的通信，服务间的相互通信不再通过 Kube-proxy，而是通过 Istio 的 Sidecar Proxy 进行。请求流程是这样的：Client 发起的请求被 iptables 重定向到 Sidecar Proxy，Sidecar Proxy 根据从控制面获取的服务发现信息和路由规则，选择一个后端的 Server Pod 创建连接，代理并转发 Client 的请求。&lt;/p&gt;
+&lt;p&gt;Istio Sidecar Proxy 和 Kube-proxy 的 userspace 模式的工作机制类似，都是通过在用户空间的一个代理来实现客户端请求的转发和后端多个 Pod 之间的负载均衡。两者的不同点是：Kube-Proxy 工作在四层，而 Sidecar Proxy 则是一个七层代理，可以针对 HTTP，gRPC 等应用层的语义进行处理和转发，因此功能更为强大，可以配合控制面实现更为灵活的路由规则和服务管控功能。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -164,12 +164,12 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h1 id=&#34;如何从外部网络访问&#34;&gt;如何从外部网络访问&lt;/h1&gt;
-&lt;p&gt;Kubernetes的Pod IP和Cluster IP都只能在集群内部访问，而我们通常需要从外部网络上访问集群中的某些服务，Kubernetes提供了下述几种方式来为集群提供外部流量入口。&lt;/p&gt;
+&lt;p&gt;Kubernetes 的 Pod IP 和 Cluster IP 都只能在集群内部访问，而我们通常需要从外部网络上访问集群中的某些服务，Kubernetes 提供了下述几种方式来为集群提供外部流量入口。&lt;/p&gt;
 &lt;h2 id=&#34;nodeport&#34;&gt;NodePort&lt;/h2&gt;
-&lt;p&gt;NodePort在集群中的主机节点上为Service提供一个代理端口，以允许从主机网络上对Service进行访问。Kubernetes官网文档只介绍了NodePort的功能，并未对其实现原理进行解释。下面我们通过实验来分析NodePort的实现机制。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://www.katacoda.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;www.katacoda.com&lt;/a&gt; 这个网站提供了一个交互式的Kubernetes playground，注册即可免费实验Kubernetes的相关功能，下面我们就使用Katacoda来分析Nodeport的实现原理。&lt;/p&gt;
-&lt;p&gt;在浏览器中输入这个网址：https://www.katacoda.com/courses/kubernetes/networking-introduction， 打开后会提供了一个实验用的Kubernetes集群，并可以通过网元模拟Terminal连接到集群的Master节点。&lt;/p&gt;
-&lt;p&gt;执行下面的命令创建一个nodeport类型的service。&lt;/p&gt;
+&lt;p&gt;NodePort 在集群中的主机节点上为 Service 提供一个代理端口，以允许从主机网络上对 Service 进行访问。Kubernetes 官网文档只介绍了 NodePort 的功能，并未对其实现原理进行解释。下面我们通过实验来分析 NodePort 的实现机制。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://www.katacoda.com&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;www.katacoda.com&lt;/a&gt; 这个网站提供了一个交互式的 Kubernetes playground，注册即可免费实验 Kubernetes 的相关功能，下面我们就使用 Katacoda 来分析 Nodeport 的实现原理。&lt;/p&gt;
+&lt;p&gt;在浏览器中输入这个网址：https://www.katacoda.com/courses/kubernetes/networking-introduction，打开后会提供了一个实验用的 Kubernetes 集群，并可以通过网元模拟 Terminal 连接到集群的 Master 节点。&lt;/p&gt;
+&lt;p&gt;执行下面的命令创建一个 nodeport 类型的 service。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master $ cat nodeport.yaml
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;apiVersion: v1
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kind: Service
@@ -203,20 +203,20 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        - containerPort: &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;---
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master $ kubectl apply -f nodeport.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看创建的service，可以看到Kubernetes创建了一个名为webapp-nodeport-svc的service，并为该service在主机节点上创建了30080这个Nodeport。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看创建的 service，可以看到 Kubernetes 创建了一个名为 webapp-nodeport-svc 的 service，并为该 service 在主机节点上创建了 30080 这个 Nodeport。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master $ kubectl get svc
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                   TYPE        CLUSTER-IP      EXTERNAL-IP   PORT&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;        AGE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubernetes             ClusterIP   10.96.0.1       &amp;lt;none&amp;gt;        443/TCP        36m
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;webapp1-nodeport-svc   NodePort    10.103.188.73   &amp;lt;none&amp;gt;        80:30080/TCP   3m
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;webapp-nodeport-svc后端对应两个Pod，其Pod的IP分别为10.32.0.3和10.32.0.5。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;webapp-nodeport-svc 后端对应两个 Pod，其 Pod 的 IP 分别为 10.32.0.3 和 10.32.0.5。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master $ kubectl get pod -o wide
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;NAME                                           READY     STATUS    RESTARTS   AGE       IPNODE      NOMINATED NODE
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;webapp1-nodeport-deployment-785989576b-cjc5b   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          2m        10.32.0.3
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;webapp1-nodeport-deployment-785989576b-tpfqr   1/1       Running   &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          2m        10.32.0.5
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过netstat命令可以看到Kube-proxy在主机网络上创建了30080监听端口，用于接收从主机网络进入的外部流量。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;通过 netstat 命令可以看到 Kube-proxy 在主机网络上创建了 30080 监听端口，用于接收从主机网络进入的外部流量。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;master $ netstat -lnp&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;grep &lt;span class=&#34;m&#34;&gt;30080&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcp6       &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; :::30080                :::*                    LISTEN      7427/Kube-proxy
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是Kube-proxy创建的相关iptables规则以及对应的说明。可以看到Kube-proxy为Nodeport创建了相应的IPtable规则，将发向30080这个主机端口上的流量重定向到了后端的两个Pod IP上。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;下面是 Kube-proxy 创建的相关 iptables 规则以及对应的说明。可以看到 Kube-proxy 为 Nodeport 创建了相应的 IPtable 规则，将发向 30080 这个主机端口上的流量重定向到了后端的两个 Pod IP 上。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;iptables-save &amp;gt; iptables-dump
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# Generated by iptables-save v1.6.0 on Thu Mar 28 07:33:57 2019&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;*nat
@@ -244,12 +244,12 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A KUBE-SEP-YLXG4RMKAICGY2B3 -p tcp -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;default/webapp1-nodeport-svc:&amp;#34;&lt;/span&gt; -m tcp -j DNAT --to-destination 10.32.0.3:80
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;#将请求重定向到Pod 10.32.0.5&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A KUBE-SEP-4CGFRVESQ3AECDE7 -p tcp -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;default/webapp1-nodeport-svc:&amp;#34;&lt;/span&gt; -m tcp -j DNAT --to-destination 10.32.0.5:80
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从上面的实验可以看到，通过将一个Service定义为NodePort类型，Kubernetes会通过集群中node上的Kube-proxy为该Service在主机网络上创建一个监听端口。Kube-proxy并不会直接接收该主机端口进入的流量，而是会创建相应的Iptables规则，并通过Iptables将从该端口收到的流量直接转发到后端的Pod中。&lt;/p&gt;
-&lt;p&gt;NodePort的流量转发机制和Cluster IP的iptables模式类似，唯一不同之处是在主机网络上开了一个“NodePort”来接受外部流量。从上面的规则也可以看出，在创建Nodeport时，Kube-proxy也会同时为Service创建Cluster IP相关的iptables规则。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从上面的实验可以看到，通过将一个 Service 定义为 NodePort 类型，Kubernetes 会通过集群中 node 上的 Kube-proxy 为该 Service 在主机网络上创建一个监听端口。Kube-proxy 并不会直接接收该主机端口进入的流量，而是会创建相应的 Iptables 规则，并通过 Iptables 将从该端口收到的流量直接转发到后端的 Pod 中。&lt;/p&gt;
+&lt;p&gt;NodePort 的流量转发机制和 Cluster IP 的 iptables 模式类似，唯一不同之处是在主机网络上开了一个“NodePort”来接受外部流量。从上面的规则也可以看出，在创建 Nodeport 时，Kube-proxy 也会同时为 Service 创建 Cluster IP 相关的 iptables 规则。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;备注：除采用iptables进行流量转发，NodePort应该也可以提供userspace模式以及ipvs模式，这里未就这两种模式进行实验验证。&lt;/p&gt;
+&lt;p&gt;备注：除采用 iptables 进行流量转发，NodePort 应该也可以提供 userspace 模式以及 ipvs 模式，这里未就这两种模式进行实验验证。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;从分析得知，在NodePort模式下，集群内外部的通讯如下图所示：&lt;/p&gt;
+&lt;p&gt;从分析得知，在 NodePort 模式下，集群内外部的通讯如下图所示：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -281,14 +281,14 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;loadbalancer&#34;&gt;LoadBalancer&lt;/h2&gt;
-&lt;p&gt;NodePort提供了一种从外部网络访问Kubernetes集群内部Service的方法，但该方法存在下面一些限制，导致这种方式主要适用于程序开发，不适合用于产品部署。&lt;/p&gt;
+&lt;p&gt;NodePort 提供了一种从外部网络访问 Kubernetes 集群内部 Service 的方法，但该方法存在下面一些限制，导致这种方式主要适用于程序开发，不适合用于产品部署。&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Kubernetes cluster host的IP必须是一个well-known IP，即客户端必须知道该IP。但Cluster中的host是被作为资源池看待的，可以增加删除，每个host的IP一般也是动态分配的，因此并不能认为host IP对客户端而言是well-known IP。&lt;/li&gt;
-&lt;li&gt;客户端访问某一个固定的host IP的方式存在单点故障。假如一台host宕机了，Kubernetes cluster会把应用 reload到另一节点上，但客户端就无法通过该host的nodeport访问应用了。&lt;/li&gt;
+&lt;li&gt;Kubernetes cluster host 的 IP 必须是一个 well-known IP，即客户端必须知道该 IP。但 Cluster 中的 host 是被作为资源池看待的，可以增加删除，每个 host 的 IP 一般也是动态分配的，因此并不能认为 host IP 对客户端而言是 well-known IP。&lt;/li&gt;
+&lt;li&gt;客户端访问某一个固定的 host IP 的方式存在单点故障。假如一台 host 宕机了，Kubernetes cluster 会把应用 reload 到另一节点上，但客户端就无法通过该 host 的 nodeport 访问应用了。&lt;/li&gt;
 &lt;li&gt;通过一个主机节点作为网络入口，在网络流量较大时存在性能瓶颈。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;为了解决这些问题，Kubernetes提供了LoadBalancer。通过将Service定义为LoadBalancer类型，Kubernetes在主机节点的NodePort前提供了一个四层的负载均衡器。该四层负载均衡器负责将外部网络流量分发到后面的多个节点的NodePort端口上。&lt;/p&gt;
-&lt;p&gt;下图展示了Kubernetes如何通过LoadBalancer方式对外提供流量入口，图中LoadBalancer后面接入了两个主机节点上的NodePort，后端部署了三个Pod提供服务。根据集群的规模，可以在LoadBalancer后面可以接入更多的主机节点，以进行负荷分担。&lt;/p&gt;
+&lt;p&gt;为了解决这些问题，Kubernetes 提供了 LoadBalancer。通过将 Service 定义为 LoadBalancer 类型，Kubernetes 在主机节点的 NodePort 前提供了一个四层的负载均衡器。该四层负载均衡器负责将外部网络流量分发到后面的多个节点的 NodePort 端口上。&lt;/p&gt;
+&lt;p&gt;下图展示了 Kubernetes 如何通过 LoadBalancer 方式对外提供流量入口，图中 LoadBalancer 后面接入了两个主机节点上的 NodePort，后端部署了三个 Pod 提供服务。根据集群的规模，可以在 LoadBalancer 后面可以接入更多的主机节点，以进行负荷分担。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -320,15 +320,15 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;备注：LoadBalancer类型需要云服务提供商的支持，Service中的定义只是在Kubernetes配置文件中提出了一个要求，即为该Service创建Load Balancer，至于如何创建则是由Google Cloud或Amazon Cloud等云服务商提供的，创建的Load Balancer的过程不在Kubernetes Cluster的管理范围中。&lt;/p&gt;
-&lt;p&gt;目前AWS、Azure、CloudStack、GCE和OpenStack等主流的公有云和私有云提供商都可以为Kubernetes提供Load Balancer。一般来说，公有云提供商还会为Load Balancer提供一个External IP，以提供Internet接入。如果你的产品没有使用云提供商，而是自建Kubernetes Cluster，则需要自己提供LoadBalancer。&lt;/p&gt;
+&lt;p&gt;备注：LoadBalancer 类型需要云服务提供商的支持，Service 中的定义只是在 Kubernetes 配置文件中提出了一个要求，即为该 Service 创建 Load Balancer，至于如何创建则是由 Google Cloud 或 Amazon Cloud 等云服务商提供的，创建的 Load Balancer 的过程不在 Kubernetes Cluster 的管理范围中。&lt;/p&gt;
+&lt;p&gt;目前 AWS、Azure、CloudStack、GCE 和 OpenStack 等主流的公有云和私有云提供商都可以为 Kubernetes 提供 Load Balancer。一般来说，公有云提供商还会为 Load Balancer 提供一个 External IP，以提供 Internet 接入。如果你的产品没有使用云提供商，而是自建 Kubernetes Cluster，则需要自己提供 LoadBalancer。&lt;/p&gt;
 &lt;/blockquote&gt;
 &lt;h2 id=&#34;ingress&#34;&gt;Ingress&lt;/h2&gt;
-&lt;p&gt;LoadBalancer类型的Service提供的是四层负载均衡器，当只需要向外暴露一个服务的时候，采用这种方式是没有问题的。但当一个应用需要对外提供多个服务时，采用该方式则要求为每一个四层服务（IP+Port）都创建一个外部Load balancer。&lt;/p&gt;
-&lt;p&gt;一般来说，同一个应用的多个服务/资源会放在同一个域名下，在这种情况下，创建多个Load balancer是完全没有必要的，反而带来了额外的开销和管理成本。另外直接将服务暴露给外部用户也会导致了前端和后端的耦合，影响了后端架构的灵活性，如果以后由于业务需求对服务进行调整会直接影响到客户端。&lt;/p&gt;
-&lt;p&gt;在这种情况下，我们可以通过使用Kubernetes Ingress来统一网络入口。Kubernetes Ingress声明了一个应用层（OSI七层）的负载均衡器，可以根据HTTP请求的内容将来自同一个TCP端口的请求分发到不同的Kubernetes Service，其功能包括：&lt;/p&gt;
-&lt;h3 id=&#34;按http请求的url进行路由&#34;&gt;按HTTP请求的URL进行路由&lt;/h3&gt;
-&lt;p&gt;同一个TCP端口进来的流量可以根据URL路由到Cluster中的不同服务，如下图所示：&lt;/p&gt;
+&lt;p&gt;LoadBalancer 类型的 Service 提供的是四层负载均衡器，当只需要向外暴露一个服务的时候，采用这种方式是没有问题的。但当一个应用需要对外提供多个服务时，采用该方式则要求为每一个四层服务（IP+Port）都创建一个外部 Load balancer。&lt;/p&gt;
+&lt;p&gt;一般来说，同一个应用的多个服务/资源会放在同一个域名下，在这种情况下，创建多个 Load balancer 是完全没有必要的，反而带来了额外的开销和管理成本。另外直接将服务暴露给外部用户也会导致了前端和后端的耦合，影响了后端架构的灵活性，如果以后由于业务需求对服务进行调整会直接影响到客户端。&lt;/p&gt;
+&lt;p&gt;在这种情况下，我们可以通过使用 Kubernetes Ingress 来统一网络入口。Kubernetes Ingress 声明了一个应用层（OSI 七层）的负载均衡器，可以根据 HTTP 请求的内容将来自同一个 TCP 端口的请求分发到不同的 Kubernetes Service，其功能包括：&lt;/p&gt;
+&lt;h3 id=&#34;按-http-请求的-url-进行路由&#34;&gt;按 HTTP 请求的 URL 进行路由&lt;/h3&gt;
+&lt;p&gt;同一个 TCP 端口进来的流量可以根据 URL 路由到 Cluster 中的不同服务，如下图所示：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -345,9 +345,9 @@
 
 
 
-&lt;figure  id=&#34;figure-按http请求的ulr进行路由&#34;&gt;
+&lt;figure  id=&#34;figure-按-http-请求的-ulr-进行路由&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;按HTTP请求的ULR进行路由&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;按 HTTP 请求的 ULR 进行路由&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur85xbfj20fz0bp0t4_hu0bf1b1d2f986925642d684d489b02f8e_67735_f6cb08f427bd8f34c7bfc79238e93df0.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur85xbfj20fz0bp0t4_hu0bf1b1d2f986925642d684d489b02f8e_67735_eeb9aede9844807d6d64017d98331d43.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur85xbfj20fz0bp0t4_hu0bf1b1d2f986925642d684d489b02f8e_67735_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -356,11 +356,11 @@
                height=&#34;421&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      按HTTP请求的ULR进行路由
+      按 HTTP 请求的 ULR 进行路由
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h3 id=&#34;按http请求的host进行路由&#34;&gt;按HTTP请求的Host进行路由&lt;/h3&gt;
-&lt;p&gt;同一个IP进来的流量可以根据HTTP请求的Host路由到Cluster中的不同服务，如下图所示：&lt;/p&gt;
+&lt;h3 id=&#34;按-http-请求的-host-进行路由&#34;&gt;按 HTTP 请求的 Host 进行路由&lt;/h3&gt;
+&lt;p&gt;同一个 IP 进来的流量可以根据 HTTP 请求的 Host 路由到 Cluster 中的不同服务，如下图所示：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -377,9 +377,9 @@
 
 
 
-&lt;figure  id=&#34;figure-按http请求的host进行路由&#34;&gt;
+&lt;figure  id=&#34;figure-按-http-请求的-host-进行路由&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;按HTTP请求的Host进行路由&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;按 HTTP 请求的 Host 进行路由&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7zut9j20fw0caaaf_hu5e105bf886f0eb1c393c0a2d9fac8ee7_67380_ed58a288ea2fa9499f1b0b1604e5436d.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7zut9j20fw0caaaf_hu5e105bf886f0eb1c393c0a2d9fac8ee7_67380_261281a773fb889597c435ac2a64c6b9.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7zut9j20fw0caaaf_hu5e105bf886f0eb1c393c0a2d9fac8ee7_67380_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -388,11 +388,11 @@
                height=&#34;442&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      按HTTP请求的Host进行路由
+      按 HTTP 请求的 Host 进行路由
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;Ingress 规则定义了对七层网关的要求，包括URL分发规则，基于不同域名的虚拟主机，SSL证书等。Kubernetes使用Ingress Controller 来监控Ingress规则，并通过一个七层网关来实现这些要求，一般可以使用Nginx，HAProxy，Envoy等。&lt;/p&gt;
-&lt;p&gt;虽然Ingress Controller通过七层网关为后端的多个Service提供了统一的入口，但由于其部署在集群中，因此并不能直接对外提供服务。实际上Ingress需要配合NodePort和LoadBalancer才能提供对外的流量入口，如下图所示：&lt;/p&gt;
+&lt;p&gt;Ingress 规则定义了对七层网关的要求，包括 URL 分发规则，基于不同域名的虚拟主机，SSL 证书等。Kubernetes 使用 Ingress Controller 来监控 Ingress 规则，并通过一个七层网关来实现这些要求，一般可以使用 Nginx，HAProxy，Envoy 等。&lt;/p&gt;
+&lt;p&gt;虽然 Ingress Controller 通过七层网关为后端的多个 Service 提供了统一的入口，但由于其部署在集群中，因此并不能直接对外提供服务。实际上 Ingress 需要配合 NodePort 和 LoadBalancer 才能提供对外的流量入口，如下图所示：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -409,9 +409,9 @@
 
 
 
-&lt;figure  id=&#34;figure-采用ingress-nodeportal和loadbalancer提供外部流量入口的拓扑结构&#34;&gt;
+&lt;figure  id=&#34;figure-采用-ingress-nodeportal-和-loadbalancer-提供外部流量入口的拓扑结构&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用Ingress, NodePortal和LoadBalancer提供外部流量入口的拓扑结构&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 Ingress, NodePortal 和 LoadBalancer 提供外部流量入口的拓扑结构&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7vshrj20lw0gpaao_huf359bd6ffc0630443f4803d51ab69f67_124888_727fd39cfd5efeda4d39ebf0a26df55a.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7vshrj20lw0gpaao_huf359bd6ffc0630443f4803d51ab69f67_124888_c8fc00eb41acd10570c25f0ba86bb514.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7vshrj20lw0gpaao_huf359bd6ffc0630443f4803d51ab69f67_124888_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -420,10 +420,10 @@
                height=&#34;580&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      采用Ingress, NodePortal和LoadBalancer提供外部流量入口的拓扑结构
+      采用 Ingress, NodePortal 和 LoadBalancer 提供外部流量入口的拓扑结构
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;上图描述了如何采用Ingress配合NodePort和Load Balancer为集群提供外部流量入口，从该拓扑图中可以看到该架构的伸缩性非常好，在NodePort，Ingress，Pod等不同的接入层面都可以对系统进行水平扩展，以应对不同的外部流量要求。&lt;/p&gt;
+&lt;p&gt;上图描述了如何采用 Ingress 配合 NodePort 和 Load Balancer 为集群提供外部流量入口，从该拓扑图中可以看到该架构的伸缩性非常好，在 NodePort，Ingress，Pod 等不同的接入层面都可以对系统进行水平扩展，以应对不同的外部流量要求。&lt;/p&gt;
 &lt;p&gt;上图只展示了逻辑架构，下面的图展示了具体的实现原理：&lt;/p&gt;
 &lt;p&gt;
 
@@ -441,9 +441,9 @@
 
 
 
-&lt;figure  id=&#34;figure-采用ingress-nodeportal和loadbalancer提供外部流量入口的实现原理&#34;&gt;
+&lt;figure  id=&#34;figure-采用-ingress-nodeportal-和-loadbalancer-提供外部流量入口的实现原理&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用Ingress, NodePortal和LoadBalancer提供外部流量入口的实现原理&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 Ingress, NodePortal 和 LoadBalancer 提供外部流量入口的实现原理&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7w5yoj20es0lpwfn_hu4535170da61800f13d65ecbf23400376_133379_5a63790dab6a94e405ff4a1c1db8f668.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7w5yoj20es0lpwfn_hu4535170da61800f13d65ecbf23400376_133379_7e9bffcc8deb5a0e4ead361a750fcf38.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7w5yoj20es0lpwfn_hu4535170da61800f13d65ecbf23400376_133379_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -452,25 +452,25 @@
                height=&#34;760&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      采用Ingress, NodePortal和LoadBalancer提供外部流量入口的实现原理
+      采用 Ingress, NodePortal 和 LoadBalancer 提供外部流量入口的实现原理
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;流量从外部网络到达Pod的完整路径如下：&lt;/p&gt;
+&lt;p&gt;流量从外部网络到达 Pod 的完整路径如下：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;外部请求先通过四层Load Balancer进入内部网络&lt;/li&gt;
-&lt;li&gt;Load Balancer将流量分发到后端多个主机节点上的NodePort (userspace转发)&lt;/li&gt;
-&lt;li&gt;请求从NodePort进入到Ingress Controller (iptabes规则，Ingress Controller本身是一个NodePort类型的Service)&lt;/li&gt;
-&lt;li&gt;Ingress Controller根据Ingress rule进行七层分发，根据HTTP的URL和Host将请求分发给不同的Service (userspace转发)&lt;/li&gt;
-&lt;li&gt;Service将请求最终导入到后端提供服务的Pod中 (iptabes规则)&lt;/li&gt;
+&lt;li&gt;外部请求先通过四层 Load Balancer 进入内部网络&lt;/li&gt;
+&lt;li&gt;Load Balancer 将流量分发到后端多个主机节点上的 NodePort (userspace 转发)&lt;/li&gt;
+&lt;li&gt;请求从 NodePort 进入到 Ingress Controller (iptabes 规则，Ingress Controller 本身是一个 NodePort 类型的 Service)&lt;/li&gt;
+&lt;li&gt;Ingress Controller 根据 Ingress rule 进行七层分发，根据 HTTP 的 URL 和 Host 将请求分发给不同的 Service (userspace 转发)&lt;/li&gt;
+&lt;li&gt;Service 将请求最终导入到后端提供服务的 Pod 中 (iptabes 规则)&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;从前面的介绍可以看到，K8S Ingress提供了一个基础的七层网关功能的抽象定义，其作用是对外提供一个七层服务的统一入口，并根据URL/HOST将请求路由到集群内部不同的服务上。&lt;/p&gt;
+&lt;p&gt;从前面的介绍可以看到，K8S Ingress 提供了一个基础的七层网关功能的抽象定义，其作用是对外提供一个七层服务的统一入口，并根据 URL/HOST 将请求路由到集群内部不同的服务上。&lt;/p&gt;
 &lt;h1 id=&#34;如何为服务网格选择入口网关&#34;&gt;如何为服务网格选择入口网关？&lt;/h1&gt;
-&lt;p&gt;在Istio服务网格中，通过为每个Service部署一个sidecar代理，Istio接管了Service之间的请求流量。控制面可以对网格中的所有sidecar代理进行统一配置，实现了对网格内部流量的路由控制，从而可以实现灰度发布，流量镜像，故障注入等服务管控功能。但是，Istio并没有为入口网关提供一个较为完善的解决方案。&lt;/p&gt;
+&lt;p&gt;在 Istio 服务网格中，通过为每个 Service 部署一个 sidecar 代理，Istio 接管了 Service 之间的请求流量。控制面可以对网格中的所有 sidecar 代理进行统一配置，实现了对网格内部流量的路由控制，从而可以实现灰度发布，流量镜像，故障注入等服务管控功能。但是，Istio 并没有为入口网关提供一个较为完善的解决方案。&lt;/p&gt;
 &lt;h2 id=&#34;k8s-ingress&#34;&gt;K8s Ingress&lt;/h2&gt;
-&lt;p&gt;在0.8版本以前，Istio缺省采用K8s Ingress来作为Service Mesh的流量入口。K8s Ingress统一了应用的流量入口，但存在两个问题：&lt;/p&gt;
+&lt;p&gt;在 0.8 版本以前，Istio 缺省采用 K8s Ingress 来作为 Service Mesh 的流量入口。K8s Ingress 统一了应用的流量入口，但存在两个问题：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;K8s Ingress是独立在Istio体系之外的，需要单独采用Ingress rule进行配置，导致系统入口和内部存在两套互相独立的路由规则配置，运维和管理较为复杂。&lt;/li&gt;
-&lt;li&gt;K8s Ingress rule的功能较弱，不能在入口处实现和网格内部类似的路由规则，也不具备网格sidecar的其它能力，导致难以从整体上为应用系统实现灰度发布、分布式跟踪等服务管控功能。&lt;/li&gt;
+&lt;li&gt;K8s Ingress 是独立在 Istio 体系之外的，需要单独采用 Ingress rule 进行配置，导致系统入口和内部存在两套互相独立的路由规则配置，运维和管理较为复杂。&lt;/li&gt;
+&lt;li&gt;K8s Ingress rule 的功能较弱，不能在入口处实现和网格内部类似的路由规则，也不具备网格 sidecar 的其它能力，导致难以从整体上为应用系统实现灰度发布、分布式跟踪等服务管控功能。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -488,9 +488,9 @@
 
 
 
-&lt;figure  id=&#34;figure-采用kubernetes-ingress作为服务网格的流量入口&#34;&gt;
+&lt;figure  id=&#34;figure-采用-kubernetes-ingress-作为服务网格的流量入口&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用Kubernetes Ingress作为服务网格的流量入口&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 Kubernetes Ingress 作为服务网格的流量入口&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7amu9j20oy0bdwf0_hubc2aba9431228d923fffdab87b3c9d23_72021_d5c3c8e21cf3b0e70f22460315c6ac1a.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7amu9j20oy0bdwf0_hubc2aba9431228d923fffdab87b3c9d23_72021_5d9189928ea684c48392160404ffeade.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7amu9j20oy0bdwf0_hubc2aba9431228d923fffdab87b3c9d23_72021_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -499,14 +499,14 @@
                height=&#34;346&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      采用Kubernetes Ingress作为服务网格的流量入口
+      采用 Kubernetes Ingress 作为服务网格的流量入口
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;istio-gateway&#34;&gt;Istio Gateway&lt;/h2&gt;
-&lt;p&gt;Istio社区意识到了Ingress和Mesh内部配置割裂的问题，因此从0.8版本开始，社区采用了 Gateway 资源代替K8s Ingress来表示流量入口。&lt;/p&gt;
-&lt;p&gt;Istio Gateway资源本身只能配置L4-L6的功能，例如暴露的端口，TLS设置等；但Gateway可以和绑定一个VirtualService，在VirtualService 中可以配置七层路由规则，这些七层路由规则包括根据按照服务版本对请求进行导流，故障注入，HTTP重定向，HTTP重写等所有Mesh内部支持的路由规则。&lt;/p&gt;
-&lt;p&gt;Gateway和VirtualService用于表示Istio Ingress的配置模型，Istio Ingress的缺省实现则采用了和Sidecar相同的Envoy proxy。&lt;/p&gt;
-&lt;p&gt;通过该方式，Istio控制面用一致的配置模型同时控制了入口网关和内部的sidecar代理。这些配置包括路由规则，策略检查、Telementry收集以及其他服务管控功能。&lt;/p&gt;
+&lt;p&gt;Istio 社区意识到了 Ingress 和 Mesh 内部配置割裂的问题，因此从 0.8 版本开始，社区采用了 Gateway 资源代替 K8s Ingress 来表示流量入口。&lt;/p&gt;
+&lt;p&gt;Istio Gateway 资源本身只能配置 L4-L6 的功能，例如暴露的端口，TLS 设置等；但 Gateway 可以和绑定一个 VirtualService，在 VirtualService 中可以配置七层路由规则，这些七层路由规则包括根据按照服务版本对请求进行导流，故障注入，HTTP 重定向，HTTP 重写等所有 Mesh 内部支持的路由规则。&lt;/p&gt;
+&lt;p&gt;Gateway 和 VirtualService 用于表示 Istio Ingress 的配置模型，Istio Ingress 的缺省实现则采用了和 Sidecar 相同的 Envoy proxy。&lt;/p&gt;
+&lt;p&gt;通过该方式，Istio 控制面用一致的配置模型同时控制了入口网关和内部的 sidecar 代理。这些配置包括路由规则，策略检查、Telementry 收集以及其他服务管控功能。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -523,9 +523,9 @@
 
 
 
-&lt;figure  id=&#34;figure-采用-istio-ingress-gateway作为服务网格的流量入口&#34;&gt;
+&lt;figure  id=&#34;figure-采用-istio-ingress-gateway-作为服务网格的流量入口&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 Istio Ingress Gateway作为服务网格的流量入口&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 Istio Ingress Gateway 作为服务网格的流量入口&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur6wqsjj20kh0cbaax_hu39d55e73a319f81f74377a388a98b6d1_95311_711aeb1be0ab812cf7a26533d9eee35d.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur6wqsjj20kh0cbaax_hu39d55e73a319f81f74377a388a98b6d1_95311_d7a398ea58d5e260fae61ca30efcde12.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur6wqsjj20kh0cbaax_hu39d55e73a319f81f74377a388a98b6d1_95311_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -534,17 +534,17 @@
                height=&#34;443&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      采用 Istio Ingress Gateway作为服务网格的流量入口
+      采用 Istio Ingress Gateway 作为服务网格的流量入口
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h2 id=&#34;应用对api-gateway的需求&#34;&gt;应用对API Gateway的需求&lt;/h2&gt;
-&lt;p&gt;采用Gateway和VirtualService实现的Istio Ingress Gateway提供了网络入口处的基础通信功能，包括可靠的通信和灵活的路由规则。但对于一个服务化应用来说，网络入口除了基础的通讯功能之外，还有一些其他的应用层功能需求，例如：&lt;/p&gt;
+&lt;h2 id=&#34;应用对-api-gateway-的需求&#34;&gt;应用对 API Gateway 的需求&lt;/h2&gt;
+&lt;p&gt;采用 Gateway 和 VirtualService 实现的 Istio Ingress Gateway 提供了网络入口处的基础通信功能，包括可靠的通信和灵活的路由规则。但对于一个服务化应用来说，网络入口除了基础的通讯功能之外，还有一些其他的应用层功能需求，例如：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;第三方系统对API的访问控制&lt;/li&gt;
+&lt;li&gt;第三方系统对 API 的访问控制&lt;/li&gt;
 &lt;li&gt;用户对系统的访问控制&lt;/li&gt;
 &lt;li&gt;修改请求/返回数据&lt;/li&gt;
-&lt;li&gt;服务API的生命周期管理&lt;/li&gt;
-&lt;li&gt;服务访问的SLA、限流及计费&lt;/li&gt;
+&lt;li&gt;服务 API 的生命周期管理&lt;/li&gt;
+&lt;li&gt;服务访问的 SLA、限流及计费&lt;/li&gt;
 &lt;li&gt;….&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
@@ -563,9 +563,9 @@
 
 
 
-&lt;figure  id=&#34;figure-kubernetes-ingress-istio-gateway-and-api-gateway的功能对比&#34;&gt;
+&lt;figure  id=&#34;figure-kubernetes-ingress-istio-gateway-and-api-gateway-的功能对比&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes ingress, Istio gateway and API gateway的功能对比&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Kubernetes ingress, Istio gateway and API gateway 的功能对比&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kv0ys0ndj20m80azdiw_hu764b17e734bab8fed08e1cda54902d8f_204376_178de5a1eb415d849fdf76625ad5d50d.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kv0ys0ndj20m80azdiw_hu764b17e734bab8fed08e1cda54902d8f_204376_01aac67f9e108c35276843178888b59d.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kv0ys0ndj20m80azdiw_hu764b17e734bab8fed08e1cda54902d8f_204376_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -574,21 +574,21 @@
                height=&#34;375&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      Kubernetes ingress, Istio gateway and API gateway的功能对比
+      Kubernetes ingress, Istio gateway and API gateway 的功能对比
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;API Gateway需求中很大一部分需要根据不同的应用系统进行定制，目前看来暂时不大可能被纳入K8s Ingress或者Istio Gateway的规范之中。为了满足这些需求，涌现出了各类不同的k8s Ingress Controller以及Istio Ingress Gateway实现，包括Ambassador、Kong、 Traefik、Solo等。&lt;/p&gt;
-&lt;p&gt;这些网关产品在实现在提供基础的K8s Ingress能力的同时，提供了强大的API Gateway功能，但由于缺少统一的标准，这些扩展实现之间相互之间并不兼容。而且遗憾的是，目前这些Ingress controller都还没有正式提供和Istio 控制面集成的能力。&lt;/p&gt;
+&lt;p&gt;API Gateway 需求中很大一部分需要根据不同的应用系统进行定制，目前看来暂时不大可能被纳入 K8s Ingress 或者 Istio Gateway 的规范之中。为了满足这些需求，涌现出了各类不同的 k8s Ingress Controller 以及 Istio Ingress Gateway 实现，包括 Ambassador、Kong、Traefik、Solo 等。&lt;/p&gt;
+&lt;p&gt;这些网关产品在实现在提供基础的 K8s Ingress 能力的同时，提供了强大的 API Gateway 功能，但由于缺少统一的标准，这些扩展实现之间相互之间并不兼容。而且遗憾的是，目前这些 Ingress controller 都还没有正式提供和 Istio 控制面集成的能力。&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;备注：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Ambassador将对Istio路由规则的支持纳入了Roadmap &lt;a href=&#34;https://www.getambassador.io/user-guide/with-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.getambassador.io/user-guide/with-istio/&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;Istio声称支持Istio-Based Route Rule Discovery (尚处于实验阶段) &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://gloo.solo.io/introduction/architecture/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Ambassador 将对 Istio 路由规则的支持纳入了 Roadmap &lt;a href=&#34;https://www.getambassador.io/user-guide/with-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://www.getambassador.io/user-guide/with-istio/&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Istio 声称支持 Istio-Based Route Rule Discovery (尚处于实验阶段) &lt;a href=&#34;https://gloo.solo.io/introduction/architecture/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://gloo.solo.io/introduction/architecture/&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/blockquote&gt;
-&lt;h2 id=&#34;采用api-gateway--sidecar-proxy作为服务网格的流量入口&#34;&gt;采用API Gateway + Sidecar Proxy作为服务网格的流量入口&lt;/h2&gt;
-&lt;p&gt;在目前难以找到一个同时具备API Gateway和Istio Ingress能力的网关的情况下，一个可行的方案是使用API Gateway和Sidecar Proxy一起为服务网格提供外部流量入口。&lt;/p&gt;
-&lt;p&gt;由于API Gateway已经具备七层网关的功能，Mesh Ingress中的Sidecar只需要提供VirtualService资源的路由能力，并不需要提供Gateway资源的网关能力，因此采用Sidecar Proxy即可。网络入口处的Sidecar Proxy和网格内部应用Pod中Sidecar Proxy的唯一一点区别是：该Sidecar只接管API Gateway向Mesh内部的流量，并不接管外部流向API Gateway的流量；而应用Pod中的Sidecar需要接管进入应用的所有流量。&lt;/p&gt;
+&lt;h2 id=&#34;采用-api-gateway--sidecar-proxy-作为服务网格的流量入口&#34;&gt;采用 API Gateway + Sidecar Proxy 作为服务网格的流量入口&lt;/h2&gt;
+&lt;p&gt;在目前难以找到一个同时具备 API Gateway 和 Istio Ingress 能力的网关的情况下，一个可行的方案是使用 API Gateway 和 Sidecar Proxy 一起为服务网格提供外部流量入口。&lt;/p&gt;
+&lt;p&gt;由于 API Gateway 已经具备七层网关的功能，Mesh Ingress 中的 Sidecar 只需要提供 VirtualService 资源的路由能力，并不需要提供 Gateway 资源的网关能力，因此采用 Sidecar Proxy 即可。网络入口处的 Sidecar Proxy 和网格内部应用 Pod 中 Sidecar Proxy 的唯一一点区别是：该 Sidecar 只接管 API Gateway 向 Mesh 内部的流量，并不接管外部流向 API Gateway 的流量；而应用 Pod 中的 Sidecar 需要接管进入应用的所有流量。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -605,9 +605,9 @@
 
 
 
-&lt;figure  id=&#34;figure-采用api-gateway--sidecar-proxy为服务网格提供流量入口&#34;&gt;
+&lt;figure  id=&#34;figure-采用-api-gateway--sidecar-proxy-为服务网格提供流量入口&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用API Gateway &amp;#43; Sidecar Proxy为服务网格提供流量入口&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;采用 API Gateway &amp;#43; Sidecar Proxy 为服务网格提供流量入口&#34; srcset=&#34;
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7v8ktj20nt0c0ab2_hu46b796a40221c3a084a48e1733e26d44_109547_da9dbac348bc0a5a4838f5bd9c5e20d6.webp 400w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7v8ktj20nt0c0ab2_hu46b796a40221c3a084a48e1733e26d44_109547_e60e3959167108abc36feb709f2c4219.webp 760w,
                /blog/how-to-pick-gateway-for-service-mesh/6ce41a46ly1g1kur7v8ktj20nt0c0ab2_hu46b796a40221c3a084a48e1733e26d44_109547_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -616,20 +616,20 @@
                height=&#34;383&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      采用API Gateway &amp;#43; Sidecar Proxy为服务网格提供流量入口
+      采用 API Gateway &amp;#43; Sidecar Proxy 为服务网格提供流量入口
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;备注：在实际部署时，API Gateway前端需要采用NodePort和LoadBalancer提供外部流量入口。为了突出主题，对上图进行了简化，没有画出NodePort和LoadBalancer。&lt;/p&gt;
+&lt;p&gt;备注：在实际部署时，API Gateway 前端需要采用 NodePort 和 LoadBalancer 提供外部流量入口。为了突出主题，对上图进行了简化，没有画出 NodePort 和 LoadBalancer。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;采用API Gateway和Sidecar Proxy一起作为服务网格的流量入口，既能够通过对网关进行定制开发满足产品对API网关的各种需求，又可以在网络入口处利用服务网格提供的灵活的路由能力和分布式跟踪，策略等管控功能，是服务网格产品入口网关的一个理想方案。&lt;/p&gt;
-&lt;p&gt;性能方面的考虑：从上图可以看到，采用该方案后，外部请求的处理流程在入口处增加了Sidecar Proxy这一跳，因此该方式会带来少量的性能损失，但该损失是完全可以接受的。&lt;/p&gt;
-&lt;p&gt;对于请求时延而言，在服务网格中，一个外部请求本来就要经过较多的代理和应用进程的处理，在Ingress处增加一个代理对整体的时延影响基本忽略不计，而且对于绝大多数应用来说，网络转发所占的时间比例本来就很小，99%的耗时都在业务逻辑。如果系统对于增加的该时延非常敏感，则建议重新考虑该系统是否需要采用微服务架构和服务网格。&lt;/p&gt;
-&lt;p&gt;对于吞吐量而言，如果入口处的网络吞吐量存在瓶颈，则可以通过对API Gateway + Sidecar Proxy组成的Ingress整体进行水平扩展，来对入口流量进行负荷分担，以提高网格入口的网络吞吐量。&lt;/p&gt;
+&lt;p&gt;采用 API Gateway 和 Sidecar Proxy 一起作为服务网格的流量入口，既能够通过对网关进行定制开发满足产品对 API 网关的各种需求，又可以在网络入口处利用服务网格提供的灵活的路由能力和分布式跟踪，策略等管控功能，是服务网格产品入口网关的一个理想方案。&lt;/p&gt;
+&lt;p&gt;性能方面的考虑：从上图可以看到，采用该方案后，外部请求的处理流程在入口处增加了 Sidecar Proxy 这一跳，因此该方式会带来少量的性能损失，但该损失是完全可以接受的。&lt;/p&gt;
+&lt;p&gt;对于请求时延而言，在服务网格中，一个外部请求本来就要经过较多的代理和应用进程的处理，在 Ingress 处增加一个代理对整体的时延影响基本忽略不计，而且对于绝大多数应用来说，网络转发所占的时间比例本来就很小，99% 的耗时都在业务逻辑。如果系统对于增加的该时延非常敏感，则建议重新考虑该系统是否需要采用微服务架构和服务网格。&lt;/p&gt;
+&lt;p&gt;对于吞吐量而言，如果入口处的网络吞吐量存在瓶颈，则可以通过对 API Gateway + Sidecar Proxy 组成的 Ingress 整体进行水平扩展，来对入口流量进行负荷分担，以提高网格入口的网络吞吐量。&lt;/p&gt;
 &lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a id=&#34;ref01&#34;&gt;&lt;a href=&#34;https://kubernetes.io/docs/concepts/services-networking/service/#virtual-ips-and-service-proxies&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Virtual IPs and Service Proxie - kubernetes.io&lt;/a&gt;&lt;/li&gt;
-&lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/2017/11/28/access-application-from-outside/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何从外部访问Kubernetes集群中的应用？ - zhaohuabing.com&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/2017/11/28/access-application-from-outside/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;如何从外部访问 Kubernetes 集群中的应用？ - zhaohuabing.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://zhaohuabing.com/post/2018-12-27-the-obstacles-to-put-istio-into-production/#service-mesh-and-api-gateway&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;The obstacles to put Istio into production and how we solve them - kubernetes.io&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://medium.com/google-cloud/kubernetes-nodeport-vs-loadbalancer-vs-ingress-when-should-i-use-what-922f010849e0&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Kubernetes NodePort vs LoadBalancer vs Ingress? When should I use what? - medium.com&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
@@ -637,23 +637,23 @@
     </item>
     
     <item>
-      <title>Kubernetes Ingress Controller的使用介绍及高可用落地</title>
+      <title>Kubernetes Ingress Controller 的使用介绍及高可用落地</title>
       <link>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</link>
       <pubDate>Wed, 17 Apr 2019 11:23:34 +0800</pubDate>
       <guid>https://cloudnative.to/blog/kubernetes-ingress-controller-deployment-and-ha/</guid>
       <description>&lt;blockquote&gt;
-&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang的博客&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;本文转载自&lt;a href=&#34;https://zhangguanzhang.github.io/2018/10/06/IngressController/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;zhangguanzhang 的博客&lt;/a&gt;。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;从之前对ingress controller到现在了解架构和一些经验总结下，顺带给人科普少走弯路
+&lt;p&gt;从之前对 ingress controller 到现在了解架构和一些经验总结下，顺带给人科普少走弯路
 需要看懂本文要具备一下知识点：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Service实现原理和会应用&lt;/li&gt;
-&lt;li&gt;知道反向代理原理，了解nginx和apache的vhost概念&lt;/li&gt;
-&lt;li&gt;了解service的几种类型（Nodeport、clusterip、LB）&lt;/li&gt;
-&lt;li&gt;四层和七层区别（不明白就这样去理解，七层最常见就是应用层的http，也就是url，四层是传输层，为tcp/udp端口）&lt;/li&gt;
-&lt;li&gt;域名解析，/etc/hosts等基础知识&lt;/li&gt;
+&lt;li&gt;Service 实现原理和会应用&lt;/li&gt;
+&lt;li&gt;知道反向代理原理，了解 nginx 和 apache 的 vhost 概念&lt;/li&gt;
+&lt;li&gt;了解 service 的几种类型（Nodeport、clusterip、LB）&lt;/li&gt;
+&lt;li&gt;四层和七层区别（不明白就这样去理解，七层最常见就是应用层的 http，也就是 url，四层是传输层，为 tcp/udp 端口）&lt;/li&gt;
+&lt;li&gt;域名解析，/etc/hosts 等基础知识&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;ingress-controller介绍&#34;&gt;Ingress Controller介绍&lt;/h2&gt;
+&lt;h2 id=&#34;ingress-controller-介绍&#34;&gt;Ingress Controller 介绍&lt;/h2&gt;
 &lt;p&gt;&lt;code&gt;Ingress Controller&lt;/code&gt;是一个统称，并不是只有一个，有如下这些：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ingress NGINX&lt;/a&gt;: Kubernetes 官方维护的方案，也是本次安装使用的 Controller。&lt;/li&gt;
@@ -665,8 +665,8 @@
 &lt;blockquote&gt;
 &lt;p&gt;Ingress Controller 的实现不只上面这些方案，还有很多可以在网络上找到这里不一一列出来了。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;我们部署在集群里的服务的svc想暴露出来的时候，从长久眼光看和易于管理维护都是用的&lt;code&gt;Ingress Controller&lt;/code&gt;来处理，clusterip非集群主机无法访问，Nodeport不方便长久管理和效率，LB服务多了不方便因为需要花费额外的钱，externalIPS不好用（后面有空写文章会说它）。&lt;/p&gt;
-&lt;p&gt;我们跑的大多服务都是应用层http（s），Ingress Controller使用service或者pod的网络将它暴露在集群外，然后它反向代理集群内的七层服务，通过vhost子域名那样路由到后端的服务，&lt;code&gt;Ingress Controller&lt;/code&gt;工作架构如下，借用traefik官方的图。&lt;/p&gt;
+&lt;p&gt;我们部署在集群里的服务的 svc 想暴露出来的时候，从长久眼光看和易于管理维护都是用的&lt;code&gt;Ingress Controller&lt;/code&gt;来处理，clusterip 非集群主机无法访问，Nodeport 不方便长久管理和效率，LB 服务多了不方便因为需要花费额外的钱，externalIPS 不好用（后面有空写文章会说它）。&lt;/p&gt;
+&lt;p&gt;我们跑的大多服务都是应用层 http（s），Ingress Controller 使用 service 或者 pod 的网络将它暴露在集群外，然后它反向代理集群内的七层服务，通过 vhost 子域名那样路由到后端的服务，&lt;code&gt;Ingress Controller&lt;/code&gt;工作架构如下，借用 traefik 官方的图。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -697,9 +697,9 @@
       traefik
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;你可以将&lt;code&gt;api.domain.com&lt;/code&gt;进来的流量路由到集群里api的pod，你可以将&lt;code&gt;backoffice.domain.com&lt;/code&gt;流量路由到backoffice的一组pod上，虽说我们可以自己搭建一个nginx来代替掉&lt;code&gt;Ingress Controller&lt;/code&gt;，但是要增加代理的service长期来看维护很不方便，在使用上&lt;code&gt;Ingress Controller&lt;/code&gt;后可以用一种抽象的对象告诉controller添加对应的代理，也就是&lt;code&gt;kind: Ingress&lt;/code&gt;。它里面描述了从Ingress Controller访问进来的ServerName和web的url要代理到集群里哪个service（以及service的port）等等具体信息。&lt;/p&gt;
-&lt;p&gt;而官方的&lt;code&gt;Ingress Nginx&lt;/code&gt;可以视为一个魔改的nginx，拥有集群赋予的RBAC权限后，能够有监听集群Ingress相关的变化能力，用户创建了&lt;code&gt;kind: Ingress&lt;/code&gt;，
-例如上面trafik图里的Ingress大致就是下面这样：&lt;/p&gt;
+&lt;p&gt;你可以将&lt;code&gt;api.domain.com&lt;/code&gt;进来的流量路由到集群里 api 的 pod，你可以将&lt;code&gt;backoffice.domain.com&lt;/code&gt;流量路由到 backoffice 的一组 pod 上，虽说我们可以自己搭建一个 nginx 来代替掉&lt;code&gt;Ingress Controller&lt;/code&gt;，但是要增加代理的 service 长期来看维护很不方便，在使用上&lt;code&gt;Ingress Controller&lt;/code&gt;后可以用一种抽象的对象告诉 controller 添加对应的代理，也就是&lt;code&gt;kind: Ingress&lt;/code&gt;。它里面描述了从 Ingress Controller 访问进来的 ServerName 和 web 的 url 要代理到集群里哪个 service（以及 service 的 port）等等具体信息。&lt;/p&gt;
+&lt;p&gt;而官方的&lt;code&gt;Ingress Nginx&lt;/code&gt;可以视为一个魔改的 nginx，拥有集群赋予的 RBAC 权限后，能够有监听集群 Ingress 相关的变化能力，用户创建了&lt;code&gt;kind: Ingress&lt;/code&gt;，
+例如上面 trafik 图里的 Ingress 大致就是下面这样：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -727,12 +727,12 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;backoffice&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要创建了上面的Ingress后，ingress controller里会监听到从而生成对应的配置段后动态reload配置文件。&lt;/p&gt;
-&lt;h2 id=&#34;ingress-controller部署&#34;&gt;Ingress Controller部署&lt;/h2&gt;
-&lt;p&gt;部署非常简单，一条命令创建即可，yml来源于 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&lt;/a&gt;。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;只要创建了上面的 Ingress 后，ingress controller 里会监听到从而生成对应的配置段后动态 reload 配置文件。&lt;/p&gt;
+&lt;h2 id=&#34;ingress-controller-部署&#34;&gt;Ingress Controller 部署&lt;/h2&gt;
+&lt;p&gt;部署非常简单，一条命令创建即可，yml 来源于 &lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/kubernetes/ingress-nginx/tree/master/deploy&lt;/a&gt;。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/mandatory.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该yaml缺少向群外暴露的方式，我们先使用externalIPs方式创建svc来让它能从集群外面访问（此处先学工作原理，后面再讲高可用）。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;$INGRESS_VIP&lt;/code&gt;选取一个和宿主机同一个段没使用过的IP即可（实际上Ingress Nginx bind的端口不止80和443，这里不讨论，有兴趣的同学可以看容器里的默认配置文件）。&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;该 yaml 缺少向群外暴露的方式，我们先使用 externalIPs 方式创建 svc 来让它能从集群外面访问（此处先学工作原理，后面再讲高可用）。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;$INGRESS_VIP&lt;/code&gt;选取一个和宿主机同一个段没使用过的 IP 即可（实际上 Ingress Nginx bind 的端口不止 80 和 443，这里不讨论，有兴趣的同学可以看容器里的默认配置文件）。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -749,9 +749,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的yaml里后面详细解释我们需要关注的配置项，先来创建ingress对象试试。&lt;/p&gt;
-&lt;h3 id=&#34;测试http-7层负载&#34;&gt;测试http 7层负载&lt;/h3&gt;
-&lt;p&gt;部署了官方的ingress nginx后，我部署了一个nginx的pod，为它创建了一个名为nginx的service：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的 yaml 里后面详细解释我们需要关注的配置项，先来创建 ingress 对象试试。&lt;/p&gt;
+&lt;h3 id=&#34;测试-http-7-层负载&#34;&gt;测试 http 7 层负载&lt;/h3&gt;
+&lt;p&gt;部署了官方的 ingress nginx 后，我部署了一个 nginx 的 pod，为它创建了一个名为 nginx 的 service：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -779,7 +779,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;protocol&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;TCP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后创建对应的一个ingress对象来暴露集群里这个nginx的http服务：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;然后创建对应的一个 ingress 对象来暴露集群里这个 nginx 的 http 服务：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;extensions/v1beta1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Ingress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -792,7 +792,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;backend&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找到ingress nginx的pod名字后通过命令查看里面nginx配置文件能找到有对应的配置段生成：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找到 ingress nginx 的 pod 名字后通过命令查看里面 nginx 配置文件能找到有对应的配置段生成：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;l&#34;&gt;$ kubectl -n ingress-nginx exec nginx-ingress-controller-6cdcfd8ff9-t5sxl -- cat /etc/nginx/nginx.conf&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## start server nginx.testdomain.com&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -813,10 +813,10 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;........&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;	&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;## end server nginx.testdomain.com      &lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;...&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找一台非集群的Windows机器（也可以mac，主要是有图形界面且非集群内机器），设置hosts文件把域名&lt;code&gt;nginx.testdomain.com&lt;/code&gt;设置到对service的那个externalIPs的ip上，打开浏览器访问&lt;code&gt;nginx.testdomain.com&lt;/code&gt;即可发现集群内的nginx已经暴露在集群外。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：Ingress Controller虽然调用的是service，看起来按照nginx来理解转发是client–nginx–svc–pod; 实际上转发是client–nginx–pod，因为已经魔改了不能按照nginx的来理解，是直接负载到svc的endpoint上面的。&lt;/p&gt;
-&lt;p&gt;另外低版本的ingress nginx的args参数&lt;code&gt;--default-backend-service=$(POD_NAMESPACE)/default-http-backend&lt;/code&gt;，该参数指定ingress nginx的同namespace下名为&lt;code&gt;default-http-backend&lt;/code&gt;的service作为默认访问的时候页面，通常那个时候是创建一个404页面的的pod和对应service，如果ingress nginx启动的时候没找到这个service会无法启动，新版本不是必须了，好像也自带404页面了。&lt;/p&gt;
-&lt;p&gt;另外ingress也能多路径，如下：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;找一台非集群的 Windows 机器（也可以 mac，主要是有图形界面且非集群内机器），设置 hosts 文件把域名&lt;code&gt;nginx.testdomain.com&lt;/code&gt;设置到对 service 的那个 externalIPs 的 ip 上，打开浏览器访问&lt;code&gt;nginx.testdomain.com&lt;/code&gt;即可发现集群内的 nginx 已经暴露在集群外。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：Ingress Controller 虽然调用的是 service，看起来按照 nginx 来理解转发是 client–nginx–svc–pod; 实际上转发是 client–nginx–pod，因为已经魔改了不能按照 nginx 的来理解，是直接负载到 svc 的 endpoint 上面的。&lt;/p&gt;
+&lt;p&gt;另外低版本的 ingress nginx 的 args 参数&lt;code&gt;--default-backend-service=$(POD_NAMESPACE)/default-http-backend&lt;/code&gt;，该参数指定 ingress nginx 的同 namespace 下名为&lt;code&gt;default-http-backend&lt;/code&gt;的 service 作为默认访问的时候页面，通常那个时候是创建一个 404 页面的的 pod 和对应 service，如果 ingress nginx 启动的时候没找到这个 service 会无法启动，新版本不是必须了，好像也自带 404 页面了。&lt;/p&gt;
+&lt;p&gt;另外 ingress 也能多路径，如下：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;xxxx.xxxx.xxx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -830,12 +830,12 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;serviceName&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;service-test-api&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;servicePort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;80&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;/api/&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;如何来4层负载&#34;&gt;如何来4层负载&lt;/h3&gt;
-&lt;p&gt;我们可以看到ingress nginx的args里有这两行：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;如何来-4-层负载&#34;&gt;如何来 4 层负载&lt;/h3&gt;
+&lt;p&gt;我们可以看到 ingress nginx 的 args 里有这两行：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;- --&lt;span class=&#34;l&#34;&gt;tcp-services-configmap=$(POD_NAMESPACE)/tcp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- --&lt;span class=&#34;l&#34;&gt;udp-services-configmap=$(POD_NAMESPACE)/udp-services&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从选项和值可以猜测出，要想代理四层（tcp/udp），得写同namespace里一个名为&lt;code&gt;tcp-service&lt;/code&gt;和&lt;code&gt;udp-service&lt;/code&gt;的两个configmap的数据
-四层的话这边我们创建一个mysql的pod，来代理3306端口到集群外面，则需要写tcp-services这个configmap：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从选项和值可以猜测出，要想代理四层（tcp/udp），得写同 namespace 里一个名为&lt;code&gt;tcp-service&lt;/code&gt;和&lt;code&gt;udp-service&lt;/code&gt;的两个 configmap 的数据
+四层的话这边我们创建一个 mysql 的 pod，来代理 3306 端口到集群外面，则需要写 tcp-services 这个 configmap：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ConfigMap&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -843,28 +843,28 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;data&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;3306&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;default/mysql:3306&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;四层写这两个ConfigMap的data即可，按照这样去写即可&lt;code&gt;out_port: namespaces/svc_name:port&lt;/code&gt;，要给每个ingress加一些nginx里的配置可以查看官方的annotation字段以及值（traefik同理）。&lt;/p&gt;
-&lt;h3 id=&#34;ingress-controller高可用&#34;&gt;Ingress Controller高可用&lt;/h3&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;四层写这两个 ConfigMap 的 data 即可，按照这样去写即可&lt;code&gt;out_port: namespaces/svc_name:port&lt;/code&gt;，要给每个 ingress 加一些 nginx 里的配置可以查看官方的 annotation 字段以及值（traefik 同理）。&lt;/p&gt;
+&lt;h3 id=&#34;ingress-controller-高可用&#34;&gt;Ingress Controller 高可用&lt;/h3&gt;
 &lt;p&gt;这里来讨论下&lt;code&gt;Ingress Controller&lt;/code&gt;的高可用。&lt;/p&gt;
-&lt;p&gt;Ingress Controller到集群内的路径这部分都有负载均衡了，我们比较关注部署了Ingress Controller后，外部到它这段路怎么高可用?&lt;/p&gt;
-&lt;p&gt;上面的例子里service我使用的externalIPs，但是代理四层的时候会新加端口，需要每次人为去介入增加暴露端口?&lt;/p&gt;
-&lt;p&gt;流量从入口到&lt;code&gt;Ingress Controller&lt;/code&gt;的pod有下面几种方式：&lt;/p&gt;
+&lt;p&gt;Ingress Controller 到集群内的路径这部分都有负载均衡了，我们比较关注部署了 Ingress Controller 后，外部到它这段路怎么高可用？&lt;/p&gt;
+&lt;p&gt;上面的例子里 service 我使用的 externalIPs，但是代理四层的时候会新加端口，需要每次人为去介入增加暴露端口？&lt;/p&gt;
+&lt;p&gt;流量从入口到&lt;code&gt;Ingress Controller&lt;/code&gt;的 pod 有下面几种方式：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候手写&lt;code&gt;externalIPs&lt;/code&gt;很鸡肋，后面会再写文章去讲它&lt;/li&gt;
-&lt;li&gt;type为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候只有云厂商支持分配公网ip来负载均衡，LoadBalancer 公开的每项服务都将获得自己的 IP 地址，但是需要收费，且自己建立集群无法使用&lt;/li&gt;
-&lt;li&gt;不创建service，pod直接用hostport，效率等同于&lt;code&gt;hostNetwork&lt;/code&gt;，如果不代理四层端口还好，代理了需要修改pod的template来滚动更新来让nginx bind的四层端口能映射到宿主机上&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;Nodeport&lt;/code&gt;，端口不是web端口（但是可以修改Nodeport的范围改成web端口），如果进来流量负载到Nodeport上可能某个流量路线到某个node上的时候因为&lt;code&gt;Ingress Controller&lt;/code&gt;的pod不在这个node上，会走这个node的kube-proxy转发到Ingress Controller的pod上，多走一趟路&lt;/li&gt;
-&lt;li&gt;不创建service，效率最高，也能四层负载的时候不修改pod的template，唯一要注意的是&lt;code&gt;hostNetwork&lt;/code&gt;下pod会继承宿主机的网络协议，也就是使用了主机的dns，会导致svc的请求直接走宿主机的上到公网的dns服务器而非集群里的dns server，需要设置pod的&lt;code&gt;dnsPolicy: ClusterFirstWithHostNet&lt;/code&gt;即可解决&lt;/li&gt;
+&lt;li&gt;type 为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候手写&lt;code&gt;externalIPs&lt;/code&gt;很鸡肋，后面会再写文章去讲它&lt;/li&gt;
+&lt;li&gt;type 为&lt;code&gt;LoadBalancer&lt;/code&gt;的时候只有云厂商支持分配公网 ip 来负载均衡，LoadBalancer 公开的每项服务都将获得自己的 IP 地址，但是需要收费，且自己建立集群无法使用&lt;/li&gt;
+&lt;li&gt;不创建 service，pod 直接用 hostport，效率等同于&lt;code&gt;hostNetwork&lt;/code&gt;，如果不代理四层端口还好，代理了需要修改 pod 的 template 来滚动更新来让 nginx bind 的四层端口能映射到宿主机上&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Nodeport&lt;/code&gt;，端口不是 web 端口（但是可以修改 Nodeport 的范围改成 web 端口），如果进来流量负载到 Nodeport 上可能某个流量路线到某个 node 上的时候因为&lt;code&gt;Ingress Controller&lt;/code&gt;的 pod 不在这个 node 上，会走这个 node 的 kube-proxy 转发到 Ingress Controller 的 pod 上，多走一趟路&lt;/li&gt;
+&lt;li&gt;不创建 service，效率最高，也能四层负载的时候不修改 pod 的 template，唯一要注意的是&lt;code&gt;hostNetwork&lt;/code&gt;下 pod 会继承宿主机的网络协议，也就是使用了主机的 dns，会导致 svc 的请求直接走宿主机的上到公网的 dns 服务器而非集群里的 dns server，需要设置 pod 的&lt;code&gt;dnsPolicy: ClusterFirstWithHostNet&lt;/code&gt;即可解决&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id=&#34;写在最后&#34;&gt;写在最后&lt;/h2&gt;
 &lt;p&gt;部署方式没多大区别开心就好。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;DaemonSet + nodeSeletor&lt;/li&gt;
-&lt;li&gt;deploy设置replicas数量 + nodeSeletor + pod互斥&lt;/li&gt;
-&lt;li&gt;所以可以一个vip飘在拥有存活的controller的宿主机上，云上的话就用slb来负载代替vip&lt;/li&gt;
-&lt;li&gt;最后说说域名请求指向它，如果部署在内网或者办公室啥的，内网有dns server的话把ing的域名全部解析到ingress controller的宿主机ip上，否则要有人访问每个人设置/etc/hosts才能把域名解析来贼麻烦，如果没有dns server可以跑一个external-dns，它的上游dns是公网的dns服务器，办公网内机器的dns server指向它即可，云上的话把域名请求解析到对应ip即可&lt;/li&gt;
-&lt;li&gt;traefik和ingress nginx类似，不过它用go实现的&lt;/li&gt;
-&lt;li&gt;在一些老版本的ingress nginx的log里会一直刷找不到ingress-nginx的svc，不处理的话会狂刷log导致机器load过高,创建一个同名的svc即可解决,例如创建一个不带选择器clusterip为null的即可。非要创建port的svc的话参照下面:&lt;/li&gt;
+&lt;li&gt;deploy 设置 replicas 数量 + nodeSeletor + pod 互斥&lt;/li&gt;
+&lt;li&gt;所以可以一个 vip 飘在拥有存活的 controller 的宿主机上，云上的话就用 slb 来负载代替 vip&lt;/li&gt;
+&lt;li&gt;最后说说域名请求指向它，如果部署在内网或者办公室啥的，内网有 dns server 的话把 ing 的域名全部解析到 ingress controller 的宿主机 ip 上，否则要有人访问每个人设置/etc/hosts 才能把域名解析来贼麻烦，如果没有 dns server 可以跑一个 external-dns，它的上游 dns 是公网的 dns 服务器，办公网内机器的 dns server 指向它即可，云上的话把域名请求解析到对应 ip 即可&lt;/li&gt;
+&lt;li&gt;traefik 和 ingress nginx 类似，不过它用 go 实现的&lt;/li&gt;
+&lt;li&gt;在一些老版本的 ingress nginx 的 log 里会一直刷找不到 ingress-nginx 的 svc，不处理的话会狂刷 log 导致机器 load 过高，创建一个同名的 svc 即可解决，例如创建一个不带选择器 clusterip 为 null 的即可。非要创建 port 的 svc 的话参照下面：&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -892,7 +892,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;app.kubernetes.io/part-of&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ingress-nginx&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考:&lt;/h2&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;参考&#34;&gt;参考：&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;a href=&#34;https://github.com/kubernetes/ingress-nginx/blob/master/docs/deploy/index.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - github.com&lt;/a&gt;&lt;/li&gt;
 &lt;li&gt;&lt;a href=&#34;https://kubernetes.github.io/ingress-nginx/deploy/baremetal/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ingress-nginx deploy - kubernetes.github.io&lt;/a&gt;&lt;/li&gt;
@@ -901,7 +901,7 @@
     </item>
     
     <item>
-      <title>Istio Ingress Gateway中的Envoy配置解析</title>
+      <title>Istio Ingress Gateway 中的 Envoy 配置解析</title>
       <link>https://cloudnative.to/blog/summary-control-traffic-using-gateway-in-istio/</link>
       <pubDate>Mon, 05 Nov 2018 02:08:37 +0800</pubDate>
       <guid>https://cloudnative.to/blog/summary-control-traffic-using-gateway-in-istio/</guid>
@@ -934,9 +934,9 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;gateway定义用于配置在mesh边缘，到mesh的tcp和http的负载均衡。&lt;/li&gt;
+&lt;li&gt;gateway 定义用于配置在 mesh 边缘，到 mesh 的 tcp 和 http 的负载均衡。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;非tls单主机环境&#34;&gt;非TLS单主机环境&lt;/h2&gt;
+&lt;h2 id=&#34;非-tls-单主机环境&#34;&gt;非 TLS 单主机环境&lt;/h2&gt;
 &lt;h3 id=&#34;相关拓扑&#34;&gt;相关拓扑&lt;/h3&gt;
 &lt;p&gt;
 
@@ -967,10 +967,10 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;使用azure aks环境。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service类型为loadbalancer。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service enternal ip为104.211.54.62。&lt;/li&gt;
-&lt;li&gt;通过该external ip对应的域名，访问ingress gateway svc。&lt;/li&gt;
+&lt;li&gt;使用 azure aks 环境。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service 类型为 loadbalancer。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service enternal ip 为 104.211.54.62。&lt;/li&gt;
+&lt;li&gt;通过该 external ip 对应的域名，访问 ingress gateway svc。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -1001,15 +1001,15 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;增加gateway定义。&lt;/li&gt;
-&lt;li&gt;gateway定义中的selector会将该设置与相应的gateway pod绑定。&lt;/li&gt;
-&lt;li&gt;gateway定义中的servers会在相应的pod中生成listener实例，该拓扑中的监听端口为80。&lt;/li&gt;
-&lt;li&gt;需要将80端口注册到该gateway pod对应的服务中（默认已注册）。&lt;/li&gt;
-&lt;li&gt;gateway定义中的hosts表示listener会向哪些特定的虚拟主机转发流量，在该示例中为httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io。&lt;/li&gt;
-&lt;li&gt;增加virtualservice定义。&lt;/li&gt;
-&lt;li&gt;virtualservice定义中的hosts与gateway中的hosts相对应，表示该服务可以注册到gateway的监听中，这个host写会更新到gateway pod路由表的虚拟主机条目中。&lt;/li&gt;
-&lt;li&gt;virtualservice定义中的gateways将virtualservice与gateway关联起来。&lt;/li&gt;
-&lt;li&gt;virtualservice定义中的http定义了路由规则，路由规则会写入到相应gateway pod的路由表中。&lt;/li&gt;
+&lt;li&gt;增加 gateway 定义。&lt;/li&gt;
+&lt;li&gt;gateway 定义中的 selector 会将该设置与相应的 gateway pod 绑定。&lt;/li&gt;
+&lt;li&gt;gateway 定义中的 servers 会在相应的 pod 中生成 listener 实例，该拓扑中的监听端口为 80。&lt;/li&gt;
+&lt;li&gt;需要将 80 端口注册到该 gateway pod 对应的服务中（默认已注册）。&lt;/li&gt;
+&lt;li&gt;gateway 定义中的 hosts 表示 listener 会向哪些特定的虚拟主机转发流量，在该示例中为 httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io。&lt;/li&gt;
+&lt;li&gt;增加 virtualservice 定义。&lt;/li&gt;
+&lt;li&gt;virtualservice 定义中的 hosts 与 gateway 中的 hosts 相对应，表示该服务可以注册到 gateway 的监听中，这个 host 写会更新到 gateway pod 路由表的虚拟主机条目中。&lt;/li&gt;
+&lt;li&gt;virtualservice 定义中的 gateways 将 virtualservice 与 gateway 关联起来。&lt;/li&gt;
+&lt;li&gt;virtualservice 定义中的 http 定义了路由规则，路由规则会写入到相应 gateway pod 的路由表中。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;相关配置&#34;&gt;相关配置&lt;/h3&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1027,10 +1027,10 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;gateway相关配置。&lt;/li&gt;
-&lt;li&gt;该定义与包含istio: ingressgateway label的ingress gateway pod绑定。&lt;/li&gt;
-&lt;li&gt;新建80端口监听。&lt;/li&gt;
-&lt;li&gt;监听主机为httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io的请求。&lt;/li&gt;
+&lt;li&gt;gateway 相关配置。&lt;/li&gt;
+&lt;li&gt;该定义与包含 istio: ingressgateway label 的 ingress gateway pod 绑定。&lt;/li&gt;
+&lt;li&gt;新建 80 端口监听。&lt;/li&gt;
+&lt;li&gt;监听主机为 httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io 的请求。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1055,8 +1055,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;virtualservice相关配置。&lt;/li&gt;
-&lt;li&gt;将该配置应用到名称为httpbin-gateway的实例中。&lt;/li&gt;
+&lt;li&gt;virtualservice 相关配置。&lt;/li&gt;
+&lt;li&gt;将该配置应用到名称为 httpbin-gateway 的实例中。&lt;/li&gt;
 &lt;li&gt;定义路由规则和相关转发目的地。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http http://httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io/status/418
@@ -1082,9 +1082,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin]&lt;/span&gt;$&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;测试结果。&lt;/li&gt;
-&lt;li&gt;通过主机httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问httpbin pod。&lt;/li&gt;
+&lt;li&gt;通过主机 httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问 httpbin pod。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;tls单主机环境&#34;&gt;TLS单主机环境&lt;/h2&gt;
+&lt;h2 id=&#34;tls-单主机环境&#34;&gt;TLS 单主机环境&lt;/h2&gt;
 &lt;h3 id=&#34;相关拓扑-1&#34;&gt;相关拓扑&lt;/h3&gt;
 &lt;p&gt;
 
@@ -1115,12 +1115,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;使用azure aks环境。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service类型为loadbalancer。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service enternal ip为104.211.54.62。&lt;/li&gt;
-&lt;li&gt;通过该external ip对应的域名，访问ingress gateway svc。&lt;/li&gt;
-&lt;li&gt;客户端使用tls方式访问主机。&lt;/li&gt;
-&lt;li&gt;tls请求在ingress gateway处被卸载，并转化为http请求。&lt;/li&gt;
+&lt;li&gt;使用 azure aks 环境。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service 类型为 loadbalancer。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service enternal ip 为 104.211.54.62。&lt;/li&gt;
+&lt;li&gt;通过该 external ip 对应的域名，访问 ingress gateway svc。&lt;/li&gt;
+&lt;li&gt;客户端使用 tls 方式访问主机。&lt;/li&gt;
+&lt;li&gt;tls 请求在 ingress gateway 处被卸载，并转化为 http 请求。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -1151,12 +1151,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;增加gateway定义。&lt;/li&gt;
-&lt;li&gt;gateway定义中的监听端口包括80和443。&lt;/li&gt;
-&lt;li&gt;在80中启用httpsredirect。&lt;/li&gt;
-&lt;li&gt;在443中启用simple tls。&lt;/li&gt;
-&lt;li&gt;指定443的key和cert。&lt;/li&gt;
-&lt;li&gt;增加virtualservice定义，并定义相应路由规则。&lt;/li&gt;
+&lt;li&gt;增加 gateway 定义。&lt;/li&gt;
+&lt;li&gt;gateway 定义中的监听端口包括 80 和 443。&lt;/li&gt;
+&lt;li&gt;在 80 中启用 httpsredirect。&lt;/li&gt;
+&lt;li&gt;在 443 中启用 simple tls。&lt;/li&gt;
+&lt;li&gt;指定 443 的 key 和 cert。&lt;/li&gt;
+&lt;li&gt;增加 virtualservice 定义，并定义相应路由规则。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;相关配置-1&#34;&gt;相关配置&lt;/h3&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req &lt;span class=&#34;se&#34;&gt;\
@@ -1176,7 +1176,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create -n istio-system secret tls istio-ingressgateway-certs --key ./httpbin-tls.key --cert ./httpbin-tls.crt
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;自签名证书相关配置。&lt;/li&gt;
-&lt;li&gt;k8s secret相关配置。&lt;/li&gt;
+&lt;li&gt;k8s secret 相关配置。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1205,11 +1205,11 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;gateway相关配置。&lt;/li&gt;
-&lt;li&gt;新建监听端口包括80和443。&lt;/li&gt;
-&lt;li&gt;在80中启用httpsredirect。&lt;/li&gt;
-&lt;li&gt;在443中启用simple tls。&lt;/li&gt;
-&lt;li&gt;指定443的key和cert。&lt;/li&gt;
+&lt;li&gt;gateway 相关配置。&lt;/li&gt;
+&lt;li&gt;新建监听端口包括 80 和 443。&lt;/li&gt;
+&lt;li&gt;在 80 中启用 httpsredirect。&lt;/li&gt;
+&lt;li&gt;在 443 中启用 simple tls。&lt;/li&gt;
+&lt;li&gt;指定 443 的 key 和 cert。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1230,7 +1230,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;virtualservice相关配置。&lt;/li&gt;
+&lt;li&gt;virtualservice 相关配置。&lt;/li&gt;
 &lt;li&gt;配置相关路由。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http http://httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io/status/418 --verify no --follow -v
@@ -1275,8 +1275,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin]&lt;/span&gt;$&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;httpsredirect测试结果。&lt;/li&gt;
-&lt;li&gt;通过http方式访问httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问httpbin pod。&lt;/li&gt;
+&lt;li&gt;httpsredirect 测试结果。&lt;/li&gt;
+&lt;li&gt;通过 http 方式访问 httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问 httpbin pod。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http https://httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io/status/418 --verify no -v
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;GET /status/418 HTTP/1.1
@@ -1307,10 +1307,10 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin]&lt;/span&gt;$&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;https测试结果。&lt;/li&gt;
-&lt;li&gt;通过https方式访问httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问httpbin pod。&lt;/li&gt;
+&lt;li&gt;https 测试结果。&lt;/li&gt;
+&lt;li&gt;通过 https 方式访问 httpbin.7cb9a9b7b318440399a0.eastus.aksapp.io，可以正常访问 httpbin pod。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;mtls单主机环境&#34;&gt;mTLS单主机环境&lt;/h2&gt;
+&lt;h2 id=&#34;mtls-单主机环境&#34;&gt;mTLS 单主机环境&lt;/h2&gt;
 &lt;h3 id=&#34;相关拓扑-2&#34;&gt;相关拓扑&lt;/h3&gt;
 &lt;p&gt;
 
@@ -1341,12 +1341,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;使用azure aks环境。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service类型为loadbalancer。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service enternal ip为104.211.54.62。&lt;/li&gt;
-&lt;li&gt;通过该external ip对应的域名，访问ingress gateway svc。&lt;/li&gt;
-&lt;li&gt;客户端使用mtls方式访问主机。&lt;/li&gt;
-&lt;li&gt;mtls请求在ingress gateway处被卸载，并转化为http请求。&lt;/li&gt;
+&lt;li&gt;使用 azure aks 环境。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service 类型为 loadbalancer。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service enternal ip 为 104.211.54.62。&lt;/li&gt;
+&lt;li&gt;通过该 external ip 对应的域名，访问 ingress gateway svc。&lt;/li&gt;
+&lt;li&gt;客户端使用 mtls 方式访问主机。&lt;/li&gt;
+&lt;li&gt;mtls 请求在 ingress gateway 处被卸载，并转化为 http 请求。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -1377,13 +1377,13 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;增加gateway定义。&lt;/li&gt;
-&lt;li&gt;gateway定义中的监听端口443。&lt;/li&gt;
-&lt;li&gt;在443中启用mtls。&lt;/li&gt;
-&lt;li&gt;指定443的key和cert。&lt;/li&gt;
-&lt;li&gt;指定443的ca cert。&lt;/li&gt;
-&lt;li&gt;指定允许连接443的san。&lt;/li&gt;
-&lt;li&gt;增加virtualservice定义，并定义相应路由规则。&lt;/li&gt;
+&lt;li&gt;增加 gateway 定义。&lt;/li&gt;
+&lt;li&gt;gateway 定义中的监听端口 443。&lt;/li&gt;
+&lt;li&gt;在 443 中启用 mtls。&lt;/li&gt;
+&lt;li&gt;指定 443 的 key 和 cert。&lt;/li&gt;
+&lt;li&gt;指定 443 的 ca cert。&lt;/li&gt;
+&lt;li&gt;指定允许连接 443 的 san。&lt;/li&gt;
+&lt;li&gt;增加 virtualservice 定义，并定义相应路由规则。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;相关配置-2&#34;&gt;相关配置&lt;/h3&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req &lt;span class=&#34;se&#34;&gt;\
@@ -1413,9 +1413,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create -n istio-system secret tls istio-ingressgateway-certs --key ./httpbin-mtls.key --cert ./httpbin-mtls.crt
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create -n istio-system secret generic istio-ingressgateway-ca-certs --from-file ./ca.crt
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;server端自签名证书相关配置。&lt;/li&gt;
-&lt;li&gt;client端自签名证书相关配置。&lt;/li&gt;
-&lt;li&gt;k8s secret相关配置。&lt;/li&gt;
+&lt;li&gt;server 端自签名证书相关配置。&lt;/li&gt;
+&lt;li&gt;client 端自签名证书相关配置。&lt;/li&gt;
+&lt;li&gt;k8s secret 相关配置。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1439,12 +1439,12 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin.6491dea3ce6b4d17b109.eastus.aksapp.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;gateway相关配置。&lt;/li&gt;
-&lt;li&gt;新建监听端口443。&lt;/li&gt;
-&lt;li&gt;在443中启用mtls。&lt;/li&gt;
-&lt;li&gt;指定443的key和cert。&lt;/li&gt;
-&lt;li&gt;指定443的ca cert。&lt;/li&gt;
-&lt;li&gt;指定允许连接443的san。&lt;/li&gt;
+&lt;li&gt;gateway 相关配置。&lt;/li&gt;
+&lt;li&gt;新建监听端口 443。&lt;/li&gt;
+&lt;li&gt;在 443 中启用 mtls。&lt;/li&gt;
+&lt;li&gt;指定 443 的 key 和 cert。&lt;/li&gt;
+&lt;li&gt;指定 443 的 ca cert。&lt;/li&gt;
+&lt;li&gt;指定允许连接 443 的 san。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1465,7 +1465,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;virtualservice相关配置。&lt;/li&gt;
+&lt;li&gt;virtualservice 相关配置。&lt;/li&gt;
 &lt;li&gt;配置相关路由。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http https://httpbin.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418 --verify no --cert ./client.crt --cert-key ./client.key
@@ -1491,9 +1491,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl]
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;测试结果。&lt;/li&gt;
-&lt;li&gt;通过https mtls方式访问httpbin.6491dea3ce6b4d17b109.eastus.aksapp.io，可以正常访问httpbin pod。&lt;/li&gt;
+&lt;li&gt;通过 https mtls 方式访问 httpbin.6491dea3ce6b4d17b109.eastus.aksapp.io，可以正常访问 httpbin pod。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;非tls多主机环境&#34;&gt;非TLS多主机环境&lt;/h2&gt;
+&lt;h2 id=&#34;非-tls-多主机环境&#34;&gt;非 TLS 多主机环境&lt;/h2&gt;
 &lt;h3 id=&#34;相关拓扑-3&#34;&gt;相关拓扑&lt;/h3&gt;
 &lt;p&gt;
 
@@ -1524,12 +1524,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;使用azure aks环境。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service类型为loadbalancer。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service enternal ip为104.211.54.62。&lt;/li&gt;
-&lt;li&gt;通过该external ip对应的域名，访问ingress gateway svc。&lt;/li&gt;
-&lt;li&gt;2个主机，分别为：httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io和httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
-&lt;li&gt;客户端使用http方式访问主机。&lt;/li&gt;
+&lt;li&gt;使用 azure aks 环境。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service 类型为 loadbalancer。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service enternal ip 为 104.211.54.62。&lt;/li&gt;
+&lt;li&gt;通过该 external ip 对应的域名，访问 ingress gateway svc。&lt;/li&gt;
+&lt;li&gt;2 个主机，分别为：httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 和 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
+&lt;li&gt;客户端使用 http 方式访问主机。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -1560,12 +1560,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;为2个主机配置统一的gateway定义。&lt;/li&gt;
-&lt;li&gt;为2个主机分别配置virtualservice定义。&lt;/li&gt;
-&lt;li&gt;主机httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io被路由至pod httpbin-a的/status uri。&lt;/li&gt;
-&lt;li&gt;主机httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io被路由至pod httpbin-b的/headers uri。&lt;/li&gt;
-&lt;li&gt;在gateway的listnener中生成统一的监听0.0.0.0_80。&lt;/li&gt;
-&lt;li&gt;在gateway的route中分别生成针对httpbin-a和httpbin-b的虚拟主机。&lt;/li&gt;
+&lt;li&gt;为 2 个主机配置统一的 gateway 定义。&lt;/li&gt;
+&lt;li&gt;为 2 个主机分别配置 virtualservice 定义。&lt;/li&gt;
+&lt;li&gt;主机 httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 被路由至 pod httpbin-a的/status uri。&lt;/li&gt;
+&lt;li&gt;主机 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io 被路由至 pod httpbin-b的/headers uri。&lt;/li&gt;
+&lt;li&gt;在 gateway 的 listnener 中生成统一的监听 0.0.0.0_80。&lt;/li&gt;
+&lt;li&gt;在 gateway 的 route 中分别生成针对 httpbin-a 和 httpbin-b 的虚拟主机。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;相关配置-3&#34;&gt;相关配置&lt;/h3&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1605,10 +1605,10 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;gateway相关配置。&lt;/li&gt;
-&lt;li&gt;这2个gateway的配置，生成的envoy配置是一致的。&lt;/li&gt;
-&lt;li&gt;新建监听端口80。&lt;/li&gt;
-&lt;li&gt;分别针对两个主机httpbin-a和httpbin-b进行监听。&lt;/li&gt;
+&lt;li&gt;gateway 相关配置。&lt;/li&gt;
+&lt;li&gt;这 2 个 gateway 的配置，生成的 envoy 配置是一致的。&lt;/li&gt;
+&lt;li&gt;新建监听端口 80。&lt;/li&gt;
+&lt;li&gt;分别针对两个主机 httpbin-a 和 httpbin-b 进行监听。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1648,9 +1648,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin-b.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;httpbin-a和httpbin-b的virtualservice相关配置。&lt;/li&gt;
-&lt;li&gt;httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io的/status请求被路由至httpbin-a。&lt;/li&gt;
-&lt;li&gt;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io的/headers请求被路由至httpbin-b。&lt;/li&gt;
+&lt;li&gt;httpbin-a 和 httpbin-b 的 virtualservice 相关配置。&lt;/li&gt;
+&lt;li&gt;httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 的/status 请求被路由至 httpbin-a。&lt;/li&gt;
+&lt;li&gt;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io 的/headers 请求被路由至 httpbin-b。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http http://httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;418&lt;/span&gt; Unknown
@@ -1700,9 +1700,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl]&lt;/span&gt;$&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;测试结果。&lt;/li&gt;
-&lt;li&gt;请求httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418和httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io/headers均可以被正确路由。&lt;/li&gt;
+&lt;li&gt;请求 httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418 和 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io/headers 均可以被正确路由。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id=&#34;tls多主机环境&#34;&gt;TLS多主机环境&lt;/h2&gt;
+&lt;h2 id=&#34;tls-多主机环境&#34;&gt;TLS 多主机环境&lt;/h2&gt;
 &lt;h3 id=&#34;相关拓扑-4&#34;&gt;相关拓扑&lt;/h3&gt;
 &lt;p&gt;
 
@@ -1733,12 +1733,12 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;使用azure aks环境。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service类型为loadbalancer。&lt;/li&gt;
-&lt;li&gt;ingress gateway的service enternal ip为104.211.54.62。&lt;/li&gt;
-&lt;li&gt;通过该external ip对应的域名，访问ingress gateway svc。&lt;/li&gt;
-&lt;li&gt;2个主机，分别为：httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io和httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
-&lt;li&gt;客户端使用tls方式访问主机。&lt;/li&gt;
+&lt;li&gt;使用 azure aks 环境。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service 类型为 loadbalancer。&lt;/li&gt;
+&lt;li&gt;ingress gateway 的 service enternal ip 为 104.211.54.62。&lt;/li&gt;
+&lt;li&gt;通过该 external ip 对应的域名，访问 ingress gateway svc。&lt;/li&gt;
+&lt;li&gt;2 个主机，分别为：httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 和 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
+&lt;li&gt;客户端使用 tls 方式访问主机。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
 
@@ -1769,15 +1769,15 @@
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;为2个主机分别配置gateway中的server定义。&lt;/li&gt;
-&lt;li&gt;为2个主机的server定义中增加证书的定义，每个server使用不同的证书。&lt;/li&gt;
-&lt;li&gt;为2个主机分别配置virtualservice定义。&lt;/li&gt;
-&lt;li&gt;在gateway的listnener中生成统一的监听0.0.0.0_443。&lt;/li&gt;
-&lt;li&gt;因为gateway中配置的2个server中有不相同的配置，所以在监听0.0.0.0_443中，会生成2个server，分别为httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io和httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
-&lt;li&gt;因为监听中生成2个server，所以在路由中会生成2条不同的路由相对应，在gateway的路由中生成分别的虚拟主机https.443.https-httpbina和https.443.https-httpbinb。&lt;/li&gt;
-&lt;li&gt;监听0.0.0.0_443所属的server httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io被关联至路由https.443.https-httpbina，server httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io被关联至路由https.443.https-httpbinb。&lt;/li&gt;
-&lt;li&gt;主机httpbin-a被路由至pod httpbin-a的/status uri。&lt;/li&gt;
-&lt;li&gt;主机httpbin-b被路由至pod httpbin-b的/headers uri。&lt;/li&gt;
+&lt;li&gt;为 2 个主机分别配置 gateway 中的 server 定义。&lt;/li&gt;
+&lt;li&gt;为 2 个主机的 server 定义中增加证书的定义，每个 server 使用不同的证书。&lt;/li&gt;
+&lt;li&gt;为 2 个主机分别配置 virtualservice 定义。&lt;/li&gt;
+&lt;li&gt;在 gateway 的 listnener 中生成统一的监听 0.0.0.0_443。&lt;/li&gt;
+&lt;li&gt;因为 gateway 中配置的 2 个 server 中有不相同的配置，所以在监听 0.0.0.0_443 中，会生成 2 个 server，分别为 httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 和 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io。&lt;/li&gt;
+&lt;li&gt;因为监听中生成 2 个 server，所以在路由中会生成 2 条不同的路由相对应，在 gateway 的路由中生成分别的虚拟主机 https.443.https-httpbina 和 https.443.https-httpbinb。&lt;/li&gt;
+&lt;li&gt;监听 0.0.0.0_443 所属的 server httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 被关联至路由 https.443.https-httpbina，server httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io 被关联至路由 https.443.https-httpbinb。&lt;/li&gt;
+&lt;li&gt;主机 httpbin-a 被路由至 pod httpbin-a的/status uri。&lt;/li&gt;
+&lt;li&gt;主机 httpbin-b 被路由至 pod httpbin-b的/headers uri。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h3 id=&#34;相关配置-4&#34;&gt;相关配置&lt;/h3&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;openssl req &lt;span class=&#34;se&#34;&gt;\
@@ -1808,7 +1808,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;kubectl create -n istio-system secret tls istio-ingressgateway-httpbin-b-certs --key ./httpbin-b-tls.key --cert ./httpbin-b-tls.crt
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;自签名证书相关配置。&lt;/li&gt;
-&lt;li&gt;k8s secret相关配置。&lt;/li&gt;
+&lt;li&gt;k8s secret 相关配置。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;helm template install/kubernetes/helm/istio/ --name istio-ingressgateway --namespace istio-system -x charts/gateways/templates/deployment.yaml --set gateways.istio-egressgateway.enabled&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;false&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;--set gateways.istio-ingressgateway.secretVolumes&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;0&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;.name&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;ingressgateway-ca-certs &lt;span class=&#34;se&#34;&gt;\
@@ -1855,8 +1855,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          optional: &lt;span class=&#34;nb&#34;&gt;true&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;修改了ingress gateway deployment的配置，可以支持多个证书。&lt;/li&gt;
-&lt;li&gt;分别包含域名为httpbin-a和httpbin-b的证书。&lt;/li&gt;
+&lt;li&gt;修改了 ingress gateway deployment 的配置，可以支持多个证书。&lt;/li&gt;
+&lt;li&gt;分别包含域名为 httpbin-a 和 httpbin-b 的证书。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt; &lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1888,8 +1888,8 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;hosts&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;- &lt;span class=&#34;s2&#34;&gt;&amp;#34;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;gateway相关配置。&lt;/li&gt;
-&lt;li&gt;分别定义2个server，每个server配置不同的证书。&lt;/li&gt;
+&lt;li&gt;gateway 相关配置。&lt;/li&gt;
+&lt;li&gt;分别定义 2 个 server，每个 server 配置不同的证书。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;networking.istio.io/v1alpha3&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;VirtualService&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
@@ -1929,9 +1929,9 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;number&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8000&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;host&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;httpbin-b.default.svc.cluster.local&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;httpbin-a和httpbin-b的virtualservice相关配置。&lt;/li&gt;
-&lt;li&gt;httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io的/status请求被路由至httpbin-a。&lt;/li&gt;
-&lt;li&gt;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io的/headers请求被路由至httpbin-b。&lt;/li&gt;
+&lt;li&gt;httpbin-a 和 httpbin-b 的 virtualservice 相关配置。&lt;/li&gt;
+&lt;li&gt;httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io 的/status 请求被路由至 httpbin-a。&lt;/li&gt;
+&lt;li&gt;httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io 的/headers 请求被路由至 httpbin-b。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;$ http https://httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418 --verify no
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;HTTP/1.1 &lt;span class=&#34;m&#34;&gt;418&lt;/span&gt; Unknown
@@ -1981,19 +1981,19 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s2&#34;&gt;[~/K8s/istio/istio-azure-1.0.2/samples/httpbin/ssl]&lt;/span&gt;$&lt;span class=&#34;s2&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ul&gt;
 &lt;li&gt;测试结果。&lt;/li&gt;
-&lt;li&gt;请求httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418和httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io/headers均可以被正确路由。&lt;/li&gt;
+&lt;li&gt;请求 httpbin-a.6491dea3ce6b4d17b109.eastus.aksapp.io/status/418 和 httpbin-b.6491dea3ce6b4d17b109.eastus.aksapp.io/headers 均可以被正确路由。&lt;/li&gt;
 &lt;/ul&gt;
 </description>
     </item>
     
     <item>
-      <title>8款开源的Kubernetes Ingress Controller/API Gateway推荐</title>
+      <title>8 款开源的 Kubernetes Ingress Controller/API Gateway 推荐</title>
       <link>https://cloudnative.to/blog/nginx-ingress-vs-kong-vs-traefik-vs-haproxy-vs-voyager-vs-contour-vs-ambassador/</link>
       <pubDate>Thu, 20 Sep 2018 18:00:47 +0800</pubDate>
       <guid>https://cloudnative.to/blog/nginx-ingress-vs-kong-vs-traefik-vs-haproxy-vs-voyager-vs-contour-vs-ambassador/</guid>
       <description>&lt;p&gt;本文为翻译文章，&lt;a href=&#34;https://kubedex.com/nginx-ingress-vs-kong-vs-traefik-vs-haproxy-vs-voyager-vs-contour-vs-ambassador/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;点击查看原文&lt;/a&gt;。&lt;/p&gt;
-&lt;p&gt;据我所知，这是kubernetes可用网关的最完整的列表。从技术上来讲，Ambassador不是ingress，但是它表现地已经非常好了。你可能已经看到了我制作的大表。&lt;/p&gt;
-&lt;p&gt;下面有个连接可以打开并清晰的看到一个excel表格，包含了图表的详细内容，如果发现不正确的地方，请在文章末尾留言，我将及时修改。&lt;/p&gt;
+&lt;p&gt;据我所知，这是 kubernetes 可用网关的最完整的列表。从技术上来讲，Ambassador 不是 ingress，但是它表现地已经非常好了。你可能已经看到了我制作的大表。&lt;/p&gt;
+&lt;p&gt;下面有个连接可以打开并清晰的看到一个 excel 表格，包含了图表的详细内容，如果发现不正确的地方，请在文章末尾留言，我将及时修改。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -2025,28 +2025,28 @@
 &lt;p&gt;&lt;a href=&#34;https://docs.google.com/spreadsheets/d/16bxRgpO1H_Bn-5xVZ1WrR_I-0A-GOI6egmhvqqLMOmg/edit?usp=sharing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;查看全表请点击这里&lt;/a&gt;。&lt;/p&gt;
 &lt;p&gt;基于这些特点和我自己的经验、从别人的描述和其他相关文章中得知，我尝试着给每一个网关提供了一些选择的参考条件。下面描述先后顺序没有特别含义。&lt;/p&gt;
 &lt;h2 id=&#34;1-ingress-nginx&#34;&gt;1. ingress-nginx&lt;/h2&gt;
-&lt;p&gt;这可能是最常用的ingress。安全、简单可靠。支持http、https和ssl termination。你可能还想通过它支TCP、UDP，但是从GitHub上提的issue来看，目前你最好别这样做。您可以获得一些良好负载均衡选项以及强大的路由，websocket支持，基础身份认证和追踪。&lt;/p&gt;
+&lt;p&gt;这可能是最常用的 ingress。安全、简单可靠。支持 http、https 和 ssl termination。你可能还想通过它支 TCP、UDP，但是从 GitHub 上提的 issue 来看，目前你最好别这样做。您可以获得一些良好负载均衡选项以及强大的路由，websocket 支持，基础身份认证和追踪。&lt;/p&gt;
 &lt;p&gt;但是没有动态服务发现有点遗憾。有个配置生成器可以自动生成但还是不太完美。&lt;/p&gt;
-&lt;p&gt;注意：我们在这里谈论的内容有官方的Kubernetes ingress。还有来自Nginx公司的Ingress有些设置不一样。&lt;/p&gt;
+&lt;p&gt;注意：我们在这里谈论的内容有官方的 Kubernetes ingress。还有来自 Nginx 公司的 Ingress 有些设置不一样。&lt;/p&gt;
 &lt;h2 id=&#34;2-kong&#34;&gt;2. Kong&lt;/h2&gt;
-&lt;p&gt;绝大多数的人认为Kong只是API网关。它有扩展插件系统使它的功能远远超出了正常ingress该有的功能。我不会使用它去做通用的负载均衡但是如果你想用它做API管理也是一个不错的选择。&lt;/p&gt;
+&lt;p&gt;绝大多数的人认为 Kong 只是 API 网关。它有扩展插件系统使它的功能远远超出了正常 ingress 该有的功能。我不会使用它去做通用的负载均衡但是如果你想用它做 API 管理也是一个不错的选择。&lt;/p&gt;
 &lt;h2 id=&#34;3-traefik&#34;&gt;3. Traefik&lt;/h2&gt;
-&lt;p&gt;Traefik的功能多的让我惊讶。它的弹性伸缩功能很棒，而且我们从很多博客上可以了解到它运行稳定。如果您当前正在使用ingress-nginx，那么为了让它支持动态配置将是一个很大的升级。事实上，没有理由让我不去用traefik。而且它应该会比现在更加出名。&lt;/p&gt;
-&lt;p&gt;唯一的缺点是它只支持http、https和grpc。如果你非需要TCP负载均衡，那么您需要选择其他方案了。&lt;/p&gt;
+&lt;p&gt;Traefik 的功能多的让我惊讶。它的弹性伸缩功能很棒，而且我们从很多博客上可以了解到它运行稳定。如果您当前正在使用 ingress-nginx，那么为了让它支持动态配置将是一个很大的升级。事实上，没有理由让我不去用 traefik。而且它应该会比现在更加出名。&lt;/p&gt;
+&lt;p&gt;唯一的缺点是它只支持 http、https 和 grpc。如果你非需要 TCP 负载均衡，那么您需要选择其他方案了。&lt;/p&gt;
 &lt;h2 id=&#34;4-haproxy&#34;&gt;4. HAProxy&lt;/h2&gt;
-&lt;p&gt;它是负载均衡算法之王。它似乎也非常适合负载均衡TCP连接。这是官方的HAProxy ingress，在生产环境使用的经验告诉我们它具有极其稳定的记录。如果需要，您还可以获得付费支持订阅。&lt;/p&gt;
+&lt;p&gt;它是负载均衡算法之王。它似乎也非常适合负载均衡 TCP 连接。这是官方的 HAProxy ingress，在生产环境使用的经验告诉我们它具有极其稳定的记录。如果需要，您还可以获得付费支持订阅。&lt;/p&gt;
 &lt;h2 id=&#34;5-voyager&#34;&gt;5. Voyager&lt;/h2&gt;
-&lt;p&gt;Voyager是一个基于HAProxy的Ingress。完美封装了HAProxy并提供了很好的文档说明。我没有看到负载均衡算法的配置位置，所以假设它只是默认为轮询。如果那是错的，请在评论中告诉我，我会更新。&lt;/p&gt;
+&lt;p&gt;Voyager 是一个基于 HAProxy 的 Ingress。完美封装了 HAProxy 并提供了很好的文档说明。我没有看到负载均衡算法的配置位置，所以假设它只是默认为轮询。如果那是错的，请在评论中告诉我，我会更新。&lt;/p&gt;
 &lt;h2 id=&#34;6-contour&#34;&gt;6. Contour&lt;/h2&gt;
-&lt;p&gt;基于Envoy，它有一些更现代的功能，如支持金丝雀部署。它还具有一套良好的负载均衡算法，并支持多种协议。与列出的其他Ingress不同，我从Github那里了解到它仍处于快速发展阶段，有望添加更多功能。&lt;/p&gt;
+&lt;p&gt;基于 Envoy，它有一些更现代的功能，如支持金丝雀部署。它还具有一套良好的负载均衡算法，并支持多种协议。与列出的其他 Ingress 不同，我从 Github 那里了解到它仍处于快速发展阶段，有望添加更多功能。&lt;/p&gt;
 &lt;h2 id=&#34;7-ambassador&#34;&gt;7. Ambassador&lt;/h2&gt;
-&lt;p&gt;如上所述，如果你遵循严格的kubernetes定义，那么这个技术上它并不算是一个Ingress。使用Ambassador您只需简单注释您的服务，它就像一个ingress路由流量。Ambassador有一些非常酷的功能，其他任何一个Ingress都没有像影子流量那样允许您通过镜像请求数据在实时生产环境中测试服务。&lt;/p&gt;
-&lt;p&gt;Ambassador与Opentracing和Istio很好地集成。&lt;/p&gt;
+&lt;p&gt;如上所述，如果你遵循严格的 kubernetes 定义，那么这个技术上它并不算是一个 Ingress。使用 Ambassador 您只需简单注释您的服务，它就像一个 ingress 路由流量。Ambassador 有一些非常酷的功能，其他任何一个 Ingress 都没有像影子流量那样允许您通过镜像请求数据在实时生产环境中测试服务。&lt;/p&gt;
+&lt;p&gt;Ambassador 与 Opentracing 和 Istio 很好地集成。&lt;/p&gt;
 &lt;h2 id=&#34;8-istio-ingress&#34;&gt;8. Istio Ingress&lt;/h2&gt;
-&lt;p&gt;如果您已经在运行Istio，那么这可能是一个很好的默认选择。它具有Ambassador拥有的一些更现代的功能。它也有故障注入，看起来可能很有趣。然而，Istio目前在这个领域做了很多工作，并且已经从Ingress转向Gateway。因此，如果您正在寻找每5秒钟没有发生变化的Ingress，您可能仍然需要考虑Ambassador。&lt;/p&gt;
+&lt;p&gt;如果您已经在运行 Istio，那么这可能是一个很好的默认选择。它具有 Ambassador 拥有的一些更现代的功能。它也有故障注入，看起来可能很有趣。然而，Istio 目前在这个领域做了很多工作，并且已经从 Ingress 转向 Gateway。因此，如果您正在寻找每 5 秒钟没有发生变化的 Ingress，您可能仍然需要考虑 Ambassador。&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
-&lt;p&gt;这里没有明显的赢家，因为你需要根据你的需求选择合适的Ingress。目前没有某一个Ingress可以做到这一切。&lt;/p&gt;
-&lt;p&gt;我建议您使用Ambassador。如果您只是运行标准的基于http的微服务并且喜欢了解技术前沿，那么你应该毫不犹豫的选择Istio，Ambassador和Jaeger。&lt;/p&gt;
+&lt;p&gt;这里没有明显的赢家，因为你需要根据你的需求选择合适的 Ingress。目前没有某一个 Ingress 可以做到这一切。&lt;/p&gt;
+&lt;p&gt;我建议您使用 Ambassador。如果您只是运行标准的基于 http 的微服务并且喜欢了解技术前沿，那么你应该毫不犹豫的选择 Istio，Ambassador 和 Jaeger。&lt;/p&gt;
 </description>
     </item>
     

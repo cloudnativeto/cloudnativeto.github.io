@@ -18,8 +18,8 @@
       <pubDate>Wed, 29 Sep 2021 00:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/create-a-ipvs-svc-without-container/</guid>
       <description>&lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP ，然后 NGINX 根据 &lt;code&gt;server_name&lt;/code&gt; 去 proxy 不同的 upstream 。 开始还是能用的，但是后面结果后面很多服务依赖 &lt;code&gt;host&lt;/code&gt; 这个 header ，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 &lt;code&gt;ClusterIP&lt;/code&gt; 的 SVC 扣到非 K8S 环境上使用。&lt;/p&gt;
-&lt;p&gt;kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 &lt;code&gt;SVC IP:SVC PORT&lt;/code&gt; 会被 dnat 成 &lt;code&gt;endpoint&lt;/code&gt; ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP 。在 K8S 里，endpoint 的 ip 无非就是 &lt;code&gt;POD IP&lt;/code&gt;，&lt;code&gt;host IP&lt;/code&gt;。前者就是 SVC 选中 POD ，后者例如 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC ，会 DNAT 成每个 &lt;code&gt;kube-apiserver&lt;/code&gt; 的 &lt;code&gt;host IP:6443&lt;/code&gt; 端口，也可能是 &lt;code&gt;ExternalName&lt;/code&gt; 或者手动创建的 endpoint 。既然 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。&lt;/p&gt;
+&lt;p&gt;内部有非 K8S 环境上需要类似 SVC 的负载实现，一开始是用 NGINX 做的，所有 SVC 域名都解析成一个 dummy IP，然后 NGINX 根据 &lt;code&gt;server_name&lt;/code&gt; 去 proxy 不同的 upstream。开始还是能用的，但是后面结果后面很多服务依赖 &lt;code&gt;host&lt;/code&gt; 这个 header，报错签名错误，而且毕竟这样是在用户态，效率不如内核态高。于是打算搞下之前的打算：把 IPVS 的 &lt;code&gt;ClusterIP&lt;/code&gt; 的 SVC 扣到非 K8S 环境上使用。&lt;/p&gt;
+&lt;p&gt;kube-proxy 的 SVC 简单讲就是 node 上任何进程访问 &lt;code&gt;SVC IP:SVC PORT&lt;/code&gt; 会被 dnat 成 &lt;code&gt;endpoint&lt;/code&gt; ，是工作在内核态的四层负载，不会在机器上看到端口监听，而默认非集群的机器是无法访问 SVC IP。在 K8S 里，endpoint 的 ip 无非就是 &lt;code&gt;POD IP&lt;/code&gt;，&lt;code&gt;host IP&lt;/code&gt;。前者就是 SVC 选中 POD，后者例如 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC，会 DNAT 成每个 &lt;code&gt;kube-apiserver&lt;/code&gt; 的 &lt;code&gt;host IP:6443&lt;/code&gt; 端口，也可能是 &lt;code&gt;ExternalName&lt;/code&gt; 或者手动创建的 endpoint。既然 &lt;code&gt;kubernetes&lt;/code&gt; 这个 SVC 可以。那我的打算应该也是可以实现的。但是一开始实际按照思路试了下发现不行，网上的文章基本都是在单机 docker 或者现有的 K8S 环境上搞的，漏掉了很多精华和核心思想，这里记录下我的思路和实现过程。&lt;/p&gt;
 &lt;h2 id=&#34;环境信息&#34;&gt;环境信息&lt;/h2&gt;
 &lt;p&gt;前面说的 SVC 现象是和 &lt;code&gt;kube-proxy&lt;/code&gt; 的模式无关的。&lt;code&gt;iptables&lt;/code&gt; 模式排查不直观，我更倾向于 &lt;code&gt;IPVS&lt;/code&gt; 去搞，它更直观，而且支持更多的调度算法。管理 IPVS 规则的话我们需要安装 &lt;code&gt;ipvsadm&lt;/code&gt; ，这里我是两台干净的 CentOS 7.8 来做环境。&lt;/p&gt;
 &lt;table&gt;
@@ -55,7 +55,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P OUTPUT ACCEPT
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-P POSTROUTING ACCEPT
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;过程&#34;&gt;过程&lt;/h2&gt;
-&lt;p&gt;先思考下 kube-proxy 的 IPVS ，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 &lt;code&gt;nat&lt;/code&gt; 模式。暂且打算添加一个下面类似的 SVC ：&lt;/p&gt;
+&lt;p&gt;先思考下 kube-proxy 的 IPVS，因为 SVC 端口和 POD 的端口不一样，所以 kube-proxy 使用的 &lt;code&gt;nat&lt;/code&gt; 模式。暂且打算添加一个下面类似的 SVC：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;IP:                169.254.11.2
 Port:              https  80/TCP
 TargetPort:        6443/TCP
@@ -74,9 +74,9 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;./ran_linux_amd64 -port &lt;span class=&#34;m&#34;&gt;8080&lt;/span&gt; -listdir www
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;两个机器的这个 web 都起来后我们开个窗口去 &lt;code&gt;192.168.2.111&lt;/code&gt; 上继续后面的操作。&lt;/p&gt;
 &lt;h3 id=&#34;lvs-nat&#34;&gt;lvs nat&lt;/h3&gt;
-&lt;p&gt;kube-proxy 并没有像 lvs nat 那样有单独的机器做 &lt;code&gt;NAT GW&lt;/code&gt;，或者认为每个 node 都是自己的 &lt;code&gt;NAT GW&lt;/code&gt;。现在来添加 &lt;code&gt;169.254.11.2:80&lt;/code&gt; 这个 SVC ，使用 ipvsadm 添加：&lt;/p&gt;
+&lt;p&gt;kube-proxy 并没有像 lvs nat 那样有单独的机器做 &lt;code&gt;NAT GW&lt;/code&gt;，或者认为每个 node 都是自己的 &lt;code&gt;NAT GW&lt;/code&gt;。现在来添加 &lt;code&gt;169.254.11.2:80&lt;/code&gt; 这个 SVC，使用 ipvsadm 添加：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-service --tcp-service 169.254.11.2:80 --scheduler rr
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先添加本地的 web 作为 real server ，下面含义是添加为一个 nat 类型的 real server ：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;先添加本地的 web 作为 real server，下面含义是添加为一个 nat 类型的 real server：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ipvsadm --add-server --tcp-service 169.254.11.2:80 &lt;span class=&#34;se&#34;&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;  --real-server 192.168.2.111:8080 --masquerading --weight &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;查看下当前列表：&lt;/p&gt;
@@ -104,7 +104,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  -&amp;gt; 192.168.2.222:8080           Masq    &lt;span class=&#34;m&#34;&gt;1&lt;/span&gt;      &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;          &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;测试下访问看看：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现 curl 在卡住和能访问返回 &lt;code&gt;192.168.2.111&lt;/code&gt; 之间切换，没有返回 &lt;code&gt;192.168.2.222&lt;/code&gt; 的。查看下 IPVS 的 connection ，发现调度到非本机才会卡住：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;发现 curl 在卡住和能访问返回 &lt;code&gt;192.168.2.111&lt;/code&gt; 之间切换，没有返回 &lt;code&gt;192.168.2.222&lt;/code&gt; 的。查看下 IPVS 的 connection，发现调度到非本机才会卡住：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ ipvsadm -lnc
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;IPVS connection entries
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;pro expire state       &lt;span class=&#34;nb&#34;&gt;source&lt;/span&gt;             virtual            destination
@@ -124,7 +124,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376829 IP 169.254.11.2.50710 &amp;gt; 192.168.2.222.8080: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 768065283, win 43690, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 65495,sackOK,TS val &lt;span class=&#34;m&#34;&gt;12283200&lt;/span&gt; ecr 0,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:33.376869 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676525160&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;07:38:37.562632 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50710: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 2142784980, ack 768065284, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676529346&lt;/span&gt; ecr 12276183,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从 &lt;code&gt;Flags&lt;/code&gt; 看，就是 tcp 重传，并且 &lt;code&gt;SRC IP&lt;/code&gt; 是 VIP 。节点 &lt;code&gt;192.168.2.222.8080&lt;/code&gt; 给 &lt;code&gt;169.254.11.2.50710&lt;/code&gt; 回包会走到网关上去。网关上抓包也看到确实如此：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;从 &lt;code&gt;Flags&lt;/code&gt; 看，就是 tcp 重传，并且 &lt;code&gt;SRC IP&lt;/code&gt; 是 VIP。节点 &lt;code&gt;192.168.2.222.8080&lt;/code&gt; 给 &lt;code&gt;169.254.11.2.50710&lt;/code&gt; 回包会走到网关上去。网关上抓包也看到确实如此：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ tcpdump -nn -i eth0 host 169.254.11.2
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;tcpdump: verbose output suppressed, use -v or -vv &lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; full protocol decode
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;listening on eth0, link-type EN10MB &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;Ethernet&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt;, capture size &lt;span class=&#34;m&#34;&gt;262144&lt;/span&gt; bytes
@@ -135,7 +135,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569667 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;19:39:49.569699 IP 192.168.2.222.8080 &amp;gt; 169.254.11.2.50714: Flags &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;S.&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, seq 4149799699, ack 251479303, win 28960, options &lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;mss 1460,sackOK,TS val &lt;span class=&#34;m&#34;&gt;676601346&lt;/span&gt; ecr 12357303,nop,wscale 7&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;, length &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;lvs-和-netfilter&#34;&gt;lvs 和 netfilter&lt;/h4&gt;
-&lt;p&gt;在介绍 lvs 的实现之前，我们需要了解 netfilter ，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。&lt;/p&gt;
+&lt;p&gt;在介绍 lvs 的实现之前，我们需要了解 netfilter，Linux 的所有数据包都会经过它，而我们使用的 iptables 是用户态提供的操作工具之一。Linux 内核处理进出的数据包分为了 5 个阶段。netfilter 在这 5 个阶段提供了 hook 点，来让注册的 hook 函数来实现对包的过滤和修改。下图的 local process 就是上层的协议栈。&lt;/p&gt;
 &lt;p&gt;下面是 IPVS 在 netfilter 里的模型图，IPVS 也是基于 netfilter 框架的，但只工作在 &lt;code&gt;INPUT&lt;/code&gt; 链上，通过注册 &lt;code&gt;ip_vs_in&lt;/code&gt; 钩子函数来处理请求。因为 VIP 我们配置在机器上（常规的 lvs nat 的 VIP 是在 NAT GW 上，我们这里是自己），我们 curl 的时候就会进到 &lt;code&gt;INPUT&lt;/code&gt; 链，&lt;code&gt;ip_vs_in&lt;/code&gt; 会匹配然后直接跳转触发 &lt;code&gt;POSTROUTING&lt;/code&gt; 链，跳过 iptables 规则。&lt;/p&gt;
 &lt;p&gt;
 
@@ -182,7 +182,7 @@ Session Affinity:  None
 	   | CIP:CPORT -&amp;gt; RIP:RPORT
 	   +
 	REAL SERVER
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;lvs 做了 DNAT 并没有做 SNAT ，所以我们利用 iptables 做 SNAT ：&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;lvs 做了 DNAT 并没有做 SNAT，所以我们利用 iptables 做 SNAT：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;$ iptables -t nat -A POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport 80 -j MASQUERADE
 &lt;/code&gt;&lt;/pre&gt;&lt;p&gt;访问看看还是不通，抓包看还是没生效，nat 是依赖 &lt;code&gt;conntrack&lt;/code&gt; 的，而 IPVS 默认不会记录 conntrack，我们需要开启 IPVS 的 conntrack 才可以让 MASQUERADE 生效。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 让 Netfilter 的 conntrack 状态管理功能也能应用于 IPVS 模块&lt;/span&gt;
@@ -233,7 +233,7 @@ Session Affinity:  None
 &lt;/p&gt;
 &lt;p&gt;iptables 的五链四表如上图所示，我们先删掉原有的规则：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -D POSTROUTING -m ipvs --vaddr 169.254.11.2 --vport &lt;span class=&#34;m&#34;&gt;80&lt;/span&gt; -j MASQUERADE
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;平时自己家里使用了 openwrt ，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 &lt;code&gt;INPUT&lt;/code&gt; 规则：&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;平时自己家里使用了 openwrt，之前看了下上面的 iptables 规则设计挺好的，特别是预留了很多链专门给用户在合适的位置插入规则，比如下面的 &lt;code&gt;INPUT&lt;/code&gt; 规则：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A INPUT -i eth0 -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3&amp;#34;&lt;/span&gt; -j zone_lan_input
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;-A zone_lan_input -m comment --comment &lt;span class=&#34;s2&#34;&gt;&amp;#34;!fw3: Custom lan input rule chain&amp;#34;&lt;/span&gt; -j input_lan_rule
@@ -323,7 +323,7 @@ Session Affinity:  None
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 &lt;code&gt;OUTPUT&lt;/code&gt; 链，不会过 &lt;code&gt;PREROUTING&lt;/code&gt; ，不过我们上面的 &lt;code&gt;PREROUTING&lt;/code&gt; 链可以处理后续的 docker 容器。 调试了下发现确实会走 &lt;code&gt;OUTPUT&lt;/code&gt; 链：&lt;/p&gt;
+&lt;p&gt;然后访问下还是不通，突然想起来在机器上访问本机的 IP 端口的时候是内核直接转发给本地进程，这种数据包会只经过 &lt;code&gt;OUTPUT&lt;/code&gt; 链，不会过 &lt;code&gt;PREROUTING&lt;/code&gt; ，不过我们上面的 &lt;code&gt;PREROUTING&lt;/code&gt; 链可以处理后续的 docker 容器。调试了下发现确实会走 &lt;code&gt;OUTPUT&lt;/code&gt; 链：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;echo&lt;/span&gt; &lt;span class=&#34;s1&#34;&gt;&amp;#39;kern.warning /var/log/iptables.log&amp;#39;&lt;/span&gt; &amp;gt;&amp;gt; /etc/rsyslog.conf
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl restart rsyslog
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ iptables -t nat -I OUTPUT -m &lt;span class=&#34;nb&#34;&gt;set&lt;/span&gt; --match-set ZGZ-CLUSTER-IP dst,dst  -j LOG --log-prefix &lt;span class=&#34;s1&#34;&gt;&amp;#39;**log-test**&amp;#39;&lt;/span&gt;
@@ -342,7 +342,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# 备份下自带的配置文件&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cp /etc/keepalived/keepalived.conf&lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;,.bak&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h4 id=&#34;配置-keepalived&#34;&gt;配置 keepalived&lt;/h4&gt;
-&lt;p&gt;我们需要配置下 keepalived ，修改之前先看下默认相关的：&lt;/p&gt;
+&lt;p&gt;我们需要配置下 keepalived，修改之前先看下默认相关的：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ systemctl cat keepalived
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;# /usr/lib/systemd/system/keepalived.service&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;Unit&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
@@ -375,7 +375,7 @@ Session Affinity:  None
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;KEEPALIVED_OPTIONS&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;-D&amp;#34;&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;&lt;code&gt;/etc/sysconfig/keepalived&lt;/code&gt; 里修改为下面：&lt;/p&gt;
 &lt;pre tabindex=&#34;0&#34;&gt;&lt;code class=&#34;language-conf&#34; data-lang=&#34;conf&#34;&gt;KEEPALIVED_OPTIONS=&amp;#34;-D --log-console --log-detail --use-file=/etc/keepalived/keepalived.conf&amp;#34;
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 &lt;code&gt;kill -HUP&lt;/code&gt; 信号触发 reload ，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;我们选择在主配置文件里去 include 子配置文件，keepalivd 接收 &lt;code&gt;kill -HUP&lt;/code&gt; 信号触发 reload，后续自动化添加 SVC 的时候添加子配置文件后发送信号即可。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;cat &amp;gt; /etc/keepalived/keepalived.conf &lt;span class=&#34;s&#34;&gt;&amp;lt;&amp;lt; EOF
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;! Configuration File for keepalived
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;s&#34;&gt;
@@ -543,7 +543,7 @@ $ ip a s SVC
     link/ether e6:a3:29:07:fa:57 brd ff:ff:ff:ff:ff:ff
     inet 169.254.11.2/32 scope global SVC
        valid_lft forever preferred_lft forever
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs ：&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;停掉一个 web 后在我们配置的健康检查几秒也剔除了 rs：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl: &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;7&lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; Failed connect to 169.254.11.2:80&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; Connection refused
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ curl 169.254.11.2/www/test

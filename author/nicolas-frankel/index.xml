@@ -21,9 +21,9 @@
 &lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
 &lt;p&gt;本文作者由浅及深，从核心问题的引入到具体模式的代码实现，阐述了微服务两种断路器模式的实现原理、优缺点以及二者的比较。&lt;/p&gt;
 &lt;h2 id=&#34;前言&#34;&gt;前言&lt;/h2&gt;
-&lt;p&gt;不可否认的是，在过去的几年里，Docker和Kubernetes等技术已经彻底改变了我们对软件开发和部署的理解。&lt;/p&gt;
+&lt;p&gt;不可否认的是，在过去的几年里，Docker 和 Kubernetes 等技术已经彻底改变了我们对软件开发和部署的理解。&lt;/p&gt;
 &lt;p&gt;但是，尽管软件开发行业的快速发展促使开发人员采用最新的技术，但是后退一步，更好地查看支持这些技术的已建立的模式是很重要的。&lt;/p&gt;
-&lt;p&gt;断路器模式是微服务体系结构中广泛采用的模式之一。我们将比较使用两种不同方法实现它的优缺点: Hystrix和Istio。&lt;/p&gt;
+&lt;p&gt;断路器模式是微服务体系结构中广泛采用的模式之一。我们将比较使用两种不同方法实现它的优缺点：Hystrix 和 Istio。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -55,36 +55,36 @@
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;h2 id=&#34;微服务同步通信的核心问题&#34;&gt;微服务同步通信的核心问题&lt;/h2&gt;
-&lt;p&gt;设想一个非常简单的微服务体系结构，包括:&lt;/p&gt;
+&lt;p&gt;设想一个非常简单的微服务体系结构，包括：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;一个后端服务&lt;/li&gt;
 &lt;li&gt;一个前端服务&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;我们假设&lt;em&gt;后端&lt;/em&gt;和&lt;em&gt;前端&lt;/em&gt;通过同步HTTP调用进行通信。&lt;/p&gt;
+&lt;p&gt;我们假设&lt;em&gt;后端&lt;/em&gt;和&lt;em&gt;前端&lt;/em&gt;通过同步 HTTP 调用进行通信。&lt;/p&gt;
 &lt;p&gt;客户端&lt;code&gt;C1&lt;/code&gt; 和 &lt;code&gt;C2&lt;/code&gt; 调用 &lt;em&gt;前端&lt;/em&gt; 获取一些信息。由于&lt;em&gt;前端&lt;/em&gt;没有客户端所需的所有数据，因此它调用&lt;em&gt;后端&lt;/em&gt;以获得缺失的部分数据。&lt;/p&gt;
-&lt;p&gt;但是因为网络通信，很多事情会发生:&lt;/p&gt;
+&lt;p&gt;但是因为网络通信，很多事情会发生：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;em&gt;前端&lt;/em&gt;和&lt;em&gt;后端&lt;/em&gt;之间的网络故障&lt;/li&gt;
 &lt;li&gt;&lt;em&gt;后端&lt;/em&gt;可能会因为错误而宕机&lt;/li&gt;
-&lt;li&gt;一个被&lt;em&gt;后端&lt;/em&gt;依赖的服务(*e.g.*数据库)可能宕机&lt;/li&gt;
+&lt;li&gt;一个被&lt;em&gt;后端&lt;/em&gt;依赖的服务 (*e.g.*数据库) 可能宕机&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;根据墨菲定律(“任何可能出错的都会出错”)，前端和后端之间的通信迟早会失败。&lt;/p&gt;
+&lt;p&gt;根据墨菲定律 (“任何可能出错的都会出错”)，前端和后端之间的通信迟早会失败。&lt;/p&gt;
 &lt;p&gt;如果我们研究从前端到后端单个调用的生命周期，并考虑后端由于某种原因宕机，那么在某个时候，前端将因超时取消调用。&lt;/p&gt;
-&lt;p&gt;将范围缩小到应用程序级别，多个客户机同时调用前端，这将转换为对后端的多个调用: 前端将很快被请求淹没，并淹没在超时中。&lt;/p&gt;
+&lt;p&gt;将范围缩小到应用程序级别，多个客户机同时调用前端，这将转换为对后端的多个调用：前端将很快被请求淹没，并淹没在超时中。&lt;/p&gt;
 &lt;p&gt;在这个场景中，唯一合理的解决方案是&lt;em&gt;fail-fast&lt;/em&gt;: 前端应该意识到后端出现了问题，并立即将故障返回给自己的客户端。&lt;/p&gt;
 &lt;h2 id=&#34;断路器模式&#34;&gt;断路器模式&lt;/h2&gt;
-&lt;p&gt;在电路领域中，断路器是为保护电路而设计的一种自动操作的电气开关。它的基本功能是在检测到故障后中断电流。然后可以重置(手动或自动)，以在故障解决后恢复正常操作。&lt;/p&gt;
-&lt;p&gt;这看起来与我们的问题非常相似: 为了保护应用程序不受过多请求的影响，最好在&lt;em&gt;后端&lt;/em&gt;检测到重复出现的错误时立即中断&lt;em&gt;前端&lt;/em&gt;和&lt;em&gt;后端&lt;/em&gt;之间的通信。&lt;/p&gt;
-&lt;p&gt;在他的&lt;em&gt;Release It&lt;/em&gt;一书中， &lt;a href=&#34;https://twitter.com/mtnygard&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Michael Nygard&lt;/a&gt; 使用了这个类比，并为应用于上述超时问题的设计模式提供了一个案例。它背后的流程非常简单:&lt;/p&gt;
+&lt;p&gt;在电路领域中，断路器是为保护电路而设计的一种自动操作的电气开关。它的基本功能是在检测到故障后中断电流。然后可以重置 (手动或自动)，以在故障解决后恢复正常操作。&lt;/p&gt;
+&lt;p&gt;这看起来与我们的问题非常相似：为了保护应用程序不受过多请求的影响，最好在&lt;em&gt;后端&lt;/em&gt;检测到重复出现的错误时立即中断&lt;em&gt;前端&lt;/em&gt;和&lt;em&gt;后端&lt;/em&gt;之间的通信。&lt;/p&gt;
+&lt;p&gt;在他的&lt;em&gt;Release It&lt;/em&gt;一书中， &lt;a href=&#34;https://twitter.com/mtnygard&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Michael Nygard&lt;/a&gt; 使用了这个类比，并为应用于上述超时问题的设计模式提供了一个案例。它背后的流程非常简单：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;如果调用失败，将失败调用的数量增加1&lt;/li&gt;
+&lt;li&gt;如果调用失败，将失败调用的数量增加 1&lt;/li&gt;
 &lt;li&gt;如果调用失败次数超过某个阈值，则打开电路&lt;/li&gt;
 &lt;li&gt;如果电路打开，立即返回错误&lt;strong&gt;或默认响应&lt;/strong&gt;&lt;/li&gt;
 &lt;li&gt;如果电路是打开的，过了一段时间，半打开电路&lt;/li&gt;
 &lt;li&gt;如果电路是半开的，下一个呼叫失败，再打开它&lt;/li&gt;
 &lt;li&gt;如果电路是半开的，下一个呼叫成功，关闭它&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;这可以用下图来总结:&lt;/p&gt;
+&lt;p&gt;这可以用下图来总结：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -115,20 +115,20 @@
       state-diagram.jpg
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;h2 id=&#34;istio断路器&#34;&gt;Istio断路器&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;是一个&lt;strong&gt;服务网格(Service Mesh)&lt;/strong&gt;，微服务应用程序的可配置基础结构层。它使服务实例之间的通信灵活、可靠和快速，并提供服务发现、负载平衡、加密、身份验证和授权、对断路器模式的支持等功能。&lt;/p&gt;
-&lt;p&gt;Istio的控制平面在底层集群管理平台(如Kubernetes、Mesos等)上提供了一个抽象层，并要求以这种方式管理应用程序。&lt;/p&gt;
-&lt;p&gt;作为其核心，Istio由位于应用程序实例前面的Envoy代理实例组成，并且使用了&lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sidecar容器模式&lt;/a&gt;和Pilot(一个管理它们的工具)。这种代理策略有很多优点:&lt;/p&gt;
+&lt;h2 id=&#34;istio-断路器&#34;&gt;Istio 断路器&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio&lt;/a&gt;是一个&lt;strong&gt;服务网格 (Service Mesh)&lt;/strong&gt;，微服务应用程序的可配置基础结构层。它使服务实例之间的通信灵活、可靠和快速，并提供服务发现、负载平衡、加密、身份验证和授权、对断路器模式的支持等功能。&lt;/p&gt;
+&lt;p&gt;Istio 的控制平面在底层集群管理平台 (如 Kubernetes、Mesos 等) 上提供了一个抽象层，并要求以这种方式管理应用程序。&lt;/p&gt;
+&lt;p&gt;作为其核心，Istio 由位于应用程序实例前面的 Envoy 代理实例组成，并且使用了&lt;a href=&#34;https://docs.microsoft.com/en-us/azure/architecture/patterns/sidecar&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sidecar 容器模式&lt;/a&gt;和 Pilot(一个管理它们的工具)。这种代理策略有很多优点：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;自动为HTTP, gRPC, WebSocket和TCP流量做负载平衡。&lt;/li&gt;
+&lt;li&gt;自动为 HTTP, gRPC, WebSocket 和 TCP 流量做负载平衡。&lt;/li&gt;
 &lt;li&gt;通过丰富的路由规则、重试、失败和错误注入对流量行为进行细粒度控制。&lt;/li&gt;
-&lt;li&gt;可插入的策略层和配置API，支持访问控制、速率限制和配额。&lt;/li&gt;
+&lt;li&gt;可插入的策略层和配置 API，支持访问控制、速率限制和配额。&lt;/li&gt;
 &lt;li&gt;一个集群内所有流量的自动度量、日志和跟踪，包括集群的加入和退出。&lt;/li&gt;
 &lt;li&gt;在具有强大的身份验证和授权的集群中进行安全的服务间通信。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;因为对&lt;em&gt;后端&lt;/em&gt;的出站调用通过Envoy代理，所以很容易检测到它们何时超时。然后代理可以拦截进一步的调用并立即返回，从而有效地执行fail-fast。特别地，这使得断路器模式能够以黑箱方式运行。&lt;/p&gt;
-&lt;h3 id=&#34;配置istio断路器&#34;&gt;配置Istio断路器&lt;/h3&gt;
-&lt;p&gt;正如我们所说，Istio构建在您选择的集群管理平台上，并要求应用程序在这个平台部署。Kubernetes通过&lt;code&gt;DestinationRule&lt;/code&gt;实现断路器模式，或者更具体的路径&lt;code&gt;TrafficPolicy&lt;/code&gt;(原&lt;code&gt;断路器&lt;/code&gt;)-&amp;gt;&lt;code&gt;OutlierDetection&lt;/code&gt;，根据以下模型:&lt;/p&gt;
+&lt;p&gt;因为对&lt;em&gt;后端&lt;/em&gt;的出站调用通过 Envoy 代理，所以很容易检测到它们何时超时。然后代理可以拦截进一步的调用并立即返回，从而有效地执行 fail-fast。特别地，这使得断路器模式能够以黑箱方式运行。&lt;/p&gt;
+&lt;h3 id=&#34;配置-istio-断路器&#34;&gt;配置 Istio 断路器&lt;/h3&gt;
+&lt;p&gt;正如我们所说，Istio 构建在您选择的集群管理平台上，并要求应用程序在这个平台部署。Kubernetes 通过&lt;code&gt;DestinationRule&lt;/code&gt;实现断路器模式，或者更具体的路径&lt;code&gt;TrafficPolicy&lt;/code&gt;(原&lt;code&gt;断路器&lt;/code&gt;)-&amp;gt;&lt;code&gt;OutlierDetection&lt;/code&gt;，根据以下模型：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -159,7 +159,7 @@
       istio-class-diagram.jpg
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;参数如下:&lt;/p&gt;
+&lt;p&gt;参数如下：&lt;/p&gt;
 &lt;table&gt;
 &lt;thead&gt;
 &lt;tr&gt;
@@ -186,30 +186,30 @@
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;与上述公称断路器相比，有两个主要偏差:&lt;/p&gt;
+&lt;p&gt;与上述公称断路器相比，有两个主要偏差：&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;没有半开放的状态。然而，断路器持续打开的时间取决于被调用服务之前失败的次数。持续的故障服务将导致断路器的开路时间越来越长。&lt;/li&gt;
-&lt;li&gt;在基本模式中，只有一个被调用的应用程序(&lt;em&gt;后端&lt;/em&gt;)。在更实际的生产环境中，负载均衡器后面可能部署同一个应用程序的多个实例。某些情况下有些实例可能会失败，而有些实例可能会工作。因为Istio也有负载均衡器的功能，能够追踪失败的实例，并把它们从负载均衡池中移除，在一定程度上: ‘maxEjectionPercent’属性的作用是保持一小部分的实例池。&lt;/li&gt;
+&lt;li&gt;在基本模式中，只有一个被调用的应用程序 (&lt;em&gt;后端&lt;/em&gt;)。在更实际的生产环境中，负载均衡器后面可能部署同一个应用程序的多个实例。某些情况下有些实例可能会失败，而有些实例可能会工作。因为 Istio 也有负载均衡器的功能，能够追踪失败的实例，并把它们从负载均衡池中移除，在一定程度上：‘maxEjectionPercent’属性的作用是保持一小部分的实例池。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;Istio实现断路器的方法是一种黑盒方法。它的视角很高，只有出了问题才能打开电路。另一方面，它的设置非常简单，不需要任何底层代码的知识，并且可以作为事后配置。&lt;/p&gt;
-&lt;h2 id=&#34;hystrix断路器&#34;&gt;Hystrix断路器&lt;/h2&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/Netflix/Hystrix&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hystrix&lt;/a&gt;是一个最初由Netflix提供的开源Java库。它是一个延迟容忍和容错的库，用于隔离对远程系统、服务和第三方库的访问点，停止级联故障，并在不可避免出现故障的复杂分布式系统中启用弹性。&lt;/p&gt;
-&lt;p&gt;Hystrix有很多特点，包括:&lt;/p&gt;
+&lt;p&gt;Istio 实现断路器的方法是一种黑盒方法。它的视角很高，只有出了问题才能打开电路。另一方面，它的设置非常简单，不需要任何底层代码的知识，并且可以作为事后配置。&lt;/p&gt;
+&lt;h2 id=&#34;hystrix-断路器&#34;&gt;Hystrix 断路器&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/Netflix/Hystrix&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hystrix&lt;/a&gt;是一个最初由 Netflix 提供的开源 Java 库。它是一个延迟容忍和容错的库，用于隔离对远程系统、服务和第三方库的访问点，停止级联故障，并在不可避免出现故障的复杂分布式系统中启用弹性。&lt;/p&gt;
+&lt;p&gt;Hystrix 有很多特点，包括：&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;保护通过第三方客户端库访问(通常是通过网络)的依赖项的延迟和失败。&lt;/li&gt;
+&lt;li&gt;保护通过第三方客户端库访问 (通常是通过网络) 的依赖项的延迟和失败。&lt;/li&gt;
 &lt;li&gt;防止复杂分布式系统中的级联故障。&lt;/li&gt;
 &lt;li&gt;失败快，恢复快。&lt;/li&gt;
 &lt;li&gt;回退并尽可能优雅地降级。&lt;/li&gt;
 &lt;li&gt;启用近实时监视、警报和操作控制。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;当然，断路器的模式体现了这些特点。因为Hystrix是一个库，它以&lt;strong&gt;白盒方式&lt;/strong&gt;实现它。&lt;/p&gt;
+&lt;p&gt;当然，断路器的模式体现了这些特点。因为 Hystrix 是一个库，它以&lt;strong&gt;白盒方式&lt;/strong&gt;实现它。&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;&lt;strong&gt;Resilience4J&lt;/strong&gt;
-Netflix最近宣布，它已经停止开发Hystrix库，转而开发目前知名度较低的 &lt;a href=&#34;https://github.com/resilience4j/resilience4j&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Resilience4J&lt;/a&gt; 项目。
-即使客户端代码可能稍有不同，Hystrix和Resilience4J的实现方法也是相似的。&lt;/p&gt;
+Netflix 最近宣布，它已经停止开发 Hystrix 库，转而开发目前知名度较低的 &lt;a href=&#34;https://github.com/resilience4j/resilience4j&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Resilience4J&lt;/a&gt; 项目。
+即使客户端代码可能稍有不同，Hystrix 和 Resilience4J 的实现方法也是相似的。&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;h3 id=&#34;一个hystrix断路器的例子&#34;&gt;一个Hystrix断路器的例子&lt;/h3&gt;
-&lt;p&gt;以电子商务web应用程序为例。该应用的架构由不同的微服务组成，每个微服务都基于一个业务特性:&lt;/p&gt;
+&lt;h3 id=&#34;一个-hystrix-断路器的例子&#34;&gt;一个 Hystrix 断路器的例子&lt;/h3&gt;
+&lt;p&gt;以电子商务 web 应用程序为例。该应用的架构由不同的微服务组成，每个微服务都基于一个业务特性：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;身份验证&lt;/li&gt;
 &lt;li&gt;目录浏览&lt;/li&gt;
@@ -219,8 +219,8 @@ Netflix最近宣布，它已经停止开发Hystrix库，转而开发目前知名
 &lt;/ul&gt;
 &lt;p&gt;当显示目录项时，将查询定价/报价微服务的价格。如果它坏了，不管是不是断路器，价格都不会退回来，也不可能订购任何东西。&lt;/p&gt;
 &lt;p&gt;从企业的角度来看，任何停机时间不仅会影响品牌的认知度，还会降低销售。大多数销售策略都倾向于销售，尽管价格并不完全正确。实现此销售策略的解决方案可以是缓存定价/报价服务在可用时返回的价格，并在服务关闭时返回缓存的价格。&lt;/p&gt;
-&lt;p&gt;Hystrix提供了一个断路器实现，允许在电路打开时执行fallback机制，从而实现了这种方法。&lt;/p&gt;
-&lt;p&gt;这是Hystrix模型的一个非常简单的类图:&lt;/p&gt;
+&lt;p&gt;Hystrix 提供了一个断路器实现，允许在电路打开时执行 fallback 机制，从而实现了这种方法。&lt;/p&gt;
+&lt;p&gt;这是 Hystrix 模型的一个非常简单的类图：&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -254,9 +254,9 @@ Netflix最近宣布，它已经停止开发Hystrix库，转而开发目前知名
 &lt;p&gt;最关键的地方就在 &lt;code&gt;HystrixCommand&lt;/code&gt;方法 &lt;code&gt;run()&lt;/code&gt;和 &lt;code&gt;getFallback()&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;run()&lt;/code&gt; 是要实际执行的代码 &lt;em&gt;e.g.&lt;/em&gt; 从报价服务中获取价格&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;getFallabck()&lt;/code&gt; 获取当断路器打开时的fallback结果 &lt;em&gt;e.g.&lt;/em&gt; 返回缓存的价格&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;getFallabck()&lt;/code&gt; 获取当断路器打开时的 fallback 结果 &lt;em&gt;e.g.&lt;/em&gt; 返回缓存的价格&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;这可以转化为以下代码，使用Spring的&lt;code&gt;RestTemplate&lt;/code&gt;:&lt;/p&gt;
+&lt;p&gt;这可以转化为以下代码，使用 Spring 的&lt;code&gt;RestTemplate&lt;/code&gt;:&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;class&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;FetchQuoteCommand&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;extends&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;HystrixCommand&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;Double&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;private&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;final&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;UUID&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;productId&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;                                               &lt;span class=&#34;c1&#34;&gt;// 1
@@ -286,20 +286,20 @@ Netflix最近宣布，它已经停止开发Hystrix库，转而开发目前知名
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;cache&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;na&#34;&gt;get&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;productId&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;);&lt;/span&gt;                                            &lt;span class=&#34;c1&#34;&gt;// 7
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这需要作出一些解释:&lt;/p&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这需要作出一些解释：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;该命令包装产品的id，将其建模为&lt;code&gt;UUID&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;Spring的&lt;code&gt;RestTemplate&lt;/code&gt; 用于进行REST调用。任何其他实现方式都可以。&lt;/li&gt;
-&lt;li&gt;一个共享的JCache实例，用于在服务可用时存储引号。&lt;/li&gt;
-&lt;li&gt;Hystrix命令需要一个组键，以便在需要时将它们组合在一起。这是Hystrix的另一个特性，超出了本文的范围。有兴趣的读者可以在&lt;a href=&#34;https://github.com/Netflix/Hystrix/wiki/How-To-Use#command-group&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hystrix wiki&lt;/a&gt;中阅读有关命令组的内容。&lt;/li&gt;
-&lt;li&gt;执行对引用服务的调用。如果它失败，Hystrix断路器流程启动。&lt;/li&gt;
-&lt;li&gt;如果调用成功，则将返回的引用缓存到JCache共享实例中。&lt;/li&gt;
-&lt;li&gt;当断路器打开时调用getFallback()。在这种情况下，从缓存中获取引用。&lt;/li&gt;
+&lt;li&gt;该命令包装产品的 id，将其建模为&lt;code&gt;UUID&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;Spring 的&lt;code&gt;RestTemplate&lt;/code&gt; 用于进行 REST 调用。任何其他实现方式都可以。&lt;/li&gt;
+&lt;li&gt;一个共享的 JCache 实例，用于在服务可用时存储引号。&lt;/li&gt;
+&lt;li&gt;Hystrix 命令需要一个组键，以便在需要时将它们组合在一起。这是 Hystrix 的另一个特性，超出了本文的范围。有兴趣的读者可以在&lt;a href=&#34;https://github.com/Netflix/Hystrix/wiki/How-To-Use#command-group&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Hystrix wiki&lt;/a&gt;中阅读有关命令组的内容。&lt;/li&gt;
+&lt;li&gt;执行对引用服务的调用。如果它失败，Hystrix 断路器流程启动。&lt;/li&gt;
+&lt;li&gt;如果调用成功，则将返回的引用缓存到 JCache 共享实例中。&lt;/li&gt;
+&lt;li&gt;当断路器打开时调用 getFallback()。在这种情况下，从缓存中获取引用。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;Hystrix wiki提供了&lt;a href=&#34;https://github.com/Netflix/Hystrix/wiki/How-To-Use#fallback-cache-via-network&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;更高级的例子&lt;/a&gt;，例如fallback本身就是一个需要执行的命令。&lt;/p&gt;
-&lt;h3 id=&#34;将hystrix与spring-cloud集成&#34;&gt;将Hystrix与Spring Cloud集成&lt;/h3&gt;
-&lt;p&gt;虽然上面的代码可以工作，但是每次引用时都需要创建一个Hystrix命令对象。&lt;/p&gt;
-&lt;p&gt;&lt;a href=&#34;https://spring.io/projects/spring-cloud&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Spring Cloud&lt;/a&gt;是建立在Spring Boot(本身依赖Spring框架)之上的库，它提供了与Spring的良好集成。它让你在处理Hystrix命令对象的实例化时，只需注释所需的fallback方法:&lt;/p&gt;
+&lt;p&gt;Hystrix wiki 提供了&lt;a href=&#34;https://github.com/Netflix/Hystrix/wiki/How-To-Use#fallback-cache-via-network&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;更高级的例子&lt;/a&gt;，例如 fallback 本身就是一个需要执行的命令。&lt;/p&gt;
+&lt;h3 id=&#34;将-hystrix-与-spring-cloud-集成&#34;&gt;将 Hystrix 与 Spring Cloud 集成&lt;/h3&gt;
+&lt;p&gt;虽然上面的代码可以工作，但是每次引用时都需要创建一个 Hystrix 命令对象。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://spring.io/projects/spring-cloud&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Spring Cloud&lt;/a&gt;是建立在 Spring Boot(本身依赖 Spring 框架) 之上的库，它提供了与 Spring 的良好集成。它让你在处理 Hystrix 命令对象的实例化时，只需注释所需的 fallback 方法：&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-java&#34; data-lang=&#34;java&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;public&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;class&lt;/span&gt; &lt;span class=&#34;nc&#34;&gt;FetchQuoteService&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;kd&#34;&gt;private&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;final&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;RestTemplate&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;;&lt;/span&gt;
@@ -325,24 +325,24 @@ Netflix最近宣布，它已经停止开发Hystrix库，转而开发目前知名
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;ol&gt;
-&lt;li&gt;这个方法应该用&lt;code&gt;@HystrixCommand&lt;/code&gt;注释. &lt;code&gt;fallbackMethod&lt;/code&gt;元素引用fallback方法. 显然，这将通过反射来处理，并且不是类型安全的——毕竟这是一个字符串。&lt;/li&gt;
-&lt;li&gt;Spring Cloud Hystrix允许在方法调用时传递产品的id参数。与上面简单的Hystrix命令相比，这允许有一个通用的服务对象。Hystrix命令的创建由Spring Cloud在运行时处理。&lt;/li&gt;
+&lt;li&gt;这个方法应该用&lt;code&gt;@HystrixCommand&lt;/code&gt;注释。&lt;code&gt;fallbackMethod&lt;/code&gt;元素引用 fallback 方法。显然，这将通过反射来处理，并且不是类型安全的——毕竟这是一个字符串。&lt;/li&gt;
+&lt;li&gt;Spring Cloud Hystrix 允许在方法调用时传递产品的 id 参数。与上面简单的 Hystrix 命令相比，这允许有一个通用的服务对象。Hystrix 命令的创建由 Spring Cloud 在运行时处理。&lt;/li&gt;
 &lt;li&gt;核心逻辑没有改变。&lt;/li&gt;
 &lt;li&gt;同样，缓存过程保持不变。&lt;/li&gt;
-&lt;li&gt;fallback方法是一种常规方法。 &lt;strong&gt;它将使用与主方法完全相同的参数值来调用&lt;/strong&gt;， 因此，它必须具有相同的参数类型(以相同的顺序)。因为&lt;code&gt;getQuoteFor()&lt;/code&gt;方法接受&lt;code&gt;UUID&lt;/code&gt;，所以这个方法也接受&lt;code&gt;UUID&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;fallback 方法是一种常规方法。 &lt;strong&gt;它将使用与主方法完全相同的参数值来调用&lt;/strong&gt;，因此，它必须具有相同的参数类型 (以相同的顺序)。因为&lt;code&gt;getQuoteFor()&lt;/code&gt;方法接受&lt;code&gt;UUID&lt;/code&gt;，所以这个方法也接受&lt;code&gt;UUID&lt;/code&gt;。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;无论是独立的还是由Spring Boot Cloud封装的，Hystrix都需要在代码级处理断路器。因此，需要提前计划，更改需要部署更新后的二进制文件。然而，当事情出错时，这允许有一个非常好的自定制的行为。&lt;/p&gt;
+&lt;p&gt;无论是独立的还是由 Spring Boot Cloud 封装的，Hystrix 都需要在代码级处理断路器。因此，需要提前计划，更改需要部署更新后的二进制文件。然而，当事情出错时，这允许有一个非常好的自定制的行为。&lt;/p&gt;
 &lt;h2 id=&#34;istio-vs-hystrix-battle-of-circuit-breakers&#34;&gt;Istio vs Hystrix: battle of circuit breakers&lt;/h2&gt;
-&lt;p&gt;如果存在失败的可能性，给定时间，就会出现失败，严重依赖网络的微服务需要针对失败进行设计。断路器模式是处理服务缺乏可用性的一种方法: 它不会对请求进行排队并阻塞调用者，而是快速失败(fail-fast)并立即返回。&lt;/p&gt;
-&lt;p&gt;实现断路器的方法有两种，一种是黑盒方式，另一种是白盒方式。Istio作为一种代理管理工具，使用了黑盒方式.它实现起来很简单，不依赖于底层技术栈，而且可以在事后配置。&lt;/p&gt;
-&lt;p&gt;另一方面，Hystrix库使用白盒方式。它允许所有不同类型的fallback:&lt;/p&gt;
+&lt;p&gt;如果存在失败的可能性，给定时间，就会出现失败，严重依赖网络的微服务需要针对失败进行设计。断路器模式是处理服务缺乏可用性的一种方法：它不会对请求进行排队并阻塞调用者，而是快速失败 (fail-fast) 并立即返回。&lt;/p&gt;
+&lt;p&gt;实现断路器的方法有两种，一种是黑盒方式，另一种是白盒方式。Istio 作为一种代理管理工具，使用了黑盒方式。它实现起来很简单，不依赖于底层技术栈，而且可以在事后配置。&lt;/p&gt;
+&lt;p&gt;另一方面，Hystrix 库使用白盒方式。它允许所有不同类型的 fallback:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;单个默认值&lt;/li&gt;
 &lt;li&gt;一个缓存&lt;/li&gt;
 &lt;li&gt;调用其他服务&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;它还提供了级联回退(cascading fallbacks)。这些额外的特性是有代价的: 它需要在开发阶段就做出fallback的决策。&lt;/p&gt;
-&lt;p&gt;这两种方法之间的最佳匹配可能会依靠自己的上下文: 在某些情况下，如引用的服务，一个白盒战略后备可能是一个更好的选择，而对于其他情况下快速失败可能是完全可以接受的，如一个集中的远程登录服务。&lt;/p&gt;
+&lt;p&gt;它还提供了级联回退 (cascading fallbacks)。这些额外的特性是有代价的：它需要在开发阶段就做出 fallback 的决策。&lt;/p&gt;
+&lt;p&gt;这两种方法之间的最佳匹配可能会依靠自己的上下文：在某些情况下，如引用的服务，一个白盒战略后备可能是一个更好的选择，而对于其他情况下快速失败可能是完全可以接受的，如一个集中的远程登录服务。&lt;/p&gt;
 &lt;p&gt;当然，没有什么能阻止你同时使用它们。&lt;/p&gt;
 &lt;h2 id=&#34;参考&#34;&gt;参考&lt;/h2&gt;
 &lt;ul&gt;

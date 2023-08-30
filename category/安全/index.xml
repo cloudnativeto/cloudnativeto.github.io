@@ -18,9 +18,9 @@
       <pubDate>Tue, 10 Jan 2023 08:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/technical-deep-dive-securing-automation-acme-dns-challenge-validation/</guid>
       <description>&lt;p&gt;注：原文发布于 2018 年 2 月 26 日。&lt;/p&gt;
-&lt;p&gt;2018 年 &lt;a href=&#34;https://www.letsencrypt.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Let&amp;rsquo;s Encrypt&lt;/a&gt; （免费、自动化、开放的证书颁发机构 EFF 在两年前帮助推出）达到了一个巨大的里程碑： &lt;a href=&#34;https://www.eff.org/deeplinks/2018/02/lets-encrypt-hits-50-million-active-certificates-and-counting&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;颁发了超过 5000 万个有效证书&lt;/a&gt;。而且这个数字只会继续增长，因为几周后 Let&amp;rsquo;s Encrypt 也将开始颁发 “通配符” 证书 —— 这是许多系统管理员一直要求的功能。&lt;/p&gt;
+&lt;p&gt;2018 年 &lt;a href=&#34;https://www.letsencrypt.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Let&amp;rsquo;s Encrypt&lt;/a&gt; （免费、自动化、开放的证书颁发机构 EFF 在两年前帮助推出）达到了一个巨大的里程碑： &lt;a href=&#34;https://www.eff.org/deeplinks/2018/02/lets-encrypt-hits-50-million-active-certificates-and-counting&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;颁发了超过 5000 万个有效证书&lt;/a&gt;。而且这个数字只会继续增长，因为几周后 Let&amp;rsquo;s Encrypt 也将开始颁发“通配符”证书 —— 这是许多系统管理员一直要求的功能。&lt;/p&gt;
 &lt;h2 id=&#34;什么是通配符证书&#34;&gt;什么是通配符证书？&lt;/h2&gt;
-&lt;p&gt;为了验证 HTTPS 证书，用户的浏览器会检查以确保证书中实际列出了网站的域名。例如，来自 &lt;code&gt;www.eff.org&lt;/code&gt; 的证书实际上必须将 &lt;code&gt;www.eff.org&lt;/code&gt; 列为该证书的有效域。如果所有者只想对他的所有域使用一个证书，则证书还可以列出多个域（例如，&lt;code&gt;www.eff.org&lt;/code&gt;、&lt;code&gt;ssd.eff.org&lt;/code&gt;、&lt;code&gt;sec.eff.org&lt;/code&gt; 等）。通配符证书只是一个证书，上面写着 “我对这个域中的所有子域都有效”，而不是明确地将它们全部列出。（在证书中，这是通过使用通配符来表示的，用星号表示。所以如果你今天检查 eff.org 的证书，它会说它对 *.eff.org 有效。）这样，&lt;/p&gt;
+&lt;p&gt;为了验证 HTTPS 证书，用户的浏览器会检查以确保证书中实际列出了网站的域名。例如，来自 &lt;code&gt;www.eff.org&lt;/code&gt; 的证书实际上必须将 &lt;code&gt;www.eff.org&lt;/code&gt; 列为该证书的有效域。如果所有者只想对他的所有域使用一个证书，则证书还可以列出多个域（例如，&lt;code&gt;www.eff.org&lt;/code&gt;、&lt;code&gt;ssd.eff.org&lt;/code&gt;、&lt;code&gt;sec.eff.org&lt;/code&gt; 等）。通配符证书只是一个证书，上面写着“我对这个域中的所有子域都有效”，而不是明确地将它们全部列出。（在证书中，这是通过使用通配符来表示的，用星号表示。所以如果你今天检查 eff.org 的证书，它会说它对 *.eff.org 有效。）这样，&lt;/p&gt;
 &lt;p&gt;为了颁发通配符证书，Let&amp;rsquo;s Encrypt 将要求用户通过使用基于 &lt;a href=&#34;https://en.wikipedia.org/wiki/Domain_Name_System&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DNS&lt;/a&gt; 的质询来证明他们对域的控制，DNS 是一种域名系统，可将 &lt;code&gt;www.eff.org&lt;/code&gt; 等域名转换为 69.50.232.54 等 IP 地址。从像 Let&amp;rsquo;s Encrypt 这样的证书颁发机构 (CA) 的角度来看，没有比修改其 DNS 记录更好的证明您控制域的方法，因为控制域是 DNS 的本质。&lt;/p&gt;
 &lt;p&gt;但 Let&amp;rsquo;s Encrypt 背后的一个关键思想是获取证书应该是一个自动过程。但是，为了实现自动化，请求证书的软件还需要能够修改该域的 DNS 记录。为了修改 DNS 记录，该软件还需要能够访问 DNS 服务的凭据（例如登录名和密码，或加密令牌），并且这些凭据必须存储在自动化发生的任何地方。在许多情况下，这意味着如果处理该过程的机器受到威胁，DNS 凭据也会受到威胁，这才是真正的危险所在。在本文的其余部分，我们将深入探讨该过程中涉及的组件，以及使它更安全的选项。&lt;/p&gt;
 &lt;h2 id=&#34;dns-质询如何运作&#34;&gt;DNS 质询如何运作？&lt;/h2&gt;
@@ -34,13 +34,13 @@
 &lt;p&gt;即使使用 CNAME 记录，潜在的问题仍然存在，即 ACME 客户端仍然需要访问允许它修改某些 DNS 记录的凭据。有不同的方法可以缓解这个潜在的问题，在泄露的情况下具有不同程度的复杂性和安全影响。在接下来的部分中，本文将介绍其中一些方法，同时尝试解释如果凭据被泄露可能产生的影响。除了一个例外，它们都使用 CNAME 记录。&lt;/p&gt;
 &lt;h3 id=&#34;只允许更新-txt-记录&#34;&gt;只允许更新 TXT 记录&lt;/h3&gt;
 &lt;p&gt;第一种方法是创建一组具有仅允许更新 TXT 记录的权限的凭证。在泄露的情况下，此方法将影响限制为攻击者能够为 DNS 区域内的所有域颁发证书（因为他们可以使用 DNS 凭据来获取自己的证书），以及中断邮件传递。对邮件传递的影响源于邮件特定的 TXT 记录，即 &lt;a href=&#34;https://en.wikipedia.org/wiki/Sender_Policy_Framework&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPF&lt;/a&gt;、 &lt;a href=&#34;https://en.wikipedia.org/wiki/DomainKeys_Identified_Mail&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DKIM&lt;/a&gt;、其扩展名 &lt;a href=&#34;https://en.wikipedia.org/wiki/Author_Domain_Signing_Practices&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;ADSP&lt;/a&gt; 和 &lt;a href=&#34;https://en.wikipedia.org/wiki/DMARC&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;DMARC&lt;/a&gt;。泄露这些还可以很容易地发送网络钓鱼电子邮件，这些电子邮件冒充来自相关受感染域的发件人。&lt;/p&gt;
-&lt;h3 id=&#34;使用-一次性-验证域&#34;&gt;使用 “一次性” 验证域&lt;/h3&gt;
+&lt;h3 id=&#34;使用一次性验证域&#34;&gt;使用“一次性”验证域&lt;/h3&gt;
 &lt;p&gt;第二种方法是为 &lt;code&gt;_acme-challenge&lt;/code&gt; 子域手动创建 CNAME 记录，并将它们指向一个验证域，该验证域位于由一组不同的凭据控制的区域中。例如，如果您想获得涵盖 &lt;code&gt;yourdomain.tld&lt;/code&gt; 和 &lt;code&gt;www.yourdomain.tld&lt;/code&gt; 的证书，则必须创建两个 CNAME 记录 ——&lt;code&gt;_acme-challenge.yourdomain.tld&lt;/code&gt; 和 &lt;code&gt;_acme-challenge.www.yourdomain.tld&lt;/code&gt;—— 并将它们都指向外部域以进行验证。&lt;/p&gt;
 &lt;p&gt;用于质询验证的域应位于外部 DNS 区域或具有自己的一组管理凭据的子委托 DNS 区域中。（子委托 DNS 区域是使用 NS 记录定义的，它有效地将对该区域的一部分的完全控制委托给外部机构。）&lt;/p&gt;
 &lt;p&gt;这种方法的泄露影响相当有限。由于实际存储的凭据是针对外部 DNS 区域的，因此获得凭据的攻击者只能获得为指向该区域中的记录的所有域颁发证书的能力。&lt;/p&gt;
 &lt;p&gt;然而，弄清楚哪些域确实指向那里是微不足道的：攻击者只需阅读 &lt;a href=&#34;https://www.certificate-transparency.org/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;证书透明度&lt;/a&gt; 日志并检查这些证书中的域是否具有指向受感染 DNS 区域的神奇子域。&lt;/p&gt;
 &lt;h3 id=&#34;有限的-dns-区域访问&#34;&gt;有限的 DNS 区域访问&lt;/h3&gt;
-&lt;p&gt;如果您的 DNS 软件或提供商允许创建绑定到子域的权限，这可以帮助您缓解整个问题。不幸的是，在发布时，我们发现唯一允许这样做的提供商是 &lt;a href=&#34;https://docs.microsoft.com/en-us/azure/dns/dns-protect-zones-recordsets&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microsoft Azure DNS&lt;/a&gt;。据推测，Dyn 也有细粒度的权限，但我们无法在他们的服务中找到除 “更新记录” 之外的更低级别的权限，这仍然使该区域完全容易受到攻击。&lt;/p&gt;
+&lt;p&gt;如果您的 DNS 软件或提供商允许创建绑定到子域的权限，这可以帮助您缓解整个问题。不幸的是，在发布时，我们发现唯一允许这样做的提供商是 &lt;a href=&#34;https://docs.microsoft.com/en-us/azure/dns/dns-protect-zones-recordsets&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Microsoft Azure DNS&lt;/a&gt;。据推测，Dyn 也有细粒度的权限，但我们无法在他们的服务中找到除“更新记录”之外的更低级别的权限，这仍然使该区域完全容易受到攻击。&lt;/p&gt;
 &lt;p&gt;Route53 和其他可能允许他们的用户创建子委托区域、新用户凭据、将 NS 记录指向新区域，并使用 CNAME 记录将 &lt;code&gt;_acme-challenge&lt;/code&gt; 验证子域指向他们。使用这种方法正确地进行特权分离需要做很多工作，因为人们需要为他们想要使用 DNS 挑战的每个域完成所有这些步骤。&lt;/p&gt;
 &lt;h3 id=&#34;使用-acme-dns&#34;&gt;使用 ACME-DNS&lt;/h3&gt;
 &lt;p&gt;作为免责声明，下面讨论的软件由作者编写，并用作以安全方式处理 DNS 质询自动化所需凭据所需功能的示例。最后一种方法是一款名为 ACME-DNS 的软件，专为解决这个问题而编写，它能够完全缓解这个问题。一个缺点是它为您的基础设施增加了一项需要维护的东西，以及对公共互联网开放 DNS 端口 (53) 的要求。ACME-DNS 充当具有有限 HTTP API 的简单 DNS 服务器。API 本身只允许更新自动生成的随机子域的 TXT 记录。没有方法可以请求丢失的凭据、更新或添加其他记录。它提供了两个端点：&lt;/p&gt;
@@ -51,7 +51,7 @@
 &lt;p&gt;为了使用 ACME-DNS，您首先必须为其创建 A/AAAA 记录，然后将 NS 记录指向它以创建委托节点。之后，您只需通过 /register 端点创建一组新的凭据，并将 CNAME 记录从原始区域的 &lt;code&gt;_acme-challenge&lt;/code&gt; 验证子域指向新生成的子域。&lt;/p&gt;
 &lt;p&gt;唯一保存在本地的凭据是用于 ACME-DNS 的凭据，它们仅适用于更新验证子域的确切 TXT 记录。这有效地限制了可能的危害对攻击者能够为这些域颁发证书的影响。有关 ACME-DNS 的更多信息，请访问 &lt;a href=&#34;https://github.com/joohoi/acme-dns/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://github.com/joohoi/acme-dns/&lt;/a&gt;。&lt;/p&gt;
 &lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
-&lt;p&gt;为了缓解 ACME DNS 挑战验证的问题， 已经讨论了向 IETF 的 ACME 工作组提出的&lt;a href=&#34;https://mailarchive.ietf.org/arch/msg/acme/6_j3fecaxIgwNTpJ3693U_n0Kec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;辅助 DNS 等提案，但目前仍未得到解决&lt;/a&gt;。由于限制泄露的唯一方法是将 DNS 区域凭据权限限制为仅更改特定的 TXT 记录，因此当前安全地实现 DNS 验证自动化的可能性很小。唯一可持续的选择是让 DNS 软件和服务提供商要么实施方法来创建更细粒度的区域凭据，要么为这个确切的用例提供全新类型的凭据。&lt;/p&gt;
+&lt;p&gt;为了缓解 ACME DNS 挑战验证的问题，已经讨论了向 IETF 的 ACME 工作组提出的&lt;a href=&#34;https://mailarchive.ietf.org/arch/msg/acme/6_j3fecaxIgwNTpJ3693U_n0Kec&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;辅助 DNS 等提案，但目前仍未得到解决&lt;/a&gt;。由于限制泄露的唯一方法是将 DNS 区域凭据权限限制为仅更改特定的 TXT 记录，因此当前安全地实现 DNS 验证自动化的可能性很小。唯一可持续的选择是让 DNS 软件和服务提供商要么实施方法来创建更细粒度的区域凭据，要么为这个确切的用例提供全新类型的凭据。&lt;/p&gt;
 </description>
     </item>
     
@@ -154,9 +154,9 @@
 
 
 
-&lt;figure  id=&#34;figure-微服务的零信任网络的tetrate实现&#34;&gt;
+&lt;figure  id=&#34;figure-微服务的零信任网络的-tetrate-实现&#34;&gt;
   &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
-    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;微服务的零信任网络的Tetrate实现&#34; srcset=&#34;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;微服务的零信任网络的 Tetrate 实现&#34; srcset=&#34;
                /blog/zero-trust-network-for-microservices/008i3skNly1gyggs2hdtaj30wi0q20uz_hucb0e28767ba0909149a0f9ae081e0173_91189_ff289da2c7f80d3526286370193ab4b0.webp 400w,
                /blog/zero-trust-network-for-microservices/008i3skNly1gyggs2hdtaj30wi0q20uz_hucb0e28767ba0909149a0f9ae081e0173_91189_c2bd22658cb9c426c0120d973309b70a.webp 760w,
                /blog/zero-trust-network-for-microservices/008i3skNly1gyggs2hdtaj30wi0q20uz_hucb0e28767ba0909149a0f9ae081e0173_91189_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
@@ -165,7 +165,7 @@
                height=&#34;609&#34;
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;figcaption&gt;
-      微服务的零信任网络的Tetrate实现
+      微服务的零信任网络的 Tetrate 实现
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
 &lt;p&gt;微服务的零信任网络的 Tetrate 实现&lt;/p&gt;
@@ -197,16 +197,16 @@
     </item>
     
     <item>
-      <title>ZTNA能取代VPN吗？——三种远程访问方法对比</title>
+      <title>ZTNA 能取代 VPN 吗？——三种远程访问方法对比</title>
       <link>https://cloudnative.to/blog/can-ztna-replace-vpn/</link>
       <pubDate>Wed, 13 Oct 2021 10:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/blog/can-ztna-replace-vpn/</guid>
       <description>&lt;h2 id=&#34;编者按&#34;&gt;编者按&lt;/h2&gt;
-&lt;p&gt;本文译自 Cloudflare 出品的白皮书 &lt;a href=&#34;https://assets.ctfassets.net/slt3lc6tev37/IcpGyTHplQhOeB60k1Egp/e49211fc4482b67f3bf264c22923ef5c/Can_ZTNA_replace_your_VPN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;em&gt;Can ZTNA replace your VPN? Compare 3 remote access approaches&lt;/em&gt;&lt;/a&gt;，本文对比了VPN和ZTNA远程访问解决方案，阐明了它们的好处和局限性，同时阐明了迁移项目的最重要考虑因素。同时给出了 Cloudflare 的解决方案及迁移到 ZTNA 的步骤建议。&lt;/p&gt;
+&lt;p&gt;本文译自 Cloudflare 出品的白皮书 &lt;a href=&#34;https://assets.ctfassets.net/slt3lc6tev37/IcpGyTHplQhOeB60k1Egp/e49211fc4482b67f3bf264c22923ef5c/Can_ZTNA_replace_your_VPN&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;em&gt;Can ZTNA replace your VPN? Compare 3 remote access approaches&lt;/em&gt;&lt;/a&gt;，本文对比了 VPN 和 ZTNA 远程访问解决方案，阐明了它们的好处和局限性，同时阐明了迁移项目的最重要考虑因素。同时给出了 Cloudflare 的解决方案及迁移到 ZTNA 的步骤建议。&lt;/p&gt;
 &lt;h2 id=&#34;简介&#34;&gt;简介&lt;/h2&gt;
-&lt;p&gt;安全、无缝的远程访问是一个业务促进因素——提高远程用户的生产力，减少IT团队花在入职和维护用户与应用连接的时间，并具有灵活性和弹性。然而，远程访问对许多企业来说仍然是一个挑战。&lt;/p&gt;
-&lt;p&gt;很久以前，VPN提供了一种简单的方法，将一些远程用户短暂地连接到企业网络。然而，随着劳动力的分布越来越广——企业需要在更长时间内保持远程用户的安全连接——这种方法的缺陷变得很明显，从性能低下、安全风险增加到扩展性问题。&lt;/p&gt;
-&lt;p&gt;随着远程访问需求的增长，企业正越来越多地从传统的VPN实施方式转向更安全、性能更高的远程访问解决方案。零信任网络访问（Zero Trust Network Access），或称ZTNA，围绕特定的应用程序、私有IP和主机名创建安全边界，用基于身份和背景授予访问权的默认拒绝策略取代默认允许的VPN连接。&lt;/p&gt;
+&lt;p&gt;安全、无缝的远程访问是一个业务促进因素——提高远程用户的生产力，减少 IT 团队花在入职和维护用户与应用连接的时间，并具有灵活性和弹性。然而，远程访问对许多企业来说仍然是一个挑战。&lt;/p&gt;
+&lt;p&gt;很久以前，VPN 提供了一种简单的方法，将一些远程用户短暂地连接到企业网络。然而，随着劳动力的分布越来越广——企业需要在更长时间内保持远程用户的安全连接——这种方法的缺陷变得很明显，从性能低下、安全风险增加到扩展性问题。&lt;/p&gt;
+&lt;p&gt;随着远程访问需求的增长，企业正越来越多地从传统的 VPN 实施方式转向更安全、性能更高的远程访问解决方案。零信任网络访问（Zero Trust Network Access），或称 ZTNA，围绕特定的应用程序、私有 IP 和主机名创建安全边界，用基于身份和背景授予访问权的默认拒绝策略取代默认允许的 VPN 连接。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -235,34 +235,34 @@
                loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
   &lt;/div&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;2020年，大约5%的远程访问使用主要由ZTNA提供服务。由于传统VPN访问的局限性以及提供更精确的访问和会话控制的需要，预计到2024年，这一数字将跃升至40%。&lt;/p&gt;
-&lt;p&gt;虽然ZTNA为企业提供了比VPN更明显的优势和更多的功能，但许多组织发现它并不能完全替代VPN基础设施。但是，随着ZTNA变得更加强大，VPN问题变得更加严重，这种情况正在迅速改变。本文对比了VPN和ZTNA远程访问解决方案，阐明了它们的好处和局限性，同时阐明了迁移项目的最重要考虑因素。它解释了Cloudflare如何提供ZTNA，并推荐了一套行动步骤，将传统的VPN基础设施过渡到更快、更安全的远程用户零信任连接。&lt;/p&gt;
-&lt;h2 id=&#34;方法1传统的vpn&#34;&gt;方法1：传统的VPN&lt;/h2&gt;
-&lt;p&gt;几十年来，VPN使组织能够将其远程用户连接到公司网络，并具有一定的隐私和安全性。在公共互联网上访问敏感信息，任何攻击者都可能窥探或窃取数据，而VPN允许用户通过加密连接安全访问内部资源。&lt;/p&gt;
-&lt;p&gt;两种最常见的VPN实施模式是基于客户端的VPN和无客户端的SSL-VPN。每种模式都有各自的好处和挑战。&lt;/p&gt;
-&lt;p&gt;基于客户端的VPN通过加密的隧道将远程用户连接到一个私人网络。这种连接是通过一个软件应用程序或客户端建立的，它要求用户用用户名和密码进行一次认证，以获得对该网络内任何资源的持续访问。&lt;/p&gt;
+&lt;p&gt;2020 年，大约 5% 的远程访问使用主要由 ZTNA 提供服务。由于传统 VPN 访问的局限性以及提供更精确的访问和会话控制的需要，预计到 2024 年，这一数字将跃升至 40%。&lt;/p&gt;
+&lt;p&gt;虽然 ZTNA 为企业提供了比 VPN 更明显的优势和更多的功能，但许多组织发现它并不能完全替代 VPN 基础设施。但是，随着 ZTNA 变得更加强大，VPN 问题变得更加严重，这种情况正在迅速改变。本文对比了 VPN 和 ZTNA 远程访问解决方案，阐明了它们的好处和局限性，同时阐明了迁移项目的最重要考虑因素。它解释了 Cloudflare 如何提供 ZTNA，并推荐了一套行动步骤，将传统的 VPN 基础设施过渡到更快、更安全的远程用户零信任连接。&lt;/p&gt;
+&lt;h2 id=&#34;方法-1传统的-vpn&#34;&gt;方法 1：传统的 VPN&lt;/h2&gt;
+&lt;p&gt;几十年来，VPN 使组织能够将其远程用户连接到公司网络，并具有一定的隐私和安全性。在公共互联网上访问敏感信息，任何攻击者都可能窥探或窃取数据，而 VPN 允许用户通过加密连接安全访问内部资源。&lt;/p&gt;
+&lt;p&gt;两种最常见的 VPN 实施模式是基于客户端的 VPN 和无客户端的 SSL-VPN。每种模式都有各自的好处和挑战。&lt;/p&gt;
+&lt;p&gt;基于客户端的 VPN 通过加密的隧道将远程用户连接到一个私人网络。这种连接是通过一个软件应用程序或客户端建立的，它要求用户用用户名和密码进行一次认证，以获得对该网络内任何资源的持续访问。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;优点&lt;/strong&gt;&lt;/p&gt;
 &lt;p&gt;一旦建立连接，就自由的横向移动使用户很容易通过访问应用程序和连接到内部主机来快速访问多种资源。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;挑战&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
-&lt;p&gt;不是为漫游用户和移动设备设计的。当用户四处漫游时，他们的笔记本电脑和移动设备都会随着无线网络的变化而无缝地重新连接。然而，VPN客户端不善于流畅地处理这些重新连接，要求用户反复强迫VPN客户端重新启动和重新认证——造成生产力的损失，并产生IT票据。&lt;/p&gt;
+&lt;p&gt;不是为漫游用户和移动设备设计的。当用户四处漫游时，他们的笔记本电脑和移动设备都会随着无线网络的变化而无缝地重新连接。然而，VPN 客户端不善于流畅地处理这些重新连接，要求用户反复强迫 VPN 客户端重新启动和重新认证——造成生产力的损失，并产生 IT 票据。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
-&lt;p&gt;可见性差。采用这种方法，VPN基础设施在数据中心的内部防火墙背后终止了来自VPN客户端的加密隧道。虽然这些连接被记录下来，但没有特定的应用集中日志来显示用户访问了哪些应用或他们在应用中采取了哪些行动。&lt;/p&gt;
+&lt;p&gt;可见性差。采用这种方法，VPN 基础设施在数据中心的内部防火墙背后终止了来自 VPN 客户端的加密隧道。虽然这些连接被记录下来，但没有特定的应用集中日志来显示用户访问了哪些应用或他们在应用中采取了哪些行动。&lt;/p&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;无客户端的SSL-VPN门户允许少数远程用户连接到私人网络中的一些基于浏览器的应用程序。这种连接是通过运行VPN服务的网络设备中内置的Web服务器实现的。&lt;/p&gt;
+&lt;p&gt;无客户端的 SSL-VPN 门户允许少数远程用户连接到私人网络中的一些基于浏览器的应用程序。这种连接是通过运行 VPN 服务的网络设备中内置的 Web 服务器实现的。&lt;/p&gt;
 &lt;p&gt;&lt;strong&gt;挑战&lt;/strong&gt;&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
-&lt;p&gt;安全问题。数据中心内的大多数VPN设置允许用户完全访问，这给那些不希望非雇员（如承包商）不受限制地访问敏感资源和应用程序的组织带来了问题。&lt;/p&gt;
+&lt;p&gt;安全问题。数据中心内的大多数 VPN 设置允许用户完全访问，这给那些不希望非雇员（如承包商）不受限制地访问敏感资源和应用程序的组织带来了问题。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
 &lt;p&gt;不是为支持大量的并发用户而建立的。与现代云服务不同，门户网站的网络服务器不能弹性扩展以满足更高需求。相反，必须安装更多的网络设备并进行负载均衡，以扩大门户的规模，这通常是昂贵、复杂和无效的，因为设备的其他功能可能没有被充分利用。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
-&lt;p&gt;无客户端的SSL-VPN门户使防火墙端口和网络服务器暴露在攻击之下。为了让托管门户的网络服务器能够到达内部应用，管理员必须开放入站防火墙端口，使其暴露在外部攻击之下。开放的端口和网络服务器本身都必须屏蔽DDoS和网络应用的攻击，这需要更复杂的配置和更高的成本，以确保这种连接方法的安全。&lt;/p&gt;
+&lt;p&gt;无客户端的 SSL-VPN 门户使防火墙端口和网络服务器暴露在攻击之下。为了让托管门户的网络服务器能够到达内部应用，管理员必须开放入站防火墙端口，使其暴露在外部攻击之下。开放的端口和网络服务器本身都必须屏蔽 DDoS 和网络应用的攻击，这需要更复杂的配置和更高的成本，以确保这种连接方法的安全。&lt;/p&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
@@ -295,21 +295,21 @@
       img
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;虽然VPN为远程用户提供了基本的隐私，但在设计时并没有考虑到安全性或可扩展性。传统上，企业使用VPN将少数远程用户短期连接到企业网络。然而，随着远程工作变得越来越普遍，VPN问题开始成倍增加。&lt;/p&gt;
+&lt;p&gt;虽然 VPN 为远程用户提供了基本的隐私，但在设计时并没有考虑到安全性或可扩展性。传统上，企业使用 VPN 将少数远程用户短期连接到企业网络。然而，随着远程工作变得越来越普遍，VPN 问题开始成倍增加。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
-&lt;p&gt;用户体验到性能低下。 如果VPN基础设施没有能力处理其员工创造的流量吞吐量和并发连接，用户的互联网连接就会变慢。此外，当VPN距离用户和他们试图访问的应用服务器都很远时，就会造成访问延迟。&lt;/p&gt;
+&lt;p&gt;用户体验到性能低下。如果 VPN 基础设施没有能力处理其员工创造的流量吞吐量和并发连接，用户的互联网连接就会变慢。此外，当 VPN 距离用户和他们试图访问的应用服务器都很远时，就会造成访问延迟。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
-&lt;p&gt;企业网络容易受到攻击。VPN通常采用城堡和山丘模式，即用户一旦连接到网络，就可以不受限制地访问所有企业资源。由于没有内置的方法来限制对关键基础设施和数据的访问，企业被迫配置昂贵、复杂的安全服务，如下一代防火墙和网络访问控制——或者容易受到恶意的横向移动，导致更大的数据泄露。&lt;/p&gt;
+&lt;p&gt;企业网络容易受到攻击。VPN 通常采用城堡和山丘模式，即用户一旦连接到网络，就可以不受限制地访问所有企业资源。由于没有内置的方法来限制对关键基础设施和数据的访问，企业被迫配置昂贵、复杂的安全服务，如下一代防火墙和网络访问控制——或者容易受到恶意的横向移动，导致更大的数据泄露。&lt;/p&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;&lt;strong&gt;托管VPN服务的挑战&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;一些供应商已经将运行VPN服务的网络设备转移到公有云中，作为虚拟机在一个或多个数据中心运行。VPN可能与其他安全服务捆绑在一起，也可能不与之捆绑在一起（或与之串联）。&lt;/p&gt;
-&lt;p&gt;将VPN置于云中，似乎可以解决硬件VPN设备固有的一些可扩展性问题。然而，这样做也带来了一些重大的安全和可扩展性挑战。&lt;/p&gt;
-&lt;p&gt;例如有一个组织托管一个完整的NGFW（下一代防火墙），将VPN与防火墙和其他安全功能结合起来。由于NGFW是作为一个捆绑服务提供的，因此不可能根据需求独立扩展任何特定功能。扩大一个功能需要扩大整个服务；要做到这一点，必须启动更多的虚拟机，以平衡每个虚拟机中执行的少量计算的负载。这不仅是一个不切实际且不便的解决方案，而且随着组织的远程访问需求不断扩大，很可能会产生高额费用。&lt;/p&gt;
-&lt;h2 id=&#34;方法2零信任网络访问&#34;&gt;方法2：零信任网络访问&lt;/h2&gt;
-&lt;p&gt;零信任安全规避了VPN所固有的许多挑战。它所依据的原则是，网络内部或外部的任何用户或设备都不能被默认信任。 为了减少数据泄露、内部攻击和其他威胁的风险和影响，零信任方法——&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;托管 VPN 服务的挑战&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;一些供应商已经将运行 VPN 服务的网络设备转移到公有云中，作为虚拟机在一个或多个数据中心运行。VPN 可能与其他安全服务捆绑在一起，也可能不与之捆绑在一起（或与之串联）。&lt;/p&gt;
+&lt;p&gt;将 VPN 置于云中，似乎可以解决硬件 VPN 设备固有的一些可扩展性问题。然而，这样做也带来了一些重大的安全和可扩展性挑战。&lt;/p&gt;
+&lt;p&gt;例如有一个组织托管一个完整的 NGFW（下一代防火墙），将 VPN 与防火墙和其他安全功能结合起来。由于 NGFW 是作为一个捆绑服务提供的，因此不可能根据需求独立扩展任何特定功能。扩大一个功能需要扩大整个服务；要做到这一点，必须启动更多的虚拟机，以平衡每个虚拟机中执行的少量计算的负载。这不仅是一个不切实际且不便的解决方案，而且随着组织的远程访问需求不断扩大，很可能会产生高额费用。&lt;/p&gt;
+&lt;h2 id=&#34;方法-2零信任网络访问&#34;&gt;方法 2：零信任网络访问&lt;/h2&gt;
+&lt;p&gt;零信任安全规避了 VPN 所固有的许多挑战。它所依据的原则是，网络内部或外部的任何用户或设备都不能被默认信任。为了减少数据泄露、内部攻击和其他威胁的风险和影响，零信任方法——&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
 &lt;p&gt;对每一次登录和请求进行认证和记录。&lt;/p&gt;
@@ -354,41 +354,41 @@
       img
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;与VPN一样，ZTNA有两种配置方式：&lt;/p&gt;
+&lt;p&gt;与 VPN 一样，ZTNA 有两种配置方式：&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;无客户端（或服务发起的）ZTNA使用现有的浏览器，而不是客户端，来创建一个安全连接并验证用户设备。传统上，无客户端ZTNA仅限于具有HTTP/HTTPS协议的应用，但兼容性正在快速发展。&lt;/li&gt;
+&lt;li&gt;无客户端（或服务发起的）ZTNA 使用现有的浏览器，而不是客户端，来创建一个安全连接并验证用户设备。传统上，无客户端 ZTNA 仅限于具有 HTTP/HTTPS 协议的应用，但兼容性正在快速发展。&lt;/li&gt;
 &lt;/ol&gt;
 &lt;ul&gt;
-&lt;li&gt;优点：无客户端ZTNA使用反向代理连接，防止直接访问应用程序，阻止用户访问他们可能没有权限查看的应用程序和数据，并允许管理员在管理方面有更强的控制和灵活性。&lt;/li&gt;
+&lt;li&gt;优点：无客户端 ZTNA 使用反向代理连接，防止直接访问应用程序，阻止用户访问他们可能没有权限查看的应用程序和数据，并允许管理员在管理方面有更强的控制和灵活性。&lt;/li&gt;
 &lt;/ul&gt;
 &lt;ol start=&#34;2&#34;&gt;
-&lt;li&gt;基于客户端（终端启动）的ZTNA在控制代理和授权应用之间建立加密连接之前，在用户设备上安装软件。&lt;/li&gt;
+&lt;li&gt;基于客户端（终端启动）的 ZTNA 在控制代理和授权应用之间建立加密连接之前，在用户设备上安装软件。&lt;/li&gt;
 &lt;/ol&gt;
 &lt;ul&gt;
-&lt;li&gt;优点：基于客户端的ZTNA使管理员能够更深入地了解用户访问应用程序的设备状态、位置和风险背景，因此可以创建和执行更精细的策略。而且，由于这种方法不限于HTTP/HTTPS，它可以用来访问更广泛的非HTTP应用——例如那些依赖SSH、RDP、VNC、SMB和其他TCP连接的应用。&lt;/li&gt;
+&lt;li&gt;优点：基于客户端的 ZTNA 使管理员能够更深入地了解用户访问应用程序的设备状态、位置和风险背景，因此可以创建和执行更精细的策略。而且，由于这种方法不限于 HTTP/HTTPS，它可以用来访问更广泛的非 HTTP 应用——例如那些依赖 SSH、RDP、VNC、SMB 和其他 TCP 连接的应用。&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;&lt;strong&gt;实施ZTNA的挑战&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;虽然ZTNA与传统的VPN相比具有明显的优势，但它并不是一个确保远程用户网络访问安全的完美方法。当企业权衡采用零信任的利弊时，他们可能会遇到以下一个或多个挑战。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;实施 ZTNA 的挑战&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;虽然 ZTNA 与传统的 VPN 相比具有明显的优势，但它并不是一个确保远程用户网络访问安全的完美方法。当企业权衡采用零信任的利弊时，他们可能会遇到以下一个或多个挑战。&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;解决方案并不是真正的云原生。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;如果供应商不提供基于云的ZTNA——意味着他们的客户需要在自己的数据中心部署软件，那么用户就会失去即时可扩展性和无限吞吐量等关键优势。&lt;/p&gt;
+&lt;p&gt;如果供应商不提供基于云的 ZTNA——意味着他们的客户需要在自己的数据中心部署软件，那么用户就会失去即时可扩展性和无限吞吐量等关键优势。&lt;/p&gt;
 &lt;ol start=&#34;2&#34;&gt;
-&lt;li&gt;供应商可能不提供基于客户端和无客户端的ZTNA选项。&lt;/li&gt;
+&lt;li&gt;供应商可能不提供基于客户端和无客户端的 ZTNA 选项。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;这限制了那些需要将用户连接到非HTTP应用（如远程桌面、SSH应用或文件共享）的组织的价值。&lt;/p&gt;
+&lt;p&gt;这限制了那些需要将用户连接到非 HTTP 应用（如远程桌面、SSH 应用或文件共享）的组织的价值。&lt;/p&gt;
 &lt;ol start=&#34;3&#34;&gt;
 &lt;li&gt;配置可能是复杂和耗时的。&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;不提供策略协调和自动化支持的供应商（通过Terraform等工具）可能会给管理员带来更多的手动工作——除了在身份提供者中已经发生的配置之外。&lt;/p&gt;
-&lt;h2 id=&#34;方法-3cloudflare的远程访问方法&#34;&gt;方法 3：Cloudflare的远程访问方法&lt;/h2&gt;
-&lt;p&gt;保护和扩展远程访问应该是一个无缝的过程，一个不分层的笨重的安全解决方案，创造性能的权衡，减少不必要的成本。Cloudflare使团队能够处理所有的远程访问用例，具有以下好处。&lt;/p&gt;
+&lt;p&gt;不提供策略协调和自动化支持的供应商（通过 Terraform 等工具）可能会给管理员带来更多的手动工作——除了在身份提供者中已经发生的配置之外。&lt;/p&gt;
+&lt;h2 id=&#34;方法-3cloudflare-的远程访问方法&#34;&gt;方法 3：Cloudflare 的远程访问方法&lt;/h2&gt;
+&lt;p&gt;保护和扩展远程访问应该是一个无缝的过程，一个不分层的笨重的安全解决方案，创造性能的权衡，减少不必要的成本。Cloudflare 使团队能够处理所有的远程访问用例，具有以下好处。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
-&lt;p&gt;为用户和管理员提供简单、无风险的入职培训。Cloudflare很容易与现有的身份供应商和终端保护平台集成，以执行限制访问企业应用程序和资源的零信任政策。&lt;/p&gt;
+&lt;p&gt;为用户和管理员提供简单、无风险的入职培训。Cloudflare 很容易与现有的身份供应商和终端保护平台集成，以执行限制访问企业应用程序和资源的零信任政策。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
-&lt;p&gt;基于客户端和无客户端的ZTNA部署的灵活性。Cloudflare为网络、SSH、VNC（以及即将推出的RDP）应用程序的连接提供无客户端支持，为非HTTP应用程序和内部IP（以及即将推出的主机名）的私有路由提供基于客户端的支持。&lt;/p&gt;
+&lt;p&gt;基于客户端和无客户端的 ZTNA 部署的灵活性。Cloudflare 为网络、SSH、VNC（以及即将推出的 RDP）应用程序的连接提供无客户端支持，为非 HTTP 应用程序和内部 IP（以及即将推出的主机名）的私有路由提供基于客户端的支持。&lt;/p&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
@@ -421,57 +421,57 @@
       img
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;表1：Cloudflare如何应对远程访问挑战&lt;/p&gt;
+&lt;p&gt;表 1：Cloudflare 如何应对远程访问挑战&lt;/p&gt;
 &lt;table&gt;
 &lt;thead&gt;
 &lt;tr&gt;
 &lt;th&gt;问题&lt;/th&gt;
 &lt;th&gt;解决方案&lt;/th&gt;
-&lt;th&gt;Cloudflare的实施&lt;/th&gt;
+&lt;th&gt;Cloudflare 的实施&lt;/th&gt;
 &lt;/tr&gt;
 &lt;/thead&gt;
 &lt;tbody&gt;
 &lt;tr&gt;
 &lt;td&gt;难以扩展&lt;/td&gt;
 &lt;td&gt;全局边缘网络&lt;/td&gt;
-&lt;td&gt;可扩展性问题困扰着非云原生的VPN和ZTNA服务，使远程用户难以访问应用程序和数据。  Cloudflare的全球Anycast网络不仅使用户的连接速度比VPN快，而且还确保任何规模的远程工作者都能根据需要安全、迅速地连接到企业资源，而不需要管理员进行额外的耗时配置。&lt;/td&gt;
+&lt;td&gt;可扩展性问题困扰着非云原生的 VPN 和 ZTNA 服务，使远程用户难以访问应用程序和数据。Cloudflare 的全球 Anycast 网络不仅使用户的连接速度比 VPN 快，而且还确保任何规模的远程工作者都能根据需要安全、迅速地连接到企业资源，而不需要管理员进行额外的耗时配置。&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
 &lt;td&gt;与移动设备的兼容性差&lt;/td&gt;
 &lt;td&gt;轻量级客户端&lt;/td&gt;
-&lt;td&gt;利用IPSec和SSL协议的VPN和ZTNA解决方案在移动和漫游设备上的性能往往不佳。  Cloudflare的WARP客户端利用更现代的Wireguard协议，该协议在用户空间运行，支持更广泛的操作系统选项，与传统选项相比，用户体验更好。Cloudflare的WARP客户端可以在Windows、MacOS、iOS、Android和即将到来的Linux设备上配置。&lt;/td&gt;
+&lt;td&gt;利用 IPSec 和 SSL 协议的 VPN 和 ZTNA 解决方案在移动和漫游设备上的性能往往不佳。Cloudflare 的 WARP 客户端利用更现代的 Wireguard 协议，该协议在用户空间运行，支持更广泛的操作系统选项，与传统选项相比，用户体验更好。Cloudflare 的 WARP 客户端可以在 Windows、MacOS、iOS、Android 和即将到来的 Linux 设备上配置。&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
-&lt;td&gt;没有集成的或薄弱的DDoS保护&lt;/td&gt;
-&lt;td&gt;内置行业领先的DDoS保护&lt;/td&gt;
-&lt;td&gt;如果没有集成的DDoS保护，企业往往被迫以daisy-chain方式提供额外的安全服务，这可能会造成配置上的麻烦、可扩展性问题和安全挑战。 Cloudflare的67+Tbps网络为任何ZTNA模式提供内置的DDoS保护，抵御最大规模的攻击。&lt;/td&gt;
+&lt;td&gt;没有集成的或薄弱的 DDoS 保护&lt;/td&gt;
+&lt;td&gt;内置行业领先的 DDoS 保护&lt;/td&gt;
+&lt;td&gt;如果没有集成的 DDoS 保护，企业往往被迫以 daisy-chain 方式提供额外的安全服务，这可能会造成配置上的麻烦、可扩展性问题和安全挑战。Cloudflare 的 67+Tbps 网络为任何 ZTNA 模式提供内置的 DDoS 保护，抵御最大规模的攻击。&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
 &lt;td&gt;协议的限制&lt;/td&gt;
 &lt;td&gt;非网络应用程序支持&lt;/td&gt;
-&lt;td&gt;模式兼容性：用于SSH/VNC应用的无客户端ZTNA；用于所有其他非网络应用的基于客户端的ZTNA。&lt;/td&gt;
+&lt;td&gt;模式兼容性：用于 SSH/VNC 应用的无客户端 ZTNA；用于所有其他非网络应用的基于客户端的 ZTNA。&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
 &lt;td&gt;没有集成的网络防火墙&lt;/td&gt;
 &lt;td&gt;内置网络防火墙&lt;/td&gt;
-&lt;td&gt;随着企业网络的发展，企业必须平衡的安全硬件堆栈也在不断增加——导致成本、性能和安全方面的折衷。 Cloudflare使管理员能够在边缘执行网络防火墙策略，使他们能够精细地控制哪些数据允许进出网络，并提高流量流经网络的可见性。  ✓ 模式兼容性：基于客户端的 ZTNA&lt;/td&gt;
+&lt;td&gt;随着企业网络的发展，企业必须平衡的安全硬件堆栈也在不断增加——导致成本、性能和安全方面的折衷。Cloudflare 使管理员能够在边缘执行网络防火墙策略，使他们能够精细地控制哪些数据允许进出网络，并提高流量流经网络的可见性。  ✓ 模式兼容性：基于客户端的 ZTNA&lt;/td&gt;
 &lt;/tr&gt;
 &lt;tr&gt;
 &lt;td&gt;缺乏细粒度的控制&lt;/td&gt;
 &lt;td&gt;内置安全网关（SWG）&lt;/td&gt;
-&lt;td&gt;未经批准使用应用程序会给企业带来严重的安全问题；如果没有严格的政策，用户可能会访问和篡改敏感数据和其他企业资源。结合ZTNA和SWG，Cloudflare允许管理员对应用程序内的用户和设备访问权限进行更精细的控制，因此用户和基于角色的组只能访问他们需要的资源。✓ 模式兼容性：基于客户端的ZTNA&lt;/td&gt;
+&lt;td&gt;未经批准使用应用程序会给企业带来严重的安全问题；如果没有严格的政策，用户可能会访问和篡改敏感数据和其他企业资源。结合 ZTNA 和 SWG，Cloudflare 允许管理员对应用程序内的用户和设备访问权限进行更精细的控制，因此用户和基于角色的组只能访问他们需要的资源。✓ 模式兼容性：基于客户端的 ZTNA&lt;/td&gt;
 &lt;/tr&gt;
 &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;h2 id=&#34;用零信任网络访问取代传统vpn&#34;&gt;用零信任网络访问取代传统VPN&lt;/h2&gt;
-&lt;p&gt;在向无VPN安全过渡的漫长而痛苦的过程中，IT安全领导可能会觉得零信任的承诺很空洞。但是，用零信任网络访问取代VPN是可能的，而不需要在协议支持或功能上做出取舍。&lt;/p&gt;
+&lt;h2 id=&#34;用零信任网络访问取代传统-vpn&#34;&gt;用零信任网络访问取代传统 VPN&lt;/h2&gt;
+&lt;p&gt;在向无 VPN 安全过渡的漫长而痛苦的过程中，IT 安全领导可能会觉得零信任的承诺很空洞。但是，用零信任网络访问取代 VPN 是可能的，而不需要在协议支持或功能上做出取舍。&lt;/p&gt;
 &lt;p&gt;推荐的迁移路径根据驱动你的项目的业务专家而有所不同。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;
-&lt;p&gt;如果更快连接到应用程序是你的首要任务，请部署基于客户端的ZTNA，首先用于非网络应用。&lt;/p&gt;
+&lt;p&gt;如果更快连接到应用程序是你的首要任务，请部署基于客户端的 ZTNA，首先用于非网络应用。&lt;/p&gt;
 &lt;/li&gt;
 &lt;li&gt;
-&lt;p&gt;如果加强你的应用程序访问规则的安全性更为重要，那么就从网络应用开始。替换VPN只是整个网络转型的第一步。由于向SASE模式的过渡可能是压倒性的，我们根据客户采取的方法，分解了一条通往零信任安全的常见路径。&lt;/p&gt;
+&lt;p&gt;如果加强你的应用程序访问规则的安全性更为重要，那么就从网络应用开始。替换 VPN 只是整个网络转型的第一步。由于向 SASE 模式的过渡可能是压倒性的，我们根据客户采取的方法，分解了一条通往零信任安全的常见路径。&lt;/p&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;
@@ -531,7 +531,7 @@
 &lt;h2 id=&#34;如何检查-argo-的错误配置&#34;&gt;如何检查 Argo 的错误配置&lt;/h2&gt;
 &lt;p&gt;研究人员指出，查看权限是否配置正确的最快方法是简单地尝试从企业环境之外的未经认证的隐身浏览器访问 Argo Workflows 仪表盘。&lt;/p&gt;
 &lt;p&gt;研究人员补充说，一种更主动技术的检查方法是访问实例的 API 并检查状态码。&lt;/p&gt;
-&lt;p&gt;根据分析，“向 [实例:端口]/api/v1/info 发送 HTTP GET 请求，未经授权的用户将收到‘411 Unauthorized’响应状态码，这说明实例配置正确，而成功的响应状态码‘200 Success’可能表明未经授权的用户能够访问该实例”。&lt;/p&gt;
+&lt;p&gt;根据分析，“向 [实例：端口]/api/v1/info 发送 HTTP GET 请求，未经授权的用户将收到‘411 Unauthorized’响应状态码，这说明实例配置正确，而成功的响应状态码‘200 Success’可能表明未经授权的用户能够访问该实例”。&lt;/p&gt;
 &lt;p&gt;管理员还可以检查日志和工作流时间线中的任何可疑活动。Intezer 指出，任何运行时间过长的工作流都可能表明存在加密挖矿活动。&lt;/p&gt;
 &lt;p&gt;研究人员指出，“即使你的集群部署在 Amazon Web Services（AWS）、EKS 或者 Azure Kubernetes Service（AKS）等托管的云 Kubernetes 服务上，责任共担模型仍声明需要为部署的应用安全负责的是云用户，而不是供应商。”&lt;/p&gt;
 &lt;h2 id=&#34;云错误配置为网络攻击提供媒介&#34;&gt;云错误配置为网络攻击提供媒介&lt;/h2&gt;
@@ -579,15 +579,15 @@
 &lt;li&gt;&lt;strong&gt;应用程序安全测试和修复&lt;/strong&gt;：采用大量的扫描，如 SAST、DAST 和安全检测&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;云原生应用保护&lt;/strong&gt;：使用 Kubernetes 和容器扫描来识别漏洞和保护应用程序&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;政策合规性和可审计性&lt;/strong&gt;：通过持续的文件和透明度，满足许可证合规标准&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;SDLC 平台安全&lt;/strong&gt;：在业界领先的 CI/CD 平台上创建代码，优先考虑并满足IT安全标准&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;SDLC 平台安全&lt;/strong&gt;：在业界领先的 CI/CD 平台上创建代码，优先考虑并满足 IT 安全标准&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;企业的主要目的就是创建有价值和成功的产品或者服务，以期在市场占据主导地位，但是我们看到，在未来的企业中，安全将把好的和伟大的分开。为了避免重大泄漏，就像近期的 Kaseya，Colonial Pipeline，SolarWinds 和 JBS 供应链攻击，所有领导人都必须深入研究他们的安全程序，并成为安全倡议的积极参与者。领导人在安全的重要性上没有保持一致和统一，如果要改善整个工程和产品组织的安全，他们必须从这里开始。&lt;/p&gt;
 &lt;h2 id=&#34;devsecops-现状&#34;&gt;DevSecOps 现状&lt;/h2&gt;
 &lt;p&gt;&lt;em&gt;研究表明，安全人员正在采用安全第一的思维模式，但仍然需要更多安全和 IT 的协作，积极有效的框架以及增加对 AI/ML 工具的使用。&lt;/em&gt;&lt;/p&gt;
-&lt;p&gt;GitLab 公司的年度 DevSecOps 报告发现，在使用 DevOps 的组织中，安全性显著提高。 事实上，72% 的安全专家将他们自己组织的安全努力评为“良好”或“强大”。再者，DevOps 中运行安全扫描的也比以往多：超过一半的运行了 SAST，44% 的运行了 DAST 扫描，接近 50% 的扫描了容器和依赖。所有这些都表明，行业对 DevSecOps 方法的接受程度在不断提高。实际中，70% 的安全团队表明安全已经左移了。&lt;/p&gt;
+&lt;p&gt;GitLab 公司的年度 DevSecOps 报告发现，在使用 DevOps 的组织中，安全性显著提高。事实上，72% 的安全专家将他们自己组织的安全努力评为“良好”或“强大”。再者，DevOps 中运行安全扫描的也比以往多：超过一半的运行了 SAST，44% 的运行了 DAST 扫描，接近 50% 的扫描了容器和依赖。所有这些都表明，行业对 DevSecOps 方法的接受程度在不断提高。实际中，70% 的安全团队表明安全已经左移了。&lt;/p&gt;
 &lt;p&gt;然而，在将安全继承到 DevOps 时依旧有一些绊脚石。超过四分之三的安全团队受访者仍然认为开发人员发现的错误太少，而且在 SDLC 中发现的时间太晚。在 DevOps 团队中，42% 的受访者感觉到安全测试在流程中发生的太晚了，近 37% 的受访者表示追踪缺陷修复的状态非常具有挑战性。所有这些都表明在开发过程中对安全采取了一种被动的方法。开发人员和安全团队往往停留在他们各自的专业领域，然后在出现漏洞时做出反应。&lt;/p&gt;
-&lt;p&gt;为了减少手动测试和扫描，DevOps 从业者开始利用 AI/ML 工具和技术。GitLab 的 DevSecOps 调查报告发现，四分之一的受访者声称实现了全自动化测试，比 2020 年增长了 13%。调查进一步发现，使用 AI/ML 或者机器人来测试和评审代码的数量在急剧飙升。75% 的团队已经在用或者正在计划使用此技术，比 2020 年上升了 41%。CI/CD 平台正在加强其ML能力，以实现更顺畅、更安全的 DevOps 流程，这些工具的使用在未来几年只会越来越普遍。&lt;/p&gt;
-&lt;p&gt;自动 DevSecOps 成为主流以来，已经取得了一些进展，在企业开始以积极主动的心态对待安全问题之前，他们不会成功采用DevSecOps。由于安全和 IT 部门在一个单一的愿景上保持一致，成功地执行一个既定策略，并使他们的工作流程现代化和安全化，他们的被动将减少，主动将增加，同时更具协同性。&lt;/p&gt;
+&lt;p&gt;为了减少手动测试和扫描，DevOps 从业者开始利用 AI/ML 工具和技术。GitLab 的 DevSecOps 调查报告发现，四分之一的受访者声称实现了全自动化测试，比 2020 年增长了 13%。调查进一步发现，使用 AI/ML 或者机器人来测试和评审代码的数量在急剧飙升。75% 的团队已经在用或者正在计划使用此技术，比 2020 年上升了 41%。CI/CD 平台正在加强其 ML 能力，以实现更顺畅、更安全的 DevOps 流程，这些工具的使用在未来几年只会越来越普遍。&lt;/p&gt;
+&lt;p&gt;自动 DevSecOps 成为主流以来，已经取得了一些进展，在企业开始以积极主动的心态对待安全问题之前，他们不会成功采用 DevSecOps。由于安全和 IT 部门在一个单一的愿景上保持一致，成功地执行一个既定策略，并使他们的工作流程现代化和安全化，他们的被动将减少，主动将增加，同时更具协同性。&lt;/p&gt;
 &lt;h2 id=&#34;克服困难采用-devsecops-框架&#34;&gt;克服困难，采用 DevSecOps 框架&lt;/h2&gt;
 &lt;p&gt;&lt;em&gt;随着公司持续向云迁移，越来越明显的是，他们应该将 DevSecOps 继承到云基础设施中。可能会产生一些痛点，但是持续时间不会太长而且回报率极高。&lt;/em&gt;&lt;/p&gt;
 &lt;p&gt;有效采用 DevSecOps 的一个最大的障碍就是人们认为它会与进入市场的速度相悖。现如今，企业的成功取决于快速部署和快速、迭代开发。最初，实施 DevSecOps 框架可能会感觉到在你的 CI/CD 管道中设置了减速带。新的安全流程有可能会给优先考虑安全问题的安全团队和专注于推进发布的 IT 团队带来挑战，但伴随着这种 &amp;ldquo;摩擦 &amp;ldquo;也会带来 DevSecOps 实施的最初结果——端到端的安全处于起步阶段。实施后不需要很长时间就能看到积极的结果。&lt;/p&gt;
@@ -698,9 +698,9 @@
 &lt;p&gt;零信任系统的试金石是，部署在该系统中的应用程序在公开曝光时不会有任何变化。如果实施得当，一个零信任的安全架构在公开的互联网上运行时与在防火墙后面运行时一样安全。&lt;/p&gt;
 &lt;h3 id=&#34;我什么时候需要它&#34;&gt;我什么时候需要它？&lt;/h3&gt;
 &lt;p&gt;虽然每个组织都可能从采用零信任原则中受益，但期望几十年的基础设施和业务流程全盘转变为新模式是不现实的。&lt;/p&gt;
-&lt;p&gt;特定的压力可能会促使你尽早这样做。当你的基础设施跨越不同的供应商时，例如，分裂的企业内部和云部署或混合云部署，在这些扩展的网络上大规模应用VPN和NAT的复杂性和脆弱性可能使得在短期内对这些部署应用零信任网络原则具有成本效益和风险效率。&lt;/p&gt;
-&lt;h2 id=&#34;zta组件&#34;&gt;ZTA组件&lt;/h2&gt;
-&lt;p&gt;NIST提出了三个逻辑组件来实现动态授权和认证。&lt;/p&gt;
+&lt;p&gt;特定的压力可能会促使你尽早这样做。当你的基础设施跨越不同的供应商时，例如，分裂的企业内部和云部署或混合云部署，在这些扩展的网络上大规模应用 VPN 和 NAT 的复杂性和脆弱性可能使得在短期内对这些部署应用零信任网络原则具有成本效益和风险效率。&lt;/p&gt;
+&lt;h2 id=&#34;zta-组件&#34;&gt;ZTA 组件&lt;/h2&gt;
+&lt;p&gt;NIST 提出了三个逻辑组件来实现动态授权和认证。&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;一个策略引擎（Policy Engine，简称 PE），负责确定授权。&lt;/li&gt;
 &lt;li&gt;一个策略管理员（Policy Aadminstrator，简称 PA），用于根据策略引擎的结果建立和/或关闭通往资源的通信路径。&lt;/li&gt;
@@ -736,19 +736,19 @@
       图一
     &lt;/figcaption&gt;&lt;/figure&gt;
 &lt;/p&gt;
-&lt;p&gt;在这种模式下，主体要求的所有工作负载必须有一个身份，可以在 PEP 进行认证和授权。策略决策点对这些身份执行策略，并在允许访问之前执行认证和授权。在这里，授权是基于细粒度的策略；可及性不算作授权。数据平面的PEP允许在运行时对系统进行观察，并确保持续的合规性和治理控制。&lt;/p&gt;
+&lt;p&gt;在这种模式下，主体要求的所有工作负载必须有一个身份，可以在 PEP 进行认证和授权。策略决策点对这些身份执行策略，并在允许访问之前执行认证和授权。在这里，授权是基于细粒度的策略；可及性不算作授权。数据平面的 PEP 允许在运行时对系统进行观察，并确保持续的合规性和治理控制。&lt;/p&gt;
 &lt;h2 id=&#34;实施&#34;&gt;实施&lt;/h2&gt;
-&lt;p&gt;由于零信任不是一个蓝图，而更像是一种设计理念，因此有许多潜在的方法来实现零信任架构。作为服务网格和下一代访问控制（NGAC）技术的创始人和实施者，我们认为服务网格与NGAC相结合，为建立零信任架构网络提供了最佳基础。&lt;/p&gt;
+&lt;p&gt;由于零信任不是一个蓝图，而更像是一种设计理念，因此有许多潜在的方法来实现零信任架构。作为服务网格和下一代访问控制（NGAC）技术的创始人和实施者，我们认为服务网格与 NGAC 相结合，为建立零信任架构网络提供了最佳基础。&lt;/p&gt;
 &lt;p&gt;服务网格提供了你所需要的重要基元：&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;集中管理的策略授权&lt;/li&gt;
-&lt;li&gt;分布式策略执行点——PEP与资源访问点（RAP共同部署）&lt;/li&gt;
+&lt;li&gt;分布式策略执行点——PEP 与资源访问点（RAP 共同部署）&lt;/li&gt;
 &lt;li&gt;内置支持基于运行时身份而非网络位置的工作负载身份&lt;/li&gt;
 &lt;li&gt;内置支持终端用户的应用级认证和授权，允许对网状结构中的每个应用进行全局和一致的策略执行&lt;/li&gt;
 &lt;li&gt;对线上数据进行加密&lt;/li&gt;
 &lt;li&gt;内置可观察性&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;网格提供了操作上的保证，你可以在部署认证和授权系统时使用网格，使它们更安全，更容易管理。我们可以很容易地用服务网格中的组件来重新绘制图一中所代表的NIST的逻辑架构。&lt;/p&gt;
+&lt;p&gt;网格提供了操作上的保证，你可以在部署认证和授权系统时使用网格，使它们更安全，更容易管理。我们可以很容易地用服务网格中的组件来重新绘制图一中所代表的 NIST 的逻辑架构。&lt;/p&gt;
 &lt;p&gt;
 
 
@@ -781,16 +781,16 @@
 &lt;/p&gt;
 &lt;p&gt;服务网格的透明性允许我们逐步采用，而不需要对你的安全基础设施和业务流程全面推倒重建。网格对应用程序、部署和安全问题的解耦意味着你可以开始在现有的基础设施上建立一个零信任的架构，而不扰乱你的业务流程和应用程序交付生命周期。&lt;/p&gt;
 &lt;h2 id=&#34;案例研究美国国防部-platform-one&#34;&gt;案例研究——美国国防部 Platform One&lt;/h2&gt;
-&lt;p&gt;&amp;ldquo;老实说，我任务在没有服务网格的情况下无法获得任何有意义的成功；也许在2018年可以，但在2020年和这以后不可能。&amp;rdquo; ——美国空军首席软件官尼古拉斯·M·查兰（Nicolas M. Chaillan）。&lt;/p&gt;
-&lt;p&gt;美国国防部在空军首席软件官Nicolas M. Chaillan的主持下，对其开发和运营软件的方式进行了革新。由Chaillan领导的在整个国防部发展DevSecOps实践的团队Platform One，提供了多种企业服务，将 &amp;ldquo;自动化的软件工具、服务和标准带到国防部的项目中，使作战人员能够在安全、灵活的情况下创建、部署和操作软件应用。&lt;/p&gt;
-&lt;p&gt;这些服务包括他们的DevSecOps平台（DSOP），这是一个经批准的、符合CNCF标准的Kubernetes发行版的集合，还有Istio、基础设施即代码的手册和加固的容器。&lt;/p&gt;
-&lt;p&gt;根据Chaillan的说法，&amp;ldquo;拥有一个集中的、由政府提供的、团队可以来使用的DevSecOps堆栈，这改变了游戏规则。&amp;ldquo;过去，软件更新周期长达数年，而现在国防部 &amp;ldquo;每天都在推送代码，一天推送多次&amp;hellip;&amp;hellip;每个项目的初始计划时间每5年平均节省12至18个月。&amp;rdquo;&lt;/p&gt;
-&lt;p&gt;Istio是他们架构的一个主要支柱，它提供了服务网格的能力，特别是它实现零信任模型的方式。当被问及为什么他们使用服务网格而不是仅使用入口控制器时，他不仅提到每个应用程序默认都有mTLS传输加密，而且 &amp;ldquo;一旦你转向微服务和容器，你必须管理东西向流量，这与南北向完全不同……你需要确保横向移动受到限制。你不希望一个坏人获得一个容器的访问权，并能够&amp;hellip;&amp;hellip;横向移动到其他容器。除了SSO和mTLS，Platform One的架构使用Istio来执行东西向白名单，并在容器之间提供策略执行点。&lt;/p&gt;
-&lt;p&gt;该网格将策略执行从应用堆栈中剥离出来，并将其透明地转移到sidecar代理上。Platform One能够将不同应用团队独立构建的多个 &amp;ldquo;雪花 &amp;ldquo;应用级SSO和加密实现整合为一个加固的单点登录和授权库，可供企业范围内所有应用使用。这就减轻了开发团队在每个应用中构建安全的负担。它还通过对单一的、经过严格审查的实施方案进行标准化，大大降低了漏洞风险。&lt;/p&gt;
-&lt;p&gt;Chaillan说，&amp;ldquo;如果你不使用服务网格，你最终不得不按语言、按微服务来做。而现在你是紧密耦合的。而且，比方说，在过去如果你想要更新加密位数，你就必须更新所有容器，而现在只需要更新服务网格中的 sidecar，现在你已经解耦了。仅此一点，就值得使用服务网格。”&lt;/p&gt;
+&lt;p&gt;&amp;ldquo;老实说，我任务在没有服务网格的情况下无法获得任何有意义的成功；也许在 2018 年可以，但在 2020 年和这以后不可能。&amp;rdquo; ——美国空军首席软件官尼古拉斯·M·查兰（Nicolas M. Chaillan）。&lt;/p&gt;
+&lt;p&gt;美国国防部在空军首席软件官 Nicolas M. Chaillan 的主持下，对其开发和运营软件的方式进行了革新。由 Chaillan 领导的在整个国防部发展 DevSecOps 实践的团队 Platform One，提供了多种企业服务，将 &amp;ldquo;自动化的软件工具、服务和标准带到国防部的项目中，使作战人员能够在安全、灵活的情况下创建、部署和操作软件应用。&lt;/p&gt;
+&lt;p&gt;这些服务包括他们的 DevSecOps 平台（DSOP），这是一个经批准的、符合 CNCF 标准的 Kubernetes 发行版的集合，还有 Istio、基础设施即代码的手册和加固的容器。&lt;/p&gt;
+&lt;p&gt;根据 Chaillan 的说法，&amp;ldquo;拥有一个集中的、由政府提供的、团队可以来使用的 DevSecOps 堆栈，这改变了游戏规则。&amp;ldquo;过去，软件更新周期长达数年，而现在国防部 &amp;ldquo;每天都在推送代码，一天推送多次&amp;hellip;&amp;hellip;每个项目的初始计划时间每 5 年平均节省 12 至 18 个月。&amp;rdquo;&lt;/p&gt;
+&lt;p&gt;Istio 是他们架构的一个主要支柱，它提供了服务网格的能力，特别是它实现零信任模型的方式。当被问及为什么他们使用服务网格而不是仅使用入口控制器时，他不仅提到每个应用程序默认都有 mTLS 传输加密，而且 &amp;ldquo;一旦你转向微服务和容器，你必须管理东西向流量，这与南北向完全不同……你需要确保横向移动受到限制。你不希望一个坏人获得一个容器的访问权，并能够&amp;hellip;&amp;hellip;横向移动到其他容器。除了 SSO 和 mTLS，Platform One 的架构使用 Istio 来执行东西向白名单，并在容器之间提供策略执行点。&lt;/p&gt;
+&lt;p&gt;该网格将策略执行从应用堆栈中剥离出来，并将其透明地转移到 sidecar 代理上。Platform One 能够将不同应用团队独立构建的多个 &amp;ldquo;雪花 &amp;ldquo;应用级 SSO 和加密实现整合为一个加固的单点登录和授权库，可供企业范围内所有应用使用。这就减轻了开发团队在每个应用中构建安全的负担。它还通过对单一的、经过严格审查的实施方案进行标准化，大大降低了漏洞风险。&lt;/p&gt;
+&lt;p&gt;Chaillan 说，&amp;ldquo;如果你不使用服务网格，你最终不得不按语言、按微服务来做。而现在你是紧密耦合的。而且，比方说，在过去如果你想要更新加密位数，你就必须更新所有容器，而现在只需要更新服务网格中的 sidecar，现在你已经解耦了。仅此一点，就值得使用服务网格。”&lt;/p&gt;
 &lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
 &lt;p&gt;周边安全模式及其渐进式的后继者过于脆弱和复杂，无法满足现代应用开发和部署的需要。现在应用程序的构建方式需要一个动态的、灵活的安全解决方案，一个既能集中管理又能普遍适用于所有应用程序开发团队的解决方案。零信任架构在网络和应用层面提供了急需的安全改进，而服务网格为实现零信任提供了最强大、动态和灵活的方式。&lt;/p&gt;
-&lt;p&gt;在所有服务和所有应用之间部署全局管理的策略执行点，服务网格提供了插入零信任功能的模拟点，如SSO、mTLS和动态授权。通过在全局范围内将安全责任从单个应用程序抽离到服务网格，企业有可能逐步采用零信任原则，而无需重写应用程序或改变现有流程。&lt;/p&gt;
+&lt;p&gt;在所有服务和所有应用之间部署全局管理的策略执行点，服务网格提供了插入零信任功能的模拟点，如 SSO、mTLS 和动态授权。通过在全局范围内将安全责任从单个应用程序抽离到服务网格，企业有可能逐步采用零信任原则，而无需重写应用程序或改变现有流程。&lt;/p&gt;
 </description>
     </item>
     
