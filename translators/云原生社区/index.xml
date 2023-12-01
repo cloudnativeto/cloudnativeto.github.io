@@ -5,12 +5,535 @@
     <link>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/</link>
       <atom:link href="https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/index.xml" rel="self" type="application/rss+xml" />
     <description>云原生社区</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 06 Nov 2023 18:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Fri, 01 Dec 2023 15:33:00 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/avatar_hu704adb3a88ed39769145f561e6113c42_6553_270x270_fill_lanczos_center_3.png</url>
       <title>云原生社区</title>
       <link>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/</link>
     </image>
+    
+    <item>
+      <title>将出口流量路由到通配符目标</title>
+      <link>https://cloudnative.to/blog/istio-egress-sni/</link>
+      <pubDate>Fri, 01 Dec 2023 15:33:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/istio-egress-sni/</guid>
+      <description>&lt;p&gt;本文译自：&lt;a href=&#34;https://istio.io/latest/blog/2023/egress-sni/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://istio.io/latest/blog/2023/egress-sni/&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;摘要：一种通用方法，用于动态设置出口网关，可以将流量路由到一组受限制的目标远程主机，包括通配符域名。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;如果您正在使用 Istio 处理来自网格外部目标的应用程序发起的流量，那么您可能熟悉出口网关的概念。出口网关可用于监控并转发来自网格内应用程序的流量到网格外的位置。如果您的系统在受限环境中运行，并且希望控制从网格到公共互联网上可以访问什么，那么这是一个有用的功能。&lt;/p&gt;
+&lt;p&gt;在&lt;a href=&#34;https://archive.istio.io/v1.13/docs/tasks/traffic-management/egress/wildcard-egress-hosts/#wildcard-configuration-for-arbitrary-domains&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;官方 Istio 文档&lt;/a&gt;中，直到版本1.13，包括配置出口网关以处理任意通配符域名的用例，但随后被移除，因为文档中的解决方案没有得到官方支持或推荐，而且可能在将来的 Istio 版本中失效。尽管如此，旧的解决方案仍然可以在1.20之前的 Istio 版本中使用。然而，Istio 1.20 放弃了一些对该方法工作所需的 Envoy 功能。&lt;/p&gt;
+&lt;p&gt;本文试图描述我们如何解决了这个问题，并通过使用与 Istio 版本无关的组件和 Envoy 功能以及无需单独的 Nginx SNI 代理来填补这个空白。我们的方法允许旧解决方案的用户在系统面临 Istio 1.20 的重大变化之前无缝迁移配置。&lt;/p&gt;
+&lt;h2 id=&#34;需要解决的问题&#34;&gt;需要解决的问题&lt;/h2&gt;
+&lt;p&gt;当前文档记录的出口网关用例依赖于流量的目标（主机名）在 &lt;code&gt;VirtualService&lt;/code&gt; 中静态配置，告诉出口网关 pod 中的 Envoy 在哪里 TCP 代理匹配的出站连接。您可以使用多个，甚至是通配符的 DNS 名称来匹配路由条件，但是您无法将流量路由到应用程序请求中指定的确切位置。例如，您可以匹配 &lt;code&gt;*.wikipedia.org&lt;/code&gt; 的目标流量，但然后您需要将流量转发到单个最终目标，例如 &lt;code&gt;en.wikipedia.org&lt;/code&gt;。如果有另一个服务，例如 &lt;code&gt;anyservice.wikipedia.org&lt;/code&gt;，它不是由与 &lt;code&gt;en.wikipedia.org&lt;/code&gt; 相同的服务器托管的，那么对该主机的流量将失败。这是因为尽管 HTTP 负载的 TLS 握手中的目标主机名包含 &lt;code&gt;anyservice.wikipedia.org&lt;/code&gt;，但 &lt;code&gt;en.wikipedia.org&lt;/code&gt; 服务器将无法为该请求提供服务。&lt;/p&gt;
+&lt;p&gt;在高层次上，解决这个问题的方法是在每个新的网关连接中检查应用程序 TLS 握手中的原始服务器名称（SNI 扩展），并将其用作动态 TCP 代理离开网关的目标。&lt;/p&gt;
+&lt;p&gt;在通过出口网关限制出口流量时，我们需要锁定出口网关，以便只能由网格内的客户端使用。这通过在应用程序 sidecar 和网关之间强制执行 &lt;code&gt;ISTIO_MUTUAL&lt;/code&gt;（mTLS 对等身份验证）来实现。这意味着应用程序 L7 负载上将有两层 TLS。一层是应用程序发起的端到端 TLS 会话，由最终的远程目标终止，另一层是 Istio mTLS 会话。&lt;/p&gt;
+&lt;p&gt;还要记住的一件事是，为了减轻任何潜在的应用程序 pod 损坏，应用程序 sidecar 和网关都应执行主机名列表检查。这样，任何被入侵的应用程序 pod 仍然只能访问允许的目标，而不能访问更多内容。&lt;/p&gt;
+&lt;h2 id=&#34;低级别的-envoy-编程拯救&#34;&gt;低级别的 Envoy 编程拯救&lt;/h2&gt;
+&lt;p&gt;最近的 Envoy 版本包括一种动态 TCP 转发代理解决方案，它使用每个连接的 SNI 头来确定应用程序请求的目标。虽然 Istio &lt;code&gt;VirtualService&lt;/code&gt; 不能配置像这样的目标，但我们可以使用 &lt;code&gt;EnvoyFilter&lt;/code&gt; 来更改 Istio 生成的路由指令，以便使用 SNI 头来确定目标。&lt;/p&gt;
+&lt;p&gt;要使所有这些工作，我们首先配置一个自定义的出口网关来监听出站流量。&lt;/p&gt;
+&lt;p&gt;使用 &lt;code&gt;DestinationRule&lt;/code&gt; 和 &lt;code&gt;VirtualService&lt;/code&gt;，我们指示应用程序 sidecar 将流量（针对一组选定的主机名）路由到该网关，使用 Istio mTLS。在网关 pod 的一侧，我们使用上面提到的 &lt;code&gt;EnvoyFilter&lt;/code&gt; 来构建 SNI 转发器，引入了内部 Envoy 监听器和集群，以使其全部工作。最后，我们将网关实现的 TCP 代理的内部目标补丁到内部 SNI 转发器。&lt;/p&gt;
+&lt;p&gt;以下图表显示了端到端请求流程：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-具有任意域名的出口-sni-路由&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;具有任意域名的出口 SNI 路由&#34; srcset=&#34;
+               /blog/istio-egress-sni/egress-sni-flow_hu847bfa8b2e142117466b6e8dfb29c6c1_418844_a0e60441f846be4d9c4e7b92a3c6939d.webp 400w,
+               /blog/istio-egress-sni/egress-sni-flow_hu847bfa8b2e142117466b6e8dfb29c6c1_418844_05d6a809ebd2b13b403a5cfdac0fbb30.webp 760w,
+               /blog/istio-egress-sni/egress-sni-flow_hu847bfa8b2e142117466b6e8dfb29c6c1_418844_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/istio-egress-sni/egress-sni-flow_hu847bfa8b2e142117466b6e8dfb29c6c1_418844_a0e60441f846be4d9c4e7b92a3c6939d.webp&#34;
+               width=&#34;709&#34;
+               height=&#34;760&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      具有任意域名的出口 SNI 路由
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;部署示例&#34;&gt;部署示例&lt;/h2&gt;
+&lt;p&gt;要部署示例配置，首先创建 &lt;code&gt;istio-egress&lt;/code&gt; 命名空间，然后使用以下 YAML 部署一个出口网关，以及一些 RBAC 和其 &lt;code&gt;Service&lt;/code&gt;。在此示例中，我们使用网关注入方法创建网关。根据您的安装方法，您可能希望以不同的方式部署它（例如，使用 &lt;code&gt;IstioOperator&lt;/code&gt; CR 或使用 Helm）。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-yaml&#34; data-lang=&#34;yaml&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c&#34;&gt;# 将 egressgateway 放入 Service 注册中的新 k8s 集群服务，以便应用程序 sidecar 可以在网格内将流量路由到它。&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Service&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;egressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;type&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ClusterIP&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;egressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;ports&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;port&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;tls-egress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;targetPort&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;8443&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 使用注入方法部署网关&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;apps/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Deployment&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;selector&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;matchLabels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;egressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;template&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;annotations&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;inject.istio.io/templates&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;gateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;labels&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;egressgateway&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;sidecar.istio.io/inject&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;true&amp;#34;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;    &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;spec&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;containers&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;      &lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-proxy&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;image&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;auto&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 每次 pod 启动时都会自动更新镜像。&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;        &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;securityContext&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;capabilities&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;drop&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;            &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;ALL&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;runAsUser&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;          &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;runAsGroup&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;m&#34;&gt;1337&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;c&#34;&gt;# 设置角色以允许读取 TLS 凭据&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Role&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egressgateway-sds&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;rules&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;apiGroups&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;secrets&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;verbs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;get&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;watch&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;list&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;apiGroups&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;security.openshift.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resourceNames&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;anyuid&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;resources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;securitycontextconstraints&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;verbs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;- &lt;span class=&#34;l&#34;&gt;use&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nn&#34;&gt;---&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiVersion&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io/v1&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;RoleBinding&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;metadata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egressgateway-sds&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egress&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;roleRef&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;apiGroup&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;rbac.authorization.k8s.io&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;Role&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;istio-egressgateway-sds&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;subjects&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;&lt;/span&gt;- &lt;span class=&#34;nt&#34;&gt;kind&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;ServiceAccount&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;w&#34;&gt;  &lt;/span&gt;&lt;span class=&#34;nt&#34;&gt;name&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;l&#34;&gt;default&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;验证 &lt;code&gt;istiod&lt;/code&gt; 和网关日志是否存在任何错误或警告。如果一切顺利，您的网格 sidecar 现在正在将 &lt;code&gt;*.wikipedia.org&lt;/code&gt; 请求路由到您的网关 pod，而网关 pod 然后将它们转发到应用程序请求中指定的确切远程主机。&lt;/p&gt;
+&lt;h2 id=&#34;试一下&#34;&gt;试一下&lt;/h2&gt;
+&lt;p&gt;与其他 Istio 出口示例一样，我们将使用 &lt;a href=&#34;https://github.com/istio/istio/tree/release-1.20/samples/sleep&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;sleep&lt;/a&gt; pod 作为发送请求的测试源。假设在您的默认命名空间中启用了自动 sidecar 注入，请使用以下命令部署测试应用程序：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/sleep/sleep.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;获取您的 sleep 和网关 pods：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;SOURCE_POD&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get pod -l &lt;span class=&#34;nv&#34;&gt;app&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;sleep -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;={&lt;/span&gt;.items..metadata.name&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ &lt;span class=&#34;nb&#34;&gt;export&lt;/span&gt; &lt;span class=&#34;nv&#34;&gt;GATEWAY_POD&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;$(&lt;/span&gt;kubectl get pod -n istio-egress -l &lt;span class=&#34;nv&#34;&gt;istio&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;egressgateway -o &lt;span class=&#34;nv&#34;&gt;jsonpath&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;={&lt;/span&gt;.items..metadata.name&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;运行以下命令以确认您能够连接到 &lt;code&gt;wikipedia.org&lt;/code&gt; 网站：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$SOURCE_POD&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -c sleep -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl -s https://en.wikipedia.org/wiki/Main_Page | grep -o &amp;#34;&amp;lt;title&amp;gt;.*&amp;lt;/title&amp;gt;&amp;#34;; curl -s https://de.wikipedia.org/wiki/Wikipedia:Hauptseite | grep -o &amp;#34;&amp;lt;title&amp;gt;.*&amp;lt;/title&amp;gt;&amp;#34;&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt;title&amp;gt;Wikipedia, the free encyclopedia&amp;lt;/title&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt;title&amp;gt;Wikipedia – Die freie Enzyklopädie&amp;lt;/title&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们可以访问英语和德语的 &lt;code&gt;wikipedia.org&lt;/code&gt; 子域名，非常棒！&lt;/p&gt;
+&lt;p&gt;通常，在生产环境中，我们会&lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/egress/egress-control/#change-to-the-blocking-by-default-policy&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;阻止未经配置的外部请求&lt;/a&gt;，这些请求未经过出口网关重定向。但由于我们在测试环境中没有这样做，让我们访问另一个外部站点进行比较：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl &lt;span class=&#34;nb&#34;&gt;exec&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;$SOURCE_POD&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&lt;/span&gt; -c sleep -- sh -c &lt;span class=&#34;s1&#34;&gt;&amp;#39;curl -s https://cloud.ibm.com/login | grep -o &amp;#34;&amp;lt;title&amp;gt;.*&amp;lt;/title&amp;gt;&amp;#34;&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt;title&amp;gt;IBM Cloud&amp;lt;/title&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;由于我们在清单中全局启用了访问日志记录（使用 &lt;code&gt;Telemetry&lt;/code&gt; CR），我们现在可以检查日志以查看代理如何处理上述请求。&lt;/p&gt;
+&lt;p&gt;首先，检查网关日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl logs -n istio-egress &lt;span class=&#34;nv&#34;&gt;$GATEWAY_POD&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;...&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:52.798Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;813&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;111152&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;55&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;185.15.59.224:443&amp;#34;&lt;/span&gt; dynamic_forward_proxy_cluster 172.17.5.170:48262 envoy://sni_listener/ envoy://internal_client_address/ en.wikipedia.org -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:52.798Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;1531&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;111950&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;55&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy://sni_listener/&amp;#34;&lt;/span&gt; sni_cluster envoy://internal_client_address/ 172.17.5.170:8443 172.17.34.35:55102 outbound_.443_.wildcard_.egressgateway.istio-egress.svc.cluster.local -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:53.000Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;821&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;92848&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;49&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;185.15.59.224:443&amp;#34;&lt;/span&gt; dynamic_forward_proxy_cluster 172.17.5.170:48278 envoy://sni_listener/ envoy://internal_client_address/ de.wikipedia.org -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:53.000Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;1539&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;93646&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;50&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;envoy://sni_listener/&amp;#34;&lt;/span&gt; sni_cluster envoy://internal_client_address/ 172.17.5.170:8443 172.17.34.35:55108 outbound_.443_.wildcard_.egressgateway.istio-egress.svc.cluster.local -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这里有四条日志条目，代表我们三个 curl 请求中的两个。每一对显示了单个请求如何通过 envoy 流量处理管道流动。它们以相反的顺序打印，但我们可以看到第2和第4行显示请求到达了网关服务，并通过内部的 &lt;code&gt;sni_cluster&lt;/code&gt; 目标。第1和第3行显示最终目标是从内部 SNI 头中确定的，即应用程序设置的目标主机。请求将转发到 &lt;code&gt;dynamic_forward_proxy_cluster&lt;/code&gt;，最终从 Envoy 发送到远程目标。&lt;/p&gt;
+&lt;p&gt;很好，但是第三个请求到 IBM Cloud 在哪里？让我们检查 sidecar 的日志：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ kubectl logs &lt;span class=&#34;nv&#34;&gt;$SOURCE_POD&lt;/span&gt; -c istio-proxy
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;...&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:52.793Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;813&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;111152&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;61&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.17.5.170:8443&amp;#34;&lt;/span&gt; outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;443&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;wildcard&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;egressgateway.istio-egress.svc.cluster.local 172.17.34.35:55102 208.80.153.224:443 172.17.34.35:37020 en.wikipedia.org -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:52.994Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;821&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;92848&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;55&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;172.17.5.170:8443&amp;#34;&lt;/span&gt; outbound&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;443&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;wildcard&lt;span class=&#34;p&#34;&gt;|&lt;/span&gt;egressgateway.istio-egress.svc.cluster.local 172.17.34.35:55108 208.80.153.224:443 172.17.34.35:37030 de.wikipedia.org -
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;2023-11-24T13:21:55.197Z&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;- - -&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;0&lt;/span&gt; - - - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;805&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;15199&lt;/span&gt; &lt;span class=&#34;m&#34;&gt;158&lt;/span&gt; - &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;-&amp;#34;&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;104.102.54.251:443&amp;#34;&lt;/span&gt; PassthroughCluster 172.17.34.35:45584 104.102.54.251:443 172.17.34.35:45582 cloud.ibm.com -
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;正如您所看到的，Wikipedia 请求通过网关发送，而对 IBM Cloud 的请求直接从应用程序 pod 发送到互联网，如 &lt;code&gt;PassthroughCluster&lt;/code&gt; 日志所示。&lt;/p&gt;
+&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;我们使用出口网关实现了对 egress HTTPS/TLS 流量的受控路由，支持任意和通配符&lt;/p&gt;
+&lt;p&gt;域名。在生产环境中，本文中显示的示例将扩展以支持高可用性要求（例如，添加区域感知网关 &lt;code&gt;Deployment&lt;/code&gt; 等），并限制您的应用程序直接访问外部网络，以便应用程序只能通过网关访问公共网络，而该网关仅限于一组预定义的远程主机名。&lt;/p&gt;
+&lt;p&gt;这个解决方案很容易扩展。您可以在配置中包含多个域名，并且一旦部署，它们将被列入允许列表！无需为每个域名配置 &lt;code&gt;VirtualService&lt;/code&gt; 或其他路由详细信息。但是，请注意，域名在配置中的多个地方列出。如果使用 CI/CD 工具（例如 Kustomize），最好将域名列表提取到一个地方，以从中呈现所需的配置资源。&lt;/p&gt;
+&lt;p&gt;就是这样了！希望这对您有所帮助。如果您是之前使用 Nginx 的解决方案的现有用户，现在可以在升级到 Istio 1.20 之前迁移到此方法，否则会影响您当前的设置。&lt;/p&gt;
+&lt;p&gt;祝您愉快的 SNI 路由！&lt;/p&gt;
+&lt;h2 id=&#34;参考资料&#34;&gt;参考资料&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/network_filters/sni_dynamic_forward_proxy_filter&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Envoy 对于 SNI 转发器的文档&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://archive.istio.io/v1.13/docs/tasks/traffic-management/egress/wildcard-egress-hosts/#wildcard-configuration-for-arbitrary-domains&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;先前的解决方案，使用 Nginx 作为网关中的 SNI 代理容器&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Ciilium 的相互认证如何危及安全</title>
+      <link>https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/</link>
+      <pubDate>Fri, 01 Dec 2023 10:33:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/</guid>
+      <description>&lt;p&gt;本文译自：&lt;a href=&#34;https://thenewstack.io/how-ciliums-mutual-authentication-can-compromise-security/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;https://thenewstack.io/how-ciliums-mutual-authentication-can-compromise-security/&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;摘要：这篇文章是关于如何使用 Cilium 来实现 互相认证 (mTLS) 的，以及这种方法可能带来的安全问题。文章介绍了 Cilium 的特点和功能，以及如何使用 Cilium CLI 或 Hubble UI 来创建和管理证书和策略。文章还分析了 Cilium 的互相认证的局限和风险，例如证书过期，撤销，泄露和伪造等。文章的目的是帮助用户了解和使用 Cilium 来提高服务间的安全性。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;最近，Cilium 项目宣布支持一种&lt;a href=&#34;https://docs.cilium.io/en/latest/network/servicemesh/mutual-authentication/mutual-authentication/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;新的双向认证机制&lt;/a&gt;，可以通过简单的配置标志透明地部署到应用程序中。从表面上看，这似乎是一种简单的方法，可以使用 Cilium 为 Kubernetes 工作负载实现服务之间的双向认证。然而，这种设计存在一个严重的缺陷，不容忽视：&lt;/p&gt;
+&lt;p&gt;Cilium 中的双向认证的整个基础是&lt;em&gt;最终一致性&lt;/em&gt;。&lt;/p&gt;
+&lt;p&gt;在安全实现的数据路径中，最终一致性可能导致意图中的安全属性失败，并且可能导致在不应该允许的情况下服务之间的流量继续传递。&lt;/p&gt;
+&lt;h2 id=&#34;cilium-双向认证的工作原理&#34;&gt;Cilium 双向认证的工作原理&lt;/h2&gt;
+&lt;p&gt;Cilium 的自定义双向认证机制会透明地对服务之间的流进行身份验证，并构建在 Cilium 的现有扩展伯克利数据包过滤器（&lt;a href=&#34;https://thenewstack.io/ebpf-offers-a-new-way-to-secure-cloud-native-systems/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF&lt;/a&gt;）数据平面之上。Cilium 使用 eBPF 来实现诸如服务网络、网络策略和连接处理等功能。&lt;/p&gt;
+&lt;p&gt;Cilium 使用“无双向传输层安全（mTLS-less）”（或 mTLess）来对服务进行身份验证。我称之为“less”，因为它没有使用 mTLS 来完成 mTLS 设计的任务：验证、加密和检查在两个对等方之间传输的数据的完整性。Cilium 的双向认证实现&lt;em&gt;不是 mTLS&lt;/em&gt;，我将在下面解释。&lt;/p&gt;
+&lt;p&gt;当服务（或 Pod）A 想要与服务（或 Pod）B 通信时，Cilium 会尝试对这两个对等方进行身份验证，然后标记一个特殊的本地节点“身份验证缓存”，指示是否允许特定流。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-1由于未经身份验证而丢弃的初始连接&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 1：由于未经身份验证而丢弃的初始连接。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f1_hu94feb57f32cb77e30649409eb45961de_33552_5f09419bca41243023b1b3fbc2debeaa.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f1_hu94feb57f32cb77e30649409eb45961de_33552_fce03d756bd012a55d53080c0257a3d4.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f1_hu94feb57f32cb77e30649409eb45961de_33552_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f1_hu94feb57f32cb77e30649409eb45961de_33552_5f09419bca41243023b1b3fbc2debeaa.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;293&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 1：由于未经身份验证而丢弃的初始连接。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;当 Pod A 想要与 Pod B 通信时，它会通过正常的 Cilium eBPF 数据平面流动，但 eBPF 代码会检查该连接是否已通过检查本地节点身份验证缓存进行身份验证。在第一次尝试时，该调用将不会得到身份验证，因此&lt;a href=&#34;https://github.com/cilium/cilium/issues/23808&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Cilium 将丢弃数据包&lt;/a&gt;。但这将触发一个在幕后进行的机制，尝试对 Pod A 和 Pod B 之间的流进行身份验证。如果成功，它将更新本地节点身份验证缓存。&lt;/p&gt;
+&lt;p&gt;期望的是，在幕后的机制能够快速进行 Pod A 呼叫 Pod B 的身份验证，以便最初丢弃的数据包将被重试，不会导致太多延迟。在幕后使用的机制是从运行在 Pod B 所在节点上的 cilium-agent（使用&lt;a href=&#34;https://roadmap.sh/golang&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Go&lt;/a&gt;编写）到另一个 cilium-agent 的“mTLess”连接。所有这些都不会在 eBPF 数据平面中发生，而是在用户空间的 Cilium 代理中进行。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-2如果两个不同节点上运行的-cilium-agent-之间的-mtls-连接成功则认为流是经过身份验证的&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 2：如果两个不同节点上运行的 cilium-agent 之间的 mTLS 连接成功，则认为流是经过身份验证的。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f2_hu52d94383cf3b4e196078516d3500571d_43528_3ebad47713734c345fccd2e25d180fcf.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f2_hu52d94383cf3b4e196078516d3500571d_43528_715f04efe56d75a5087dbc3f271f873b.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f2_hu52d94383cf3b4e196078516d3500571d_43528_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f2_hu52d94383cf3b4e196078516d3500571d_43528_3ebad47713734c345fccd2e25d180fcf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;380&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 2：如果两个不同节点上运行的 cilium-agent 之间的 mTLS 连接成功，则认为流是经过身份验证的。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我将这个连接称为“mTLess”，因为它用于测试身份验证并立即关闭，并且所有用于加密和完整性的协商的会话密钥都会被丢弃。也就是说，Cilium 不会在连接的整个生命周期内保留 mTLS 安全属性；它只使用握手的身份验证部分。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-3在握手后cilium-终止-mtless-连接&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 3：在握手后，Cilium 终止 mTLess 连接。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f3_hu3d2666b07117459a758a5a756c216963_57643_a6604342e116257c419ba82c940db6c3.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f3_hu3d2666b07117459a758a5a756c216963_57643_1b7faf60bb3c6bb342c14163e1963418.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f3_hu3d2666b07117459a758a5a756c216963_57643_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f3_hu3d2666b07117459a758a5a756c216963_57643_a6604342e116257c419ba82c940db6c3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;284&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 3：在握手后，Cilium 终止 mTLess 连接。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;如果此 mTLess 连接成功（即握手成功），Cilium 将考虑将来自 Pod A 到 Pod B 的流程视为“已验证”。此时，本地节点身份验证缓存中的条目将被更新，以指示应允许来自 Pod A 到 Pod B 的流程。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-4cilium-更新身份验证缓存指示-pod-a-具有呼叫-pod-b-的身份验证&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 4：Cilium 更新身份验证缓存，指示 Pod A 具有呼叫 Pod B 的身份验证。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f4_huedce182ff0c7b31fd6e184ab21f6a5de_43071_a4427aa3e293345fa507b4007b08b141.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f4_huedce182ff0c7b31fd6e184ab21f6a5de_43071_81fc2afdc21bc2abe2b74f86b96bd229.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f4_huedce182ff0c7b31fd6e184ab21f6a5de_43071_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f4_huedce182ff0c7b31fd6e184ab21f6a5de_43071_a4427aa3e293345fa507b4007b08b141.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;329&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 4：Cilium 更新身份验证缓存，指示 Pod A 具有呼叫 Pod B 的身份验证。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;现在，当它重试连接数据包时，身份验证缓存将指示流程已经通过身份验证，应允许连接并继续 eBPF 数据平面的其余部分（该部分强制执行网络和其他策略）。这个本地节点身份验证缓存确实表现出最终一致性的迹象，可能会失去同步，但这并不是最令人担忧的最终一致性属性。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-5一旦缓存已更新并重试数据包连接将会流动&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 5：一旦缓存已更新并重试数据包，连接将会流动。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f5_huba7a6f742d9ae64733c6848223ae9dd4_42521_a88225ebe16182cd84d525d3ebdeafa8.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f5_huba7a6f742d9ae64733c6848223ae9dd4_42521_00676ec97556978325e44d7a5f08f8a5.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f5_huba7a6f742d9ae64733c6848223ae9dd4_42521_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f5_huba7a6f742d9ae64733c6848223ae9dd4_42521_a88225ebe16182cd84d525d3ebdeafa8.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;267&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 5：一旦缓存已更新并重试数据包，连接将会流动。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;cilium-方法的主要问题&#34;&gt;Cilium 方法的主要问题&lt;/h2&gt;
+&lt;p&gt;对于真正的 mTLS 连接，在成功握手之后，您希望使用在参与各方之间协商的密钥来加密剩余的数据。Cilium 中流的成功认证并不意味着它是加密的（它将是纯文本），也不保证流量以一种仅对相关方可见的方式进行加密。如果您需要加密，可以使用基于 WireGuard（或 IPSec）的 Cilium 加密选项，但这只是两个 Kubernetes 节点之间的加密，而不是特定的已认证的工作负载。在“mTLess”连接检查和将实际（敏感）数据放入线路之间，可能会发生很多事情。&lt;/p&gt;
+&lt;p&gt;随着一些 Cilium 开发人员继续迭代这个实现，有关将 mTLS 连接中协商的某些密钥转移到底层节点到节点加密方法（例如 IPSec）的谈论。这个实现还有待观察。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-6具有不同会话密钥的流量&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 6：具有不同会话密钥的流量&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f6_hu02b66137872ca125620a70e5dec93203_50734_e9f1c4ba5e65a4e5d4580d0a8b858c87.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f6_hu02b66137872ca125620a70e5dec93203_50734_2db0f2c55af0a8221e07bb7eeacd2ff9.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f6_hu02b66137872ca125620a70e5dec93203_50734_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f6_hu02b66137872ca125620a70e5dec93203_50734_e9f1c4ba5e65a4e5d4580d0a8b858c87.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;427&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 6：具有不同会话密钥的流量
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-7基于-wireguard-的加密&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 7：基于 WireGuard 的加密。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f7_hu1a3982a82c4bcbe670f00eb84b119343_49359_adfcc5ab5e0c3452f894e5a83ad861b5.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f7_hu1a3982a82c4bcbe670f00eb84b119343_49359_4d3bcd3748d53ef2f816730dbaf14aea.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f7_hu1a3982a82c4bcbe670f00eb84b119343_49359_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f7_hu1a3982a82c4bcbe670f00eb84b119343_49359_adfcc5ab5e0c3452f894e5a83ad861b5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;423&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 7：基于 WireGuard 的加密。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Cilium 最终一致性双向认证实现的真正问题出现在 Cilium 的核心身份模型周围。我在上面简要介绍了 TLS 握手，但如果您阅读 Cilium 文档，您会看到用于“mTLess”的 X509 证书具有可选基于&lt;a href=&#34;https://thenewstack.io/the-rise-of-workload-identity-in-cloud-native-with-spiffe-spire/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIFFE&lt;/a&gt;（Secure Production Identity Framework For Everyone）的身份模型。实际上，在部署实现 Cilium 双向认证所需的组件时，您可以选择部署 SPIFFE Runtime Environment（SPIRE），这是 SPIFFE 的一个实现，Cilium 使用它来生成代表工作负载及其身份的证书。&lt;/p&gt;
+&lt;p&gt;这个 SPIFFE 身份用于握手所使用的证书，&lt;em&gt;但 SPIFFE 不是 Cilium 中使用的基础通用工作负载身份&lt;/em&gt;。SPIFFE 用作独立的身份层，映射到 Cilium 现有身份实现。Cilium 在其&lt;a href=&#34;https://doc.crds.dev/github.com/cilium/cilium/cilium.io/CiliumIdentity/v2@1.9.3&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;核心身份&lt;/a&gt;概念周围构建了所有的网络策略。CiliumIdentity 实现将一个整数映射到一组 IP 地址（与一组 Pod 关联的 Pod IP）。这个“整数”及其映射到 Pod IP 地址的方式代表了&lt;em&gt;Cilium 中的核心身份原语&lt;/em&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-8cilium-的核心身份原语基于在每个节点上的本地缓存中映射到-ip-地址的整数&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 8：Cilium 的核心身份原语基于在每个节点上的本地缓存中映射到 IP 地址的整数。&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f8_hub131bbebecb097ab2c779305be2aca06_55180_e0691a9b13b4a6cb2bdbfde4d43bb94d.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f8_hub131bbebecb097ab2c779305be2aca06_55180_de1646be68b05c5945a06150bcce84cb.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f8_hub131bbebecb097ab2c779305be2aca06_55180_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f8_hub131bbebecb097ab2c779305be2aca06_55180_e0691a9b13b4a6cb2bdbfde4d43bb94d.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;371&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 8：Cilium 的核心身份原语基于在每个节点上的本地缓存中映射到 IP 地址的整数。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;我们在博客文章 “&lt;a href=&#34;https://www.solo.io/blog/could-network-cache-based-identity-be-mistaken/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络基于缓存的身份可能会被误解吗？&lt;/a&gt;”中详细讨论了这个问题。由于这个问题，我们建议在考虑使用依赖身份到 IP 地址映射的容器网络接口（CNI）和&lt;a href=&#34;https://thenewstack.io/secure-your-service-mesh-a-13-item-checklist/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;服务网格&lt;/a&gt;进行网络安全时采取深度防御姿态。&lt;/p&gt;
+&lt;p&gt;问题的关键在于：&lt;/p&gt;
+&lt;p&gt;为集群中的每个身份的所有 IP 映射&lt;em&gt;都存在于集群中每个节点上的本地缓存中&lt;/em&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-9显示每个身份的-ip-的图表&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 9：显示每个身份的 IP 的图表&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f9_hued5a97755ae5449d607a28a02809c90a_70758_485339a5bf1ec13cf0cd0f287b080dcf.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f9_hued5a97755ae5449d607a28a02809c90a_70758_f4dbb82504cec296900bcf22d439535b.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f9_hued5a97755ae5449d607a28a02809c90a_70758_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f9_hued5a97755ae5449d607a28a02809c90a_70758_485339a5bf1ec13cf0cd0f287b080dcf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;461&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 9：显示每个身份的 IP 的图表
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-图-10最终一致性问题的图表&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;图 10：最终一致性问题的图表&#34; srcset=&#34;
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f10_hu19468d410a278c3ef2edf690c8d3e4f6_74498_e1a25be7393a80f2848a3777e1779151.webp 400w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f10_hu19468d410a278c3ef2edf690c8d3e4f6_74498_01584ee297545c53787f6a268ce798c7.webp 760w,
+               /blog/how-ciliums-mutual-authentication-can-compromise-security/f10_hu19468d410a278c3ef2edf690c8d3e4f6_74498_1200x1200_fit_q75_h2_lanczos_3.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/how-ciliums-mutual-authentication-can-compromise-security/f10_hu19468d410a278c3ef2edf690c8d3e4f6_74498_e1a25be7393a80f2848a3777e1779151.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;452&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      图 10：最终一致性问题的图表
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;为了使 Cilium 的双向认证和策略执行正常工作，必须使用正确的 IP 到身份映射更新这些缓存。然而，在集群中的所有节点上更新单独的缓存&lt;em&gt;是一种最终一致性操作&lt;/em&gt;。当 Cilium 的 eBPF 数据平面尝试推理连接策略时，它将参考其节点本地缓存中的 IP 到身份映射。&lt;em&gt;如果该缓存过期或延迟&lt;/em&gt;，将导致不正确的网络策略（可能不符合要求，允许恶意活动，威胁数据等）。无论您是否使用 WireGuard 或 IPSec 来加密节点之间的流量，这都不会影响此身份混淆场景。&lt;/p&gt;
+&lt;p&gt;这个演示说明了在使用 Cilium 的双向认证时可能导致违反网络策略的身份混淆：&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;因此，总结一下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Cilium 项目引入了一种新颖的 Kubernetes 工作负载的双向认证机制。&lt;/li&gt;
+&lt;li&gt;Cilium 中的双向认证建立在最终一致性之上，可能会危及安全性。&lt;/li&gt;
+&lt;li&gt;Cilium 使用“mTLess”进行身份验证，但不会维护整个连接的加密。&lt;/li&gt;
+&lt;li&gt;Cilium 的身份模型包括 SPIFFE，但其核心身份是一个基于整数的单独身份层。&lt;/li&gt;
+&lt;li&gt;核心问题在于，IP 到身份的映射存储在每个节点上的本地缓存中，这可能导致最终一致性的更新。&lt;/li&gt;
+&lt;li&gt;在 Cilium 的双向认证中的最终一致性可能导致不正确的网络策略和安全漏洞。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;要正确使用依赖身份到 IP 地址映射的 CNI，请考虑采用深度防御姿态，将一个服务网格（如 Istio Ambient）叠加在其上。Istio Ambient 实现了一种无 sidecar 的服务网格，在服务之间的数据路径上使用 mTLS（无论其 IP 地址如何）。在&lt;a href=&#34;https://thenewstack.io/solo-io-istio-is-winning-the-service-mesh-war/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;像 Istio 这样的服务网格&lt;/a&gt;中，身份模型是由 SPIFFE 定义的，并根据负责签署用于身份验证流量的证书的证书颁发机构建立的。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>使用相互 TLS 和 Istio 保护应用程序通信</title>
