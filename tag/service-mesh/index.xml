@@ -106,11 +106,786 @@
     </item>
     
     <item>
+      <title>什么是 Ambient Mesh？</title>
+      <link>https://cloudnative.to/blog/what-is-ambient-mesh/</link>
+      <pubDate>Wed, 28 Sep 2022 10:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/what-is-ambient-mesh/</guid>
+      <description>&lt;p&gt;Istio&lt;a href=&#34;https://istio.io/latest/blog/2022/introducing-ambient-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;最近宣布了“Ambient Mesh”&lt;/a&gt; —— 一种用于 Istio 的实验性“无 sidecar”部署模型。我们最近在&lt;a href=&#34;https://www.tetrate.io/blog/ebpf-and-sidecars-getting-the-most-performance-and-resiliency-out-of-the-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;从服务网格中获得最大性能和弹性&lt;/a&gt;的背景下写了关于 sidecar 与 sidecar-less 的文章。在本文中，我们将特别介绍我们对 Ambient Mesh 的看法。&lt;/p&gt;
+&lt;p&gt;如果你想立即开始使用可用于生产的 Istio 发行版，请尝试&lt;a href=&#34;https://istio.tetratelabs.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Istio Distro (TID)&lt;/a&gt;。TID 是经过审查的 Istio 上游发行版，它易于安装、管理和升级，基于适用于 FedRAMP 环境的 FIPS 认证构建。如果你需要一种统一且一致的方式来保护和管理一组应用程序中的服务，请查看&lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Service Bridge (TSB)&lt;/a&gt;，这是我们基于 Istio 和 Envoy 构建的全面的边缘到工作负载应用程序连接平台。&lt;/p&gt;
+&lt;h2 id=&#34;什么是-ambient-mesh&#34;&gt;什么是 Ambient Mesh？&lt;/h2&gt;
+&lt;p&gt;Ambient Mesh 是最近引入 Istio 的一种实验性新部署模型。它将 Envoy sidecar 当前执行的职责分为两个独立的组件：一个用于加密的节点级组件（称为“ztunnel”）和一个为每个服务账户部署的 L7 Envoy 实例，用于所有其他处理（称为“waypoint”）。Ambient Mesh 模型试图在潜在改进的生命周期和资源管理中获得一些效率 —— 至少，这是动机。&lt;/p&gt;
+&lt;h2 id=&#34;我为什么要关心-ambient-mesh&#34;&gt;我为什么要关心 Ambient Mesh？&lt;/h2&gt;
+&lt;p&gt;对于大多数服务网格用户来说，Istio 数据平面的确切部署模型是你可能不需要考虑太多的选择。默认可能没问题。对于&lt;em&gt;一些&lt;/em&gt;服务网格用户，特别是那些拥有少量服务的大规模水平扩展足迹的用户（waypoint 架构获得最高效率的地方），Ambient Mesh 模型将在成熟为生产就绪的基础设施软件时很有用。&lt;/p&gt;
+&lt;h2 id=&#34;本文主旨&#34;&gt;本文主旨&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Ambient Mesh 部署模型与 sidecar 模型进行了一些权衡，特别是在生命周期管理、资源利用、故障排除和安全状况方面。它们之间不分伯仲。&lt;/li&gt;
+&lt;li&gt;Ambient Mesh 目前还在实验阶段，最早要到 2023 年才能投入生产 —— 也就是说，&lt;strong&gt;暂时不要在此基础上进行构建&lt;/strong&gt;。现在，它的性能差，功能更少，并且对于已广泛使用的技术（如 CNI）具有未定义的行为。但是，我们预计随着未来几个月的实现，这种情况将迅速改善。&lt;/li&gt;
+&lt;li&gt;你关心的大部分网格功能（如按请求流量管理和安全控制、分布式追踪和应用程序级 RED 指标）都发生在 L7 中。目前尚不清楚 Ambient Mesh 的仅 L4 部分的适用范围有多大，以及打破这些数据平面职责将在多大程度上有助于推动网格的采用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这篇文章的其余部分是我们对环境模型与 Istio 现有的 Sidecar 部署模型的权衡，看看哪一个适合你以及何时适合你。&lt;/p&gt;
+&lt;h2 id=&#34;istio-中的-l4-和-l7-处理如何工作&#34;&gt;Istio 中的 L4 和 L7 处理如何工作？&lt;/h2&gt;
+&lt;p&gt;由于 Ambient Mesh 分割了 L4 和 L7 处理，因此准确了解每一层中发生的网格行为非常重要：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;L4&lt;/strong&gt;&lt;/th&gt;
+&lt;th&gt;&lt;strong&gt;L7&lt;/strong&gt;&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;安全&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;服务间身份验证&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://spiffe.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;SPIFFE&lt;/a&gt;，通过 mTLS 证书。Istio 颁发一个短期 X.509 证书，该证书对 pod 的服务账户身份进行编码。&lt;/td&gt;
+&lt;td&gt;不适用 — Istio 中的服务身份仅基于 TLS。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;服务间授权&lt;/td&gt;
+&lt;td&gt;基于网络的授权，加上基于身份的策略，例如：A 只能接受来自“10.2.0.0/16”的调用；A 可以调用 B。&lt;/td&gt;
+&lt;td&gt;完整的策略，例如：A 只能使用包含 READ 范围的有效最终用户凭据在 B 上获取 /foo。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;最终用户身份验证&lt;/td&gt;
+&lt;td&gt;不适用 - 我们不能应用每个用户的设置。&lt;/td&gt;
+&lt;td&gt;JWT 的本地身份验证，支持通过 OAuth 和 OIDC 流进行远程身份验证。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;最终用户授权&lt;/td&gt;
+&lt;td&gt;不适用 —— 见上文。&lt;/td&gt;
+&lt;td&gt;服务间策略可以扩展为需要&lt;a href=&#34;https://istio.io/latest/docs/reference/config/security/conditions/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;具有特定范围、颁发者、委托人、受众等的最终用户凭据&lt;/a&gt;—— 但它不能用于完整的用户到资源访问控制。应该使用外部授权来实现用户对资源的完全访问。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Envoy 的外部授权 API (ext_authz)&lt;/td&gt;
+&lt;td&gt;无法执行任何针对请求的策略；ext_authz API 只能针对 L7 流量进行配置。&lt;/td&gt;
+&lt;td&gt;使用来自外部服务（例如 OPA）的决策来执行每个请求的策略。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;可观测性&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;日志记录&lt;/td&gt;
+&lt;td&gt;基本网络信息：网络五元组、发送 / 接收的字节数等。&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#command-operators&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请参阅 Envoy 文档&lt;/a&gt;。&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#command-operators&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;完整的请求元数据记录&lt;/a&gt;，以及基本的网络信息。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;追踪&lt;/td&gt;
+&lt;td&gt;目前不行；最终可能与 HBONE 一起使用。&lt;/td&gt;
+&lt;td&gt;Envoy 参与分布式跟踪。&lt;a href=&#34;https://istio.io/latest/docs/tasks/observability/distributed-tracing/overview/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请参阅有关追踪的 Istio 概述&lt;/a&gt;。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;指标&lt;/td&gt;
+&lt;td&gt;仅限 TCP（发送 / 接收的字节数、数据包数等）。&lt;/td&gt;
+&lt;td&gt;L7 RED 指标：请求率、错误率、请求持续时间（延迟）。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;流量管理&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;td&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;负载均衡&lt;/td&gt;
+&lt;td&gt;仅连接级别。&lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/tcp-traffic-shifting/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请参阅 TCP 流量转移任务&lt;/a&gt;。&lt;/td&gt;
+&lt;td&gt;根据请求，启用例如金丝雀部署、gRPC 流量等。&lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/traffic-shifting/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;请参阅 HTTP 流量转移任务&lt;/a&gt;。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;断路&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/destination-rule/#ConnectionPoolSettings-TCPSettings&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;仅限 TCP&lt;/a&gt;。&lt;/td&gt;
+&lt;td&gt;除了 TCP 之外的 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/destination-rule/#ConnectionPoolSettings-HTTPSettings&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP 设置&lt;/a&gt;。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;异常值检测&lt;/td&gt;
+&lt;td&gt;关于连接建立 / 失败。&lt;/td&gt;
+&lt;td&gt;根据请求成功 / 失败。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;速率限制&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/network_filters/rate_limit_filter#config-network-filters-rate-limit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;仅对 L4 连接数据的速率限制，在连接建立&lt;/a&gt;时，具有全局和本地速率限制选项。&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/rate_limit_filter#config-http-filters-rate-limit&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;L7 请求元数据的速率限制&lt;/a&gt;，每个请求。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;超时&lt;/td&gt;
+&lt;td&gt;仅建立连接（通过断路设置配置连接保持活动）。&lt;/td&gt;
+&lt;td&gt;根据要求。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;重试&lt;/td&gt;
+&lt;td&gt;重试连接建立。&lt;/td&gt;
+&lt;td&gt;每次请求失败时重试。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;故障注入&lt;/td&gt;
+&lt;td&gt;不适用——无法在 TCP 连接上配置故障注入。&lt;/td&gt;
+&lt;td&gt;完整的应用程序和连接级故障（&lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/fault-injection/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;超时、延迟、特定响应代码&lt;/a&gt;）。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;流量镜像&lt;/td&gt;
+&lt;td&gt;不适用 - 仅 HTTP&lt;/td&gt;
+&lt;td&gt;&lt;a href=&#34;https://istio.io/latest/docs/tasks/traffic-management/mirroring/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;对多个后端的请求进行基于百分比的镜像&lt;/a&gt;。&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;值得记住的是，运行在 L7 的代理可以执行 L4 和 L7 列中的所有操作，而运行在 L4 的代理只能执行 L4 列。通过清楚地了解发生的情况以及 L4 与 L7 的局限性，我们可以查看 Ambient Mesh 与 sidecar 模型相比所做的权衡。&lt;/p&gt;
+&lt;h2 id=&#34;现在我们应该使用-ambient-mesh-吗还不可以&#34;&gt;现在我们应该使用 Ambient Mesh 吗？（还不可以）&lt;/h2&gt;
+&lt;p&gt;截至 2022 年 9 月宣布，Ambient Mesh 是概念的实验证明。从&lt;a href=&#34;https://github.com/istio/istio/tree/experimental-ambient#limitations&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;几乎每一个指标&lt;/a&gt;来看，它的性能都比 sidecar 模型差，而且它有很多&lt;a href=&#34;https://github.com/istio/istio/tree/experimental-ambient#limitations&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;限制&lt;/a&gt;。Ambient Mesh 还&lt;strong&gt;没有准备好&lt;/strong&gt;在生产环境中使用（对于我们的客户 —— 大型企业的平台团队 —— 应用程序开发和测试环境也算作生产环境）。&lt;/p&gt;
+&lt;p&gt;但是，我们预计随着社区中的工程师致力于部署模型，这种状态会相对迅速地发生变化。它将像&lt;a href=&#34;https://istio.io/latest/docs/releases/feature-stages/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;所有其他 Istio 功能&lt;/a&gt;一样通过功能阶段进行。查看&lt;a href=&#34;https://istio.io/latest/docs/releases/feature-stages/#istio-features&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 功能列表&lt;/a&gt;，Ambient Mesh 将在 2023 年某个时候升级为 Alpha 状态。我们预计它会在 2023 年末或 2024 年初进入 Beta 版 —— 在此之前我们不建议将其用于生产用途。&lt;/p&gt;
+&lt;h2 id=&#34;关于-service-mesh-和-istio-的-ambient-mesh-假设&#34;&gt;关于 Service Mesh 和 Istio 的 Ambient Mesh 假设&lt;/h2&gt;
+&lt;p&gt;总结 Ambient Mesh 公告博客文章，该架构的核心动机是假设：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;假设&lt;/strong&gt;Envoy 的 L7 功能使得将新应用程序加入网格变得具有挑战性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;假设&lt;/strong&gt;Envoy 的 L7 功能是发现 CVE 的地方（绝大多数 Envoy CVE 在 L7 代码中，而不是在处理 TLS 和连接的 L4 代码中），因此在严格的 L4 代理中在节点级别持有多个 Pod 的证书是可以接受的，而在节点级别执行 L7 则不是。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;假设&lt;/strong&gt;Sidecar 通常会导致资源过度分配。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;假设&lt;/strong&gt;一个额外的网络跃点比一个执行 L7 计算的 Envoy 便宜（从两个 L7 sidecar 移动到一个 L7 路点增加了一个跃点，但删除了一个执行 L7 处理的 Envoy）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;假设&lt;/strong&gt;Istio 最有价值的特性是传输中的加密，因此优化以简化该用例是很有价值的。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;ambient-mesh-假设如何匹配我们与实际客户的经验&#34;&gt;Ambient Mesh 假设如何匹配我们与实际客户的经验&lt;/h2&gt;
+&lt;p&gt;我们与世界上一些最大的企业密切合作以实现服务网格采用的经验并&lt;strong&gt;不能完全&lt;/strong&gt;证明这些激励想法：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;L7 功能&lt;/strong&gt;：网格的某些 L7 功能&lt;strong&gt;可能&lt;/strong&gt;会使应用程序更难采用，但根据我们的经验，由于连接寿命的变化或双重加密问题，应用程序载入中会出现更多的中断。无论 sidecar 或节点级代理如何，这些问题都会类似地表现出来，但对于应用程序团队在节点部署模型中进行故障排除更具挑战性（他们通常缺乏检查特权 / 节点级组件日志的权限）。要更深入地了解&lt;a href=&#34;https://www.tetrate.io/blog/ebpf-and-sidecars-getting-the-most-performance-and-resiliency-out-of-the-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;节点级代理与 sidecar&lt;/a&gt;，请参阅我们上面提到的博客文章。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;L7 CVE&lt;/strong&gt;，&lt;a href=&#34;https://www.cvedetails.com/vulnerability-list/vendor_id-19794/product_id-53798/Envoyproxy-Envoy.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;查看它们&lt;/a&gt;，我们看到：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;33 个和 L7 处理有关，主要是解析或者 HTTP 处理。&lt;/li&gt;
+&lt;li&gt;剩下的 12 个是 L4 或 Envoy 固有的（连接处理、证书处理、嘈杂的邻居 DOS、缓冲区溢出等）。&lt;/li&gt;
+&lt;li&gt;L7 CVE 的平均严重性高于非 L7 CVE。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;与 L7 Envoy 相比，仅 L4 的 Envoy &lt;strong&gt;确实&lt;/strong&gt;提供了更小的攻击面，因为可以利用的代码（和 CVE）更少。攻击面是否足够低以证明持有节点上每个 pod 的身份是合理的，还有待观察。Ambient Mesh 安全模型的关键在于我们对 ztunnel 组件的信任程度 —— 这是社区打算首先关注的组件。总体而言，与 sidecar 模型相比，ambient 的安全模型充其量是横向的一步，但在将其融入现有安全模型时，边界更难推理。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;资源利用率&lt;/strong&gt;：确实，如果未配置 pod 资源请求，并且未使用&lt;a href=&#34;https://istio.io/latest/docs/ops/best-practices/traffic-management/#cross-namespace-configuration&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;配置资源可见性&lt;/a&gt;或&lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/sidecar/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Sidecar API 资源&lt;/a&gt;等技术，sidecar 会导致资源利用率低下。但是，我们通过 Sidecar API 资源严格控制资源可见性和限制配置范围的 Istio 部署的经验是，sidecar 资源利用率非常低，并且我们可以为每个 sidecar 设置比 Istio 的默认配置文件更小的资源请求。为这种类型的配置手动维护 Sidecar API 资源非常具有挑战性 —— 这就是 &lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Service Bridge&lt;/a&gt; 根据更高级别的访问结构自动生成它的原因。&lt;/p&gt;
+&lt;p&gt;我们很高兴看到 Ambient 部署模型如何提高资源利用率 —— 为相同的网格行为部署更少的 Envoy 具有很大的潜力，因为独立的 Watpoint Envoy 通常可以处理比单个服务实例（及其 sidecar）更多的流量。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;额外的网络跃点与 sidecar&lt;/strong&gt;：Ambient 的部署模型提供的最有趣的可能性之一是在 sidecar 架构中移除额外的 L7 Envoy。因为网格中的通信是 sidecar-to-sidecar，并且客户端和服务器都应用 L7 策略，我们必须对每个请求进行两次 L7 处理。在 Ambient 模式下，该策略将由服务器的 Waypoint 执行 —— 因此 L7 处理每个请求只发生一次。但是，在连接的两侧仍然有一个 ztunnel 进行 L4 处理。&lt;/p&gt;
+&lt;p&gt;这种权衡 —— 网络跳跃而不是 Envoy 进行 L7 处理 —— 总体上是否值得，还有待观察。当然，在延迟低且连接可靠的同一可用区的云提供商网络中，这可能是值得的。但是，我们的许多客户在本地和各种看起来不像云提供商网络的物理站点上部署了服务网格。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;mTLS&lt;/strong&gt;：Istio 的传输加密毫无疑问是其最强大的功能之一。它用于（&lt;a href=&#34;https://www.tetrate.io/blog/tetrate-istio-distro-achieves-fips-certification/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以 FIPS 验证的形式&lt;/a&gt;）用于&lt;a href=&#34;https://www.tetrate.io/blog/tetrate-first-to-provide-hardened-istio-to-dods-iron-bank/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;FIPS 合规性&lt;/a&gt;、&lt;a href=&#34;https://www.tetrate.io/blog/case-study-fico-encryption-pci-compliance-with-istio-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;PCI 合规性&lt;/a&gt;，以及在各种其他安全第一的环境中。但是，当我们查看网格的功能时，单独采用加密的原因并不常见：通常是加密与 L7 策略（包括流量控制）和可观测性相结合，激发了对该技术的投资。查看上表，很明显这些功能无法仅通过 ztunnel 实现 —— 它们需要 L7 Envoy。事实上，我们今天看到的大多数网格使用都需要 L7 Envoy。我们对任何能够使服务网格的采用更加容易的事情都充满热情，但我们还不确定 Ambient Mesh 的部署模型能否能兑现这一承诺。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;关于-ambient-mesh-的分离思考&#34;&gt;关于 Ambient Mesh 的分离思考&lt;/h2&gt;
+&lt;p&gt;Ambient Mesh 是对无 sidecar 服务网格模型的一个有趣的尝试。我们很高兴看到它是如何发展的，特别是如果它有助于更容易地采用网格。在某些特定的用例中，我们预计这种方法会产生好处，但现在还处于早期阶段，而且还没有决定权衡是否值得。无论哪种方式，Ambient Mesh 可能需要一段时间才能考虑投入生产。在那之前，正如他们所说，注意这个空间。&lt;/p&gt;
+&lt;p&gt;要&lt;a href=&#34;https://istio.tetratelabs.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;立即开始使用服务网格，Tetrate Istio Distro&lt;/a&gt;是安装、管理和升级 Istio 的最简单方法。它提供了经过审查的 Istio 上游发行版，该发行版已由 Tetrate 为特定平台进行测试和优化，以及一个便于获取、安装和配置多个 Istio 版本的 CLI。Tetrate Istio Distro 还为 FedRAMP 环境提供&lt;a href=&#34;https://www.tetrate.io/blog/tetrate-istio-distro-achieves-fips-certification/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;FIPS 认证的 Istio 构建&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;对于需要统一且一致的方式来保护和管理复杂、异构部署环境中的服务和传统工作负载的企业，我们提供&lt;a href=&#34;https://www.tetrate.io/tetrate-service-bridge/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Tetrate Service Bridge&lt;/a&gt;，这是我们基于 Istio 和 Envoy 构建的旗舰边缘到工作负载应用程序连接平台。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
       <title>服务网格峰会 2022</title>
       <link>https://cloudnative.to/event/service-mesh-summit-2022/</link>
       <pubDate>Sat, 24 Sep 2022 09:00:00 +0800</pubDate>
       <guid>https://cloudnative.to/event/service-mesh-summit-2022/</guid>
       <description>&lt;p&gt;活动日程请见&lt;a href=&#34;https://www.huodongxing.com/event/9663784282200&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;活动行&lt;/a&gt;。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio 服务网格 ambient 模式安全详解</title>
+      <link>https://cloudnative.to/blog/ambient-security/</link>
+      <pubDate>Thu, 08 Sep 2022 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/ambient-security/</guid>
+      <description>&lt;p&gt;我们最近发布了 Istio Ambient Mesh（译者注：笔者更倾向于将其称为 Ambient Mode，即外围模式，但译文中仍然保留了 Ambient Mesh 的叫法），它是 Istio 的无 sidecar 数据平面。如&lt;a href=&#34;https://cloudnative.to/blog/introducing-ambient-mesh/&#34;&gt;公告博客中所述&lt;/a&gt;，我们使用 Ambient Mesh 解决的首要问题是简化操作、更广泛的应用程序兼容性、降低基础设施成本和提高性能。在设计 ambient 数据平面时，我们希望在不牺牲安全性或功能的情况下仔细平衡运维、成本和性能方面的问题。随着 ambient 组件在应用程序 pod 之外运行，安全边界发生了变化 —— 我们相信会变得更好。在这篇博客中，我们将详细介绍这些安全性变化以及它们与 sidecar 部署模式在安全性方面的对比。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ambient-mesh-的分层示意图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Ambient Mesh 的分层示意图&#34;
+           src=&#34;https://cloudnative.to/blog/ambient-security/amibent-mesh-layer.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Ambient Mesh 的分层示意图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;回顾一下，Istio Ambient Mesh 引入了一个分层网格数据平面，它具有负责传输安全和路由的安全覆盖层，可以选择为需要它们的命名空间添加 L7 功能。要了解更多信息，请参阅&lt;a href=&#34;https://istio.io/latest/blog/2022/introducing-ambient-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;公告博客&lt;/a&gt;和&lt;a href=&#34;https://istio.io/latest/blog/2022/get-started-ambient&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;入门博客&lt;/a&gt;。安全覆盖层包括一个节点共享组件 ztunnel，它负责 L4 遥测和部署为 DaemonSet 的 mTLS。网格的 L7 层由 Waypoint 代理提供，完整的 L7 Envoy 代理按身份/工作负载类型部署。这种设计的一些基本原则包括：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;应用程序与数据平面分离&lt;/li&gt;
+&lt;li&gt;安全覆盖层的组件类似于 CNI&lt;/li&gt;
+&lt;li&gt;操作简单更利于安全&lt;/li&gt;
+&lt;li&gt;避免多租户 L7 代理&lt;/li&gt;
+&lt;li&gt;Sidecar 仍然是首选的部署模式之一&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;应用程序和数据平面分离&#34;&gt;应用程序和数据平面分离&lt;/h2&gt;
+&lt;p&gt;尽管 Ambient Mesh 的主要目标是简化服务网格的操作，但它也确实有助于提高安全性。复杂性会滋生漏洞，企业应用程序（及其传递依赖项、库和框架）极其复杂且容易出现漏洞。从处理复杂的业务逻辑到利用 OSS 库或有缺陷的内部共享库，攻击者（来自内部或外部）的主要目标是用户的应用程序代码。如果应用程序遭到破坏，凭据、机密和密钥就会暴露给攻击者，包括那些安装或存储在内存中的数据。在查看 sidecar 模型时，sidecar 接管应用程序中的身份/密钥材料。在 Istio ambient 模式下，数据平面组件不会与应用程序运行在同一个 pod 中，因此，应用程序的中的秘密不会泄露给数据平面。&lt;/p&gt;
+&lt;p&gt;作为漏洞的潜在目标，Envoy Proxy 怎么样？Envoy 是一个经过严格审查的极其坚固的基础设施，并&lt;a href=&#34;https://www.infoq.com/news/2018/12/envoycon-service-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;在关键环境中大规模运行&lt;/a&gt;（例如，&lt;a href=&#34;https://cloud.google.com/load-balancing/docs/https&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用于生产以支持 Google 的网络&lt;/a&gt;）。然而，由于 Envoy 是软件，它不能免受漏洞的影响。当漏洞出现时，Envoy 有一个强大的 CVE 流程来识别快速修复它们，并在它们产生广泛影响之前将补丁推送给客户。&lt;/p&gt;
+&lt;p&gt;回到前面“复杂性滋生漏洞”的评论，Envoy Proxy 最复杂的部分在于其 L7 处理，事实上，历史上 Envoy 的大多数漏洞都在其 L7 处理堆栈中。但是，如果你只将 Istio 用于 mTLS 会怎样？当你不使用该功能时，为什么要冒险部署一个更容易发生 CVE 的成熟 L7 代理？分离 L4 和 L7 网格功能在这里很有用。在 Sidecar 部署中，你采用所有代理，即使你只使用一小部分功能，在 ambient 模式下，我们可以通过提供安全覆盖并仅根据需要在 L7 中分层来限制暴露。此外，L7 组件完全独立于应用程序运行，不会暴露供攻击面。&lt;/p&gt;
+&lt;h2 id=&#34;将-l4-下推到-cni&#34;&gt;将 L4 下推到 CNI&lt;/h2&gt;
+&lt;p&gt;Ambient 数据平面的 L4 组件作为 DaemonSet 运行，或者说每个节点一个。这意味着它是在特定节点上运行的所有 Pod 的共享基础架构。这个组件特别敏感，应该与节点上的任何其他共享组件（例如任何 CNI 代理、kube-proxy、kubelet 甚至 Linux 内核）处于同一级别。来自工作负载的流量被重定向到 ztunnel，ztunnel 然后识别工作负载并选择正确的证书来代表 mTLS 连接中的工作负载。&lt;/p&gt;
+&lt;p&gt;ztunnel 为每个 pod 使用一个独特的凭证，只有当 pod 在当前节点上运行时才会被发出。这确保了被破坏的 ztunnel 的爆炸半径——只有调度到当前节点上的 pod 的凭证可以被盗。这是一个类似于其他实现良好的共享节点基础设施的属性，包括其他安全 CNI 实现。ztunnel 不使用集群范围或每个节点的凭证，如果被盗，可能会立即危及集群中的所有应用流量，除非这些应用也实施复杂的二级授权机制。&lt;/p&gt;
+&lt;p&gt;如果我们将其与 sidecar 模式进行比较，我们会注意到 ztunnel 是共享的，它的暴露可能导致节点上运行的应用程序的身份泄露。但是，该组件中出现 CVE 的可能性低于 Istio sidecar，因为攻击面大大减少（仅 L4 处理）；ztunnel 不做任何 L7 处理。此外，sidecar 中的 CVE（具有更大的 L7 攻击面）并没有真正包含在受到损害的特定工作负载中。Sidecar 中的所有严重的 CVE 都可能在网格中的任何工作负载复现。&lt;/p&gt;
+&lt;h2 id=&#34;操作简单更利于安全&#34;&gt;操作简单更利于安全&lt;/h2&gt;
+&lt;p&gt;归根结底，Istio 是一个关键的基础设施，必须进行维护。Istio 代表应用程序实施零信任网络安全的一些原则受到信任，按计划或按需求推出补丁是最重要的。平台团队通常有可预测的补丁或维护周期，这与应用程序的周期完全不同。当需要新的能力和功能时，应用程序可能会被更新，通常是项目的一部分。这种对应用程序变化、升级、框架和库补丁的方法，是非常不可预测的，会耗费大量时间，不适合安全实践。因此，保持这些安全功能是平台的一部分，与应用程序分开，有利于保持更好的安全态势。&lt;/p&gt;
+&lt;p&gt;正如我们在公告博客中指出的，由于 sidecar 的侵入性，操作 sidecar 可能会更加复杂（注入 sidecar/改变部署描述，重启应用程序，容器之间的竞争条件等）。对带有 sidecar 的工作负载的升级需要更多的计划和滚动重启，可能需要协调，以避免应用程序崩溃。有了 Ambient Mesh，对 ztunnel 的升级可以与任何正常的节点补丁或升级同时进行，而 waypoint 代理是网络的一部分，可以根据需要对应用程序进行完全透明的升级。&lt;/p&gt;
+&lt;h2 id=&#34;避免多租户-l7-代理&#34;&gt;避免多租户 L7 代理&lt;/h2&gt;
+&lt;p&gt;支持 L7 协议（例如 HTTP 1/2/3、gRPC、解析标头、实现重试、在数据平面中使用 Wasm 或 Lua 进行自定义）比支持 L4 复杂得多。实现这些行为的代码要多得多（包括 Lua 和 Wasm 等用户自定义代码），这种复杂性可能会导致潜在的漏洞。正因为如此，CVE 在这些 L7 功能领域中出现的几率更高。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-每个命名空间身份都有自己的l7代理没有多租户代理&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;每个命名空间/身份都有自己的L7代理；没有多租户代理&#34;
+           src=&#34;https://cloudnative.to/blog/ambient-security/l7-function.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      每个命名空间/身份都有自己的L7代理；没有多租户代理
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在 ambient mesh 中，我们不在多个身份之间共享代理中的 L7 处理。每个身份（Kubernetes 中的服务账户）都有自己专门的 L7 代理（waypoint 代理），这与我们使用的 sidecar 模型非常相似。试图将多个身份、复杂的不同的策略和定制放在一起，会给共享资源增加很多变数，最好的情况是导致资源的不公平分配，最坏的情况是导致代理被完全破坏。&lt;/p&gt;
+&lt;h2 id=&#34;sidecar-模式仍然是首先的部署模式之一&#34;&gt;Sidecar 模式仍然是首先的部署模式之一&lt;/h2&gt;
+&lt;p&gt;我们理解，有些人对 sidecar 模型及其已知的安全边界感到满意，并希望留在该模型上。Sidecar 仍然是网格的一等公民，平台所有者可以选择继续使用它们。如果平台所有者想同时支持 sidecar 和 ambient 也是可以。具有 ambient 数据平面的工作负载可以与部署了 sidecar 的工作负载进行本地通信。随着人们更好地了解 ambient mesh 的安全态势，我们相信，ambient 将成为 Istio 服务网格的首选模式，而 sidecar 则用于特定的优化。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>Istio 无 sidecar 代理数据平面 ambient 模式简介</title>
+      <link>https://cloudnative.to/blog/introducing-ambient-mesh/</link>
+      <pubDate>Thu, 08 Sep 2022 11:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/introducing-ambient-mesh/</guid>
+      <description>&lt;p&gt;今天，我们很高兴地介绍 &lt;strong&gt;Ambient Mesh&lt;/strong&gt;（译者注：笔者更倾向于将其称为 Ambient Mode，即外围模式），这是一种新的 Istio 数据平面模式，旨在简化操作、扩大应用兼容性并降低基础设施成本。用户可以选择将 Ambient Mesh 集成到其基础设施的网格数据平面，放弃 sidecar 代理，同时保持 Istio 的零信任安全、遥测和流量管理等核心功能。我们正在与 Istio 社区分享 Ambient Mesh 的预览版，我们正努力在未来几个月内将其推向生产就绪。&lt;/p&gt;
+&lt;h2 id=&#34;istio-和-sidecar&#34;&gt;Istio 和 Sidecar&lt;/h2&gt;
+&lt;p&gt;自项目成立以来，Istio 架构的一个决定性特征是使用 sidecar—— 与应用容器一起部署的可编程代理。利用 sidecar，不需要对应用程序进行重大调整即可以享受服务网格带来的好处，省去运维的负担。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-istio-的传统模式是将-envoy-代理作为-sidecar-部署在工作负载的-pod-中&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Istio 的传统模式是将 Envoy 代理作为 sidecar 部署在工作负载的 pod 中。&#34; srcset=&#34;
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yyo2mg1bj21wj0u0gp0_hu6485f23e60e2e8e9568294bae27898e8_132498_10f6220749ea87ae437eaf6d93d3b726.webp 400w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yyo2mg1bj21wj0u0gp0_hu6485f23e60e2e8e9568294bae27898e8_132498_c4136b67d287ee55f3e3e2e4363d60ee.webp 760w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yyo2mg1bj21wj0u0gp0_hu6485f23e60e2e8e9568294bae27898e8_132498_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/introducing-ambient-mesh/e6c9d24ely1h5yyo2mg1bj21wj0u0gp0_hu6485f23e60e2e8e9568294bae27898e8_132498_10f6220749ea87ae437eaf6d93d3b726.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;333&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Istio 的传统模式是将 Envoy 代理作为 sidecar 部署在工作负载的 pod 中。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;虽然 sidecar 比起重构应用程序有显著的优势，但它们并没有在应用程序和 Istio 数据平面之间提供一个完美的分离。这导致了一些限制：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;侵入性&lt;/strong&gt;：sidecar 必须通过修改其 Kubernetes pod 配置和重定向 pod 内的流量来 &lt;strong&gt;注入&lt;/strong&gt; 应用程序。因此，安装或升级 sidecar 需要重新启动应用 pod，这对工作负载来说可能是破坏性的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源利用率低&lt;/strong&gt;：由于在每个工作负载 pod 都注入了 sidecar 代理，pod 必须为 sidecar 保留足够的 CPU 和内存，这可能导致整个集群的资源利用率下降。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流量中断&lt;/strong&gt;：流量捕获和 HTTP 处理，通常由 Istio 的 sidecar 完成，计算成本很高，可能会破坏一些具有不符合 HTTP 实现的应用程序。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;虽然 sidecar 有它的用武之地，后面会有更多的介绍 —— 但我们认为需要有一个侵入性更低、更容易的选择，这将更适合许多服务网格用户。&lt;/p&gt;
+&lt;h2 id=&#34;分层&#34;&gt;分层&lt;/h2&gt;
+&lt;p&gt;传统上，Istio 在单一的架构组件中实现了所有的数据平面功能，从基本的加密到高级的 L7 策略，这就是 sidecar。在实践中，这使得 sidecar 成为一个全有或全无的主张。即使工作负载只需要简单的传输安全，管理员仍然需要承担部署和维护 sidecar 的运营成本。Sidecar 对每个工作负载都有固定的运营成本，无法根据用例的复杂性进行扩展。&lt;/p&gt;
+&lt;p&gt;Ambient Mesh 采取了一种不同的方法。它将 Istio 的功能分成两个不同的层次。在底层，有一个安全覆盖层，处理流量的路由和零信任安全。在这之上，当需要时，用户可以启用 L7 处理，以获得 Istio 的全部功能。L7 处理模式虽然比安全覆盖层更重，但仍作为基础设施的一个外围组件运行，不需要对应用 pod 进行修改。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ambient-mesh-分层&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Ambient Mesh 分层&#34;
+           src=&#34;https://cloudnative.to/blog/introducing-ambient-mesh/ambient-mesh-layers.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Ambient Mesh 分层
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;这种分层方法使用户能够以更多的增量方式采用 Istio，从无网格到安全覆盖，再到完全的 L7 处理，根据需要以每个命名空间为基础进行平稳过渡。此外，在不同氛围模式下运行的工作负载，或与 sidecar 无缝互通，允许用户根据随时间变化的特定需求来混合和匹配能力。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;构建 Ambient Mesh&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Ambient Mesh 使用一个共享代理（agent），在 Kubernetes 集群的每个节点上运行。这个代理是一个零信任隧道（ztunnel），它的主要职责是安全地连接和验证网格内的元素。节点上的网络堆栈将参与工作负载的所有流量通过本地 ztunnel 代理重定向。这将 Istio 的数据平面与应用程序的关注点完全分开，最终允许运营人员启用、禁用、扩展和升级数据平面而不干扰应用程序。ztunnel 不对工作负载流量进行 L7 处理，使其明显比 sidecar 精简。这大大降低了复杂性和相关资源的使用成本，使它适合作为共享基础设施交付。&lt;/p&gt;
+&lt;p&gt;Ztunnel 实现了服务网格的核心功能：零信任。当为命名空间启用 Ambient 时，会创建一个安全覆盖层。它为工作负载提供 mTLS、遥测、认证和 L4 授权，而无需终止或解析 HTTP。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ambient-mesh-使用一个共享的每个节点的-ztunnel-来提供一个零信任的安全覆盖&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Ambient mesh 使用一个共享的、每个节点的 ztunnel 来提供一个零信任的安全覆盖。&#34; srcset=&#34;
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5z19731yhj21wj0u040v_hu6485f23e60e2e8e9568294bae27898e8_97321_e0552906855f5bfa1f41960bdd6b8ecf.webp 400w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5z19731yhj21wj0u040v_hu6485f23e60e2e8e9568294bae27898e8_97321_86e671f76a997a396ed45385253100c6.webp 760w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5z19731yhj21wj0u040v_hu6485f23e60e2e8e9568294bae27898e8_97321_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/introducing-ambient-mesh/e6c9d24ely1h5z19731yhj21wj0u040v_hu6485f23e60e2e8e9568294bae27898e8_97321_e0552906855f5bfa1f41960bdd6b8ecf.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;333&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Ambient mesh 使用一个共享的、每个节点的 ztunnel 来提供一个零信任的安全覆盖。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在启用 Ambient Mesh 和创建安全覆盖后，可以配置命名空间以利用 L7 功能。这允许命名空间实现全套的 Istio 功能，包括 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/networking/virtual-service/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Virtual Service API&lt;/a&gt;、&lt;a href=&#34;https://istio.io/latest/docs/reference/config/telemetry/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;L7 遥测&lt;/a&gt;和 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/security/authorization-policy/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;L7 授权策略&lt;/a&gt;。以这种模式运行的命名空间使用一个或多个基于 Envoy 的 &lt;strong&gt;Waypoint proxy&lt;/strong&gt;（路径点代理）来处理该命名空间的工作负载的 L7 处理。Istio 的控制平面将集群中的 ztunnel 配置为通过 waypoint 代理传递所有需要 L7 处理的流量。重要的是，从 Kubernetes 的角度来看，waypoint 代理只是普通的 pod，可以像其他 Kubernetes 部署一样进行自动扩展。我们预计这将为用户节省大量资源，因为路径代理可以自动扩展，以适应它们所服务的命名空间的实时流量需求，而不是运营人员预期的最大最坏情况下的负载。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-当需要额外的功能时ambient-mesh-会部署路径代理ztunnel-通过这些代理进行连接以执行策略&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;当需要额外的功能时，Ambient Mesh 会部署路径代理，Ztunnel 通过这些代理进行连接以执行策略。&#34; srcset=&#34;
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yzsd8vv8j21wj0u00vx_hud24c97983a2dff171a980de76f593f78_126284_385fd31aa658cae43db3d254509df0d2.webp 400w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yzsd8vv8j21wj0u00vx_hud24c97983a2dff171a980de76f593f78_126284_680b4da92881d3c919a63a2b7754f59c.webp 760w,
+               /blog/introducing-ambient-mesh/e6c9d24ely1h5yzsd8vv8j21wj0u00vx_hud24c97983a2dff171a980de76f593f78_126284_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/introducing-ambient-mesh/e6c9d24ely1h5yzsd8vv8j21wj0u00vx_hud24c97983a2dff171a980de76f593f78_126284_385fd31aa658cae43db3d254509df0d2.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;333&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      当需要额外的功能时，Ambient Mesh 会部署路径代理，Ztunnel 通过这些代理进行连接以执行策略。
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;Ambient Mesh 使用 &lt;strong&gt;HTTP CONNECT over mTLS&lt;/strong&gt; 来实现其安全隧道，并在路径中插入 waypoint 代理，这种模式我们称之为 &lt;strong&gt;HBONE&lt;/strong&gt;（HTTP-Based Overlay Network Environment，基于 HTTP 的重叠网络环境）。HBONE 提供了比 TLS 本身更干净的流量封装，同时实现了与普通负载均衡器基础设施的互操作性。默认使用 FIPS 构建，以满足合规性需求。关于 HBONE 的更多细节，其基于标准的方法，以及 UDP 和其他非 TCP 协议的计划，将在未来的博客中提供。&lt;/p&gt;
+&lt;p&gt;在一个网格中混合 sidecar 和 ambient，不会对系统的能力或安全属性带来限制。Istio 控制平面确保策略的正确执行，无论选择何种部署模式。Ambient 只是引入了一个具有更好的人机工程学和更多灵活性的选项。&lt;/p&gt;
+&lt;h2 id=&#34;为什么本地节点上没有-l7-处理&#34;&gt;为什么本地节点上没有 L7 处理？&lt;/h2&gt;
+&lt;p&gt;Ambient 网格在节点上使用一个共享的 ztunnel 代理，它处理网格的零信任方面，而 L7 处理发生在单独调度的 pod 中的 waypoint 代理。为什么要费尽心机地进行转接，而不是直接在节点上使用一个共享的完整的 L7 代理？这有几个原因。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Envoy 本质上不是多租户的。因此，我们对在一个共享实例中混合来自多个无约束租户的 L7 流量的复杂处理规则有安全方面的担忧。通过严格限制 L4 处理，我们大大减少了漏洞的半径。&lt;/li&gt;
+&lt;li&gt;与 waypoint 代理所需的 L7 处理相比，ztunnel 所提供的 mTLS 和 L4 功能需要的 CPU 和内存占用要小得多。通过将 waypoint 代理作为一个共享的命名空间资源来运行，我们可以根据该命名空间的需求来独立扩展它们，其成本不会不公平地分配给不相关的租户。&lt;/li&gt;
+&lt;li&gt;通过减少 ztunnel 的范围，我们允许它被其他安全隧道的实现所取代，这些实现可以满足一个明确的互操作性协议。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;但是那些额外的跳数呢&#34;&gt;但是那些额外的跳数呢？&lt;/h2&gt;
+&lt;p&gt;在 Ambient 网格中，waypoint 不一定保证与它所服务的工作负载在同一个节点上。虽然乍一看，这可能是一个性能问题，但我们相信，延迟最终将与 Istio 目前的 sidecar 实现保持一致。我们将在专门的性能博文中详细讨论，但现在我们将总结出两点。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;事实上，Istio 的大部分网络延迟并不是来自于网络（现代的云供应商拥有极快的网络）。相反，最大的罪魁祸首是 Istio 需要密集的 L7 处理来实现其复杂的功能集。与 sidecar 不同的是，sidecar 为每个连接实现了两个 L7 处理步骤（每个 sidecar 一个），而 Ambient 网格这两个步骤压缩成一个。在大多数情况下，我们希望这种减少的处理成本能够补偿额外的网络跳跃。&lt;/li&gt;
+&lt;li&gt;用户通常在部署网格时，首先启用零信任的安全态势，然后根据需要选择性地启用 L7 功能。Ambient 网格允许这些用户在不需要时完全绕过 L7 处理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;资源开销&#34;&gt;资源开销&lt;/h2&gt;
+&lt;p&gt;总的来说，我们希望 Ambient Mesh 对大多数用户来说要求更少的资源，让资源需求更可预测。ztunnel 的有限责任允许它作为一个共享资源部署在节点上。这将大大减少大多数用户为每个工作负载的预留资源。此外，由于 waypoint 代理是正常的 Kubernetes pod，它们可以根据其服务的工作负载的实时流量需求进行动态部署和扩展。&lt;/p&gt;
+&lt;p&gt;另一方面，sidecar 需要为每个工作负载的最坏情况保留内存和 CPU。进行这些计算是很复杂的，所以在实践中，管理员倾向于过度配置。这就导致了由于大量的资源预留导致其他工作负载无法被调度，从而导致节点利用率不足。Ambient 网格的每节点固定开销较低，动态扩展的 waypoint 代理需要的资源预留总体上要少得多，从而使集群的使用效率更高。&lt;/p&gt;
+&lt;h2 id=&#34;安全性如何&#34;&gt;安全性如何？&lt;/h2&gt;
+&lt;p&gt;一个全新的架构自然会带来安全方面的问题。&lt;a href=&#34;https://istio.io/latest/blog/2022/ambient-security/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ambient 安全博客&lt;/a&gt;对此做了深入的研究，我们将在此进行总结。&lt;/p&gt;
+&lt;p&gt;Sidecar 与它们所服务的工作负载共处一地，因此，一个人的漏洞会损害另一个人。在 Ambient Mesh 模型中，即使一个应用程序被破坏，Ztunnel 和 waypoint 代理仍然可以对被破坏的应用程序的流量执行严格的安全策略。此外，鉴于 Envoy 是世界上最大的网络运营商所使用的经过实战考验的成熟软件，它的脆弱性很可能低于与它一起运行的应用程序。&lt;/p&gt;
+&lt;p&gt;虽然 ztunnel 是一个共享资源，但它只能访问它所运行的节点上当前工作负载的密钥。因此，它的爆炸半径并不比任何其他依靠每个节点密钥进行加密的加密 CNI 差。另外，考虑到 ztunnel 有限的仅有的 L4 攻击面和 Envoy 的上述安全特性，我们觉得这种风险是有限的，可以接受的。&lt;/p&gt;
+&lt;p&gt;最后，虽然 waypoint 代理是一种共享资源，但它们只限于为一个服务账户服务。这使得它们不会比现在的 sidecar 更糟；如果一个 waypoint 代理被攻破，与该 waypoint 相关的凭证就会丢失，而不会有其他问题。&lt;/p&gt;
+&lt;h2 id=&#34;这是-sidecar-的终结吗&#34;&gt;这是 sidecar 的终结吗？&lt;/h2&gt;
+&lt;p&gt;肯定不是。虽然我们相信 Ambient Mesh 将是许多网格用户未来的最佳选择，但对于那些需要专用数据平面资源的用户来说，如合规性或性能调整，sidecar 仍然是一个不错的选择。Istio 将继续支持 sidecar，而且重要的是，允许它们与 Ambient Mesh 无缝互通。事实上，我们今天发布的 Ambient Mesh 代码已经支持与基于 sidecar 的 Istio 的互操作。&lt;/p&gt;
+&lt;h2 id=&#34;视频介绍&#34;&gt;视频介绍&lt;/h2&gt;
+&lt;p&gt;请看一个简短的 &lt;a href=&#34;https://youtu.be/nupRBh9Iypo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;YouTube 视频&lt;/a&gt;，看 Christian 运行 Istio Ambient Mesh 组件并演示一些功能。&lt;/p&gt;
+&lt;h2 id=&#34;参与进来&#34;&gt;参与进来&lt;/h2&gt;
+&lt;p&gt;我们今天发布的是 Istio 中 Ambient Mesh 的早期版本，它在很大程度上仍处于积极的开发之中。我们很高兴与更广泛的社区分享它，并期待着在 2023 年进入生产就绪阶段时，让更多人参与塑造它。&lt;/p&gt;
+&lt;p&gt;我们希望得到你的反馈来帮助塑造这个解决方案。支持 Ambient Mesh 的 Istio 构建版可以在 &lt;a href=&#34;https://github.com/istio/istio/tree/experimental-ambient&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 实验版&lt;/a&gt;中&lt;a href=&#34;https://istio.io/latest/blog/2022/get-started-ambient/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;下载和试用&lt;/a&gt;。在 &lt;a href=&#34;https://github.com/istio/istio/blob/experimental-ambient/README.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;README&lt;/a&gt; 中提供了一份缺失功能和工作项目的清单。请尝试一下，并 &lt;a href=&#34;https://slack.istio.io/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;让我们知道你的想法&lt;/a&gt;！&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>使用 eBPF 准确定位服务网格的关键性能问题</title>
+      <link>https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/</link>
+      <pubDate>Tue, 05 Jul 2022 17:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/</guid>
+      <description>&lt;h2 id=&#34;background&#34;&gt;背景介绍&lt;/h2&gt;
+&lt;p&gt;Apache SkyWalking 观察部署在服务网格中的服务的度量、日志、追踪和事件。在进行故障排除时，SkyWalking 错误分析是一个宝贵的工具，可以帮助确定错误发生的位置。然而，确定性能问题更加困难：利用预先存在的观察数据往往不可能找到性能问题的根本原因。为此，动态调试和故障排除在进行服务性能剖析时就必不可少。在这篇文章中，我们将讨论如何使用 eBPF 技术来改进 SkyWalking 中的剖析功能，并用于分析服务网格中的性能影响。&lt;/p&gt;
+&lt;h2 id=&#34;trace-profiling-in-skywalking&#34;&gt;SkyWalking 中的追踪剖析&lt;/h2&gt;
+&lt;p&gt;自 SkyWalking 7.0.0 以来，Trace Profiling 通过定期对线程堆栈进行采样，让开发者知道运行哪行代码花费更多时间，从而帮助开发者发现性能问题。然而，Trace Profiling 不适合以下情况：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;线程模型&lt;/strong&gt;：Trace Profiling 对于剖析在单线程中执行的代码最有用。它对严重依赖异步执行模式的中间件不太有用。例如，Go 中的 Goroutines 或 Kotlin Coroutines。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;语言&lt;/strong&gt;：目前，Trace Profiling 只支持 Java 和 Python，因为在 Go 和 Node.js 等一些语言的运行时中不容易获得线程栈。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Agent 绑定&lt;/strong&gt;：Trace Profiling 需要安装 Agent，根据语言的不同，这可能很麻烦（例如，PHP 必须依赖其 C 内核；Rust 和 C/C++ 需要的仪器需要手动安装）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;关联性&lt;/strong&gt;：由于追踪剖析只与单个请求相关，所以当无法确认哪个请求产生问题时则变得难已处理。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;生命周期短的服务&lt;/strong&gt;：由于（至少）两个原因，Trace Profiling 不支持短声明周期的服务：
+&lt;ul&gt;
+&lt;li&gt;在启动阶段，很难区分系统性能和类代码操作。&lt;/li&gt;
+&lt;li&gt;Trace Profiling 与一个端点相连，以识别性能影响，但没有端点来匹配这些短生命周期的服务。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;幸运的是，有一些技术比 Trace Profiling 更实用。&lt;/p&gt;
+&lt;h2 id=&#34;introduce-ebpf&#34;&gt;eBPF 简介&lt;/h2&gt;
+&lt;p&gt;我们发现，eBPF —— 一种可以在操作系统内核中运行沙盒程序的技术，从而安全有效地扩展内核的功能，而不需要修改内核或加载内核模块，可以帮助我们填补 Trace Profiling 留下的空白。eBPF 技术正在流行，因为它打破了传统上的用户和内核空间之间的障碍。现在我们可以将程序作为字节码注入到内核中运行，而不需要定制和重新编译内核。可观测可以很好地利用这一点。&lt;/p&gt;
+&lt;p&gt;在下图中，我们可以看到，当系统执行 &lt;code&gt;execve&lt;/code&gt; 系统调用时，eBPF 程序被触发，通过使用函数调用获得当前进程的运行时信息。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ebpf-程序调用流程图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;eBPF 程序调用流程图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/eBPF-hook-points_hu045d3eb9c20514286c2b99759556b302_48258_31dd29f7e8dc45b4aa8c3e9978c15fd3.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/eBPF-hook-points_hu045d3eb9c20514286c2b99759556b302_48258_501ba58999de3fea0b73da4d1a5134c6.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/eBPF-hook-points_hu045d3eb9c20514286c2b99759556b302_48258_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/eBPF-hook-points_hu045d3eb9c20514286c2b99759556b302_48258_31dd29f7e8dc45b4aa8c3e9978c15fd3.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;578&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      eBPF 程序调用流程图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;使用 eBPF 技术，可以将 SkyWalking 的剖析能力范围扩大到：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;全局性能剖析&lt;/strong&gt;：在 eBPF 之前，数据收集被限制在代理可以观察的范围内。由于 eBPF 程序在内核中运行，它们可以观察到所有的线程。当你不确定某个性能问题是否是由一个特定的请求引起的，这一点特别有用。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;数据内容&lt;/strong&gt;：eBPF 可以转储用户和内核空间的线程栈，所以如果性能问题发生在内核空间就更容易被发现。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;代理绑定&lt;/strong&gt;：所有现代 Linux 内核都支持 eBPF，所以不需要安装任何东西。这意味着它是一个免编排与代理的模型。这减少了由内置软件引起的摩擦，这些软件可能没有安装正确的代理，如服务网格中的 Envoy。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;采样类型&lt;/strong&gt;：与追踪剖析不同，eBPF 是事件驱动的，因此，不受间隔轮询的限制。例如，eBPF 可以触发事件，并根据传输大小的阈值收集更多的数据。这可以让系统在极端负载下分流和优先收集数据。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;ebpf-limitations&#34;&gt;eBPF 的局限性&lt;/h3&gt;
+&lt;p&gt;虽然 eBPF 为发掘性能瓶颈提供了显著的优势，但没有任何技术是完美的。eBPF 有一些限制，如下所述（幸运的是，由于 SkyWalking 不依赖 eBPF，其影响是有限的）：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Linux 版本要求&lt;/strong&gt;：eBPF 程序需要的 Linux 内核版本要 4.4 以上，更新的内核版本可以提供更多的数据收集。BCC 记录了 &lt;a href=&#34;https://github.com/iovisor/bcc/blob/13b5563c11f7722a61a17c6ca0a1a387d2fa7788/docs/kernel-versions.md#main-features&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;不同 Linux 内核版本所支持的功能&lt;/a&gt;，不同版本之间的差异在于 eBPF 收集的数据集。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;需要特权权限&lt;/strong&gt;：所有打算将 eBPF 程序加载到 Linux 内核的进程必须在特权模式下运行。因此，代码中的错误或其他问题可能对安全有很大的影响。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;对动态语言的支持较弱&lt;/strong&gt;：eBPF 对基于 JIT 的动态语言，如 Java，支持较弱。这也取决于你想收集什么数据。对于 Profiling，eBPF 不支持解析程序的字符表（symbol），这就是为什么大多数基于 eBPF 的剖析技术只支持静态语言如 C、C++、Go 和 Rust。然而，字符表映射有时可以通过语言所提供的工具来解决。例如，在 Java 中，可以使用 &lt;a href=&#34;https://github.com/jvm-profiling-tools/perf-map-agent#architecture&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;perf-map-agent&lt;/a&gt; 来生成字符表映射。然而，动态语言不支持附加（&lt;code&gt;uprobe&lt;/code&gt;）功能，而这种功能可以让我们通过符号追踪执行事件。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;introducing-skywalking-rover&#34;&gt;SkyWalking Rover 简介&lt;/h3&gt;
+&lt;p&gt;SkyWalking Rover 是 SkyWalking 生态系统中引入的 eBPF 剖析功能。下图显示了 SkyWalking Rover 的整体架构。SkyWalking Rover 目前支持 Kubernetes 环境，必须部署在 Kubernetes 集群内。与 SkyWalking 后端服务器建立连接后，它将当前机器上的进程信息保存到 SkyWalking。当用户通过用户界面创建 eBPF 剖析任务时，SkyWalking Rover 会接收任务并在相关的基于 C、C++、Golang 和 Rust 语言的程序中执行。&lt;/p&gt;
+&lt;p&gt;除了需要具有 eBPF 功能的内核外，部署 SkyWalking Rover 没有其他先决条件。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-skywalking-rover-架构图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;SkyWalking Rover 架构图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/skywalking-rover_hu96ce0a1793ef4084b7c6baa2f4d21194_31590_6edef539501f91527785125de04f77d1.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/skywalking-rover_hu96ce0a1793ef4084b7c6baa2f4d21194_31590_77630572196fa0d44044c36d67f6e3d2.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/skywalking-rover_hu96ce0a1793ef4084b7c6baa2f4d21194_31590_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/skywalking-rover_hu96ce0a1793ef4084b7c6baa2f4d21194_31590_6edef539501f91527785125de04f77d1.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;259&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      SkyWalking Rover 架构图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;cpu-profiling-with-rover&#34;&gt;使用 Rover 进行 CPU 剖析&lt;/h3&gt;
+&lt;p&gt;CPU 剖析是显示服务性能的最直观方式。受 &lt;a href=&#34;https://www.brendangregg.com/offcpuanalysis.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Brendan Gregg 的博客文章&lt;/a&gt; 的启发，我们将 CPU 剖析分为两种类型，并在 Rover 中加以实施：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;CPU 剖析&lt;/strong&gt;：线程在 CPU 上的运行时间。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;off-CPU 剖析&lt;/strong&gt;：线程在 I/O、锁、定时器、分页 / 交换等方面被阻塞时的等待时间。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id=&#34;profiling-envoy-with-ebpf&#34;&gt;用 eBPF 对 Envoy 进行剖析&lt;/h2&gt;
+&lt;p&gt;Envoy 是一个流行的代理，在 Istio 服务网格中被用作为数据平面。在 Kubernetes 集群中，Istio 将 Envoy 作为 sidecar 注入到每个服务的 pod 中，在那里透明地拦截和处理传入和传出的流量。作为数据平面，Envoy 的任何性能问题都会影响到网格中的所有服务流量。在这种情况下，使用 eBPF 剖析来分析生产中由服务网格引起的问题是比较有力的。&lt;/p&gt;
+&lt;h3 id=&#34;demo-environment&#34;&gt;演示环境&lt;/h3&gt;
+&lt;p&gt;如果你想看到详细过程，我们已经建立了一个演示环境，在那里我们部署了一个 Nginx 服务进行压力测试。流量被 Envoy 拦截并转发到 Nginx。安装整个环境的命令可以在 &lt;a href=&#34;https://github.com/mrproliu/skywalking-rover-profiling-demo&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;GitHub&lt;/a&gt; 上获取。&lt;/p&gt;
+&lt;h2 id=&#34;on-cpu-profiling&#34;&gt;CPU 剖析&lt;/h2&gt;
+&lt;p&gt;当服务的 CPU 使用率很高时，CPU 剖析适用于分析线程堆栈。如果堆栈被转储的次数较多，意味着线程堆栈占据了更多的 CPU 资源。&lt;/p&gt;
+&lt;p&gt;在使用演示配置文件安装 Istio 时，我们发现有两个地方的性能可以优化：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Zipkin 追踪&lt;/strong&gt;：不同的 Zipkin 采样百分比对 QPS 有直接影响。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;访问日志格式&lt;/strong&gt;：减少 Envoy 访问日志的字段可以提高 QPS。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;zipkin-追踪&#34;&gt;Zipkin 追踪&lt;/h3&gt;
+&lt;h3 id=&#34;zipkin-100-采样&#34;&gt;Zipkin 100% 采样&lt;/h3&gt;
+&lt;p&gt;在默认的演示配置文件中，Envoy 使用 100% 采样作为默认的追踪策略。这对性能有什么影响？&lt;/p&gt;
+&lt;p&gt;如下图所示，使用 CPU 剖析，我们发现它大约需要 &lt;strong&gt;16%&lt;/strong&gt; 的 CPU 开销。在固定消耗 &lt;strong&gt;2 个 CPU&lt;/strong&gt; 的情况下，其 QPS 可以达到 &lt;strong&gt;5.7K&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-zipkin-100-采样-cpu-剖析的火焰图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Zipkin 100% 采样 CPU 剖析的火焰图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-sampling-100_huf238a1b5794ab6185477371703bb7cbb_258667_5c5bdd04bcd413ed5927348c85330886.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-sampling-100_huf238a1b5794ab6185477371703bb7cbb_258667_b68a53a9b8fc1f02dbfc560074a62481.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-sampling-100_huf238a1b5794ab6185477371703bb7cbb_258667_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-sampling-100_huf238a1b5794ab6185477371703bb7cbb_258667_5c5bdd04bcd413ed5927348c85330886.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;385&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Zipkin 100% 采样 CPU 剖析的火焰图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;禁用-zipkin-追踪&#34;&gt;禁用 Zipkin 追踪&lt;/h3&gt;
+&lt;p&gt;此时，我们发现，如果没有必要，可以降低 Zipkin 采样比例，甚至可以禁用追踪。根据 &lt;a href=&#34;https://istio.io/latest/docs/reference/config/istio.mesh.v1alpha1/#Tracing&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Istio 文档&lt;/a&gt;，我们可以在安装 Istio 时使用以下命令禁用追踪。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install -y --set &lt;span class=&#34;nv&#34;&gt;profile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;demo &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;   --set &lt;span class=&#34;s1&#34;&gt;&amp;#39;meshConfig.enableTracing=false&amp;#39;&lt;/span&gt; &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;   --set &lt;span class=&#34;s1&#34;&gt;&amp;#39;meshConfig.defaultConfig.tracing.sampling=0.0&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;禁用追踪后，我们再次进行 CPU 剖析。根据下图，我们发现 Zipkin 已经从火焰图中消失了。在与前面的例子相同的 &lt;strong&gt;2 个 CPU&lt;/strong&gt; 消耗下，QPS 达到 &lt;strong&gt;9K&lt;/strong&gt;，几乎增加了 &lt;strong&gt;60%&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-禁用-zipkin-追踪的-cpu-剖析火焰图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;禁用 Zipkin 追踪的 CPU 剖析火焰图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-disable-tracing_hu1f0ecaf355e785aa0e2514c9e5fd63b4_235208_6ce84d92564a56b7ebc933d9646c9347.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-disable-tracing_hu1f0ecaf355e785aa0e2514c9e5fd63b4_235208_4120d0c8954a6454493ed53dde25e284.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-disable-tracing_hu1f0ecaf355e785aa0e2514c9e5fd63b4_235208_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/zipkin-disable-tracing_hu1f0ecaf355e785aa0e2514c9e5fd63b4_235208_6ce84d92564a56b7ebc933d9646c9347.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;384&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      禁用 Zipkin 追踪的 CPU 剖析火焰图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;tracing-with-throughput&#34;&gt;追踪吞吐量&lt;/h3&gt;
+&lt;p&gt;在 CPU 使用率相同的情况下，我们发现，当追踪功能被禁用时，Envoy 的性能会大大提升。当然，这需要我们在 Zipkin 收集的样本数量和 Envoy 的预期性能（QPS）之间做出权衡。&lt;/p&gt;
+&lt;p&gt;下表说明了在相同的 CPU 使用率下，不同的 Zipkin 采样比例对 QPS 的影响。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Zipkin 采样比例&lt;/th&gt;
+&lt;th&gt;QPS&lt;/th&gt;
+&lt;th&gt;CPU&lt;/th&gt;
+&lt;th&gt;备注&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;100% &lt;strong&gt;（默认）&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;5.7K&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;Zipkin 占用 16%&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;1%&lt;/td&gt;
+&lt;td&gt;8.1K&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;Zipkin 占用 0.3%&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;禁用&lt;/td&gt;
+&lt;td&gt;9.2K&lt;/td&gt;
+&lt;td&gt;2&lt;/td&gt;
+&lt;td&gt;Zipkin 占用 0%&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id=&#34;access-log-format&#34;&gt;访问日志格式&lt;/h2&gt;
+&lt;h3 id=&#34;default-log-format&#34;&gt;默认访问日志格式&lt;/h3&gt;
+&lt;p&gt;在默认的演示配置文件中，默认的访问日志格式包含大量的数据。下面的火焰图显示了在解析数据时涉及的各种功能，如请求头、响应头和流媒体主体。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-默认访问日志格式的-cpu-剖析火焰图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;默认访问日志格式的 CPU 剖析火焰图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/log-format-default_hu7d2fdb57bd91148e550aa40a981eaed2_174188_0f5231040d3cb686febbbade6d4f490a.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/log-format-default_hu7d2fdb57bd91148e550aa40a981eaed2_174188_ca470e83e66ecbe17169087ebaace536.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/log-format-default_hu7d2fdb57bd91148e550aa40a981eaed2_174188_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/log-format-default_hu7d2fdb57bd91148e550aa40a981eaed2_174188_0f5231040d3cb686febbbade6d4f490a.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;385&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      默认访问日志格式的 CPU 剖析火焰图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h3 id=&#34;simplifying-access-log-format&#34;&gt;简化访问日志格式&lt;/h3&gt;
+&lt;p&gt;通常情况下，我们不需要访问日志中的所有信息，所以我们通常可以简化它来获得我们需要的信息。下面的命令简化了访问日志的格式，只显示基本信息。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install -y --set &lt;span class=&#34;nv&#34;&gt;profile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;demo &lt;span class=&#34;se&#34;&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;se&#34;&gt;&lt;/span&gt;   --set meshConfig.accessLogFormat&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;[% START_TIME%] \&amp;#34;% REQ (:METHOD)% % REQ (X-ENVOY-ORIGINAL-PATH?:PATH)% % PROTOCOL%\&amp;#34;% RESPONSE_CODE%\n&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;简化访问日志格式后，我们发现 QPS 从 &lt;strong&gt;5.7K&lt;/strong&gt; 增加到 &lt;strong&gt;5.9K&lt;/strong&gt;。当再次执行 CPU 剖析时，日志格式化的 CPU 使用率从 &lt;strong&gt;2.4%&lt;/strong&gt; 下降到 &lt;strong&gt;0.7%&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;简化日志格式帮助我们提高了性能。&lt;/p&gt;
+&lt;h2 id=&#34;off-cpu-剖析&#34;&gt;Off-CPU 剖析&lt;/h2&gt;
+&lt;p&gt;Off-CPU 剖析适用于由非高 CPU 使用率引起的性能问题。例如，当一个服务中有太多的线程时，使用 off-CPU 剖析可以揭示出哪些线程花费了更多的时间进行上下文切换。&lt;/p&gt;
+&lt;p&gt;我们提供两个维度的数据汇总。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;切换次数&lt;/strong&gt;：一个线程切换上下文的次数。当线程返回到 CPU 时，它完成了一次上下文切换。开关次数较多的线程栈会花费更多时间进行上下文切换。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;切换持续时间&lt;/strong&gt;：一个线程切换上下文所需的时间。切换持续时间较长的线程栈在 off-CPU 花费的时间较多。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;write-access-log&#34;&gt;写入访问日志&lt;/h3&gt;
+&lt;h4 id=&#34;enable-write&#34;&gt;启用写入&lt;/h4&gt;
+&lt;p&gt;使用与之前 CPU 测试相同的环境和设置，我们进行了 off-CPU 剖析。如下图所示，我们发现访问日志的写入占总上下文切换的 &lt;strong&gt;28%&lt;/strong&gt; 左右。下图中的 &lt;code&gt;__write&lt;/code&gt; 也表明这是 Linux 内核中的方法。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-启用写入的-off-cpu-剖析火焰图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;启用写入的 off-CPU 剖析火焰图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-enable_hubdf9a606cdf61d4031d0e2209c45ffff_117338_4f90812f80bcc003b7376d5607177654.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-enable_hubdf9a606cdf61d4031d0e2209c45ffff_117338_fea2e2c0d03b286f15392cc50602ab21.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-enable_hubdf9a606cdf61d4031d0e2209c45ffff_117338_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-enable_hubdf9a606cdf61d4031d0e2209c45ffff_117338_4f90812f80bcc003b7376d5607177654.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;385&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      启用写入的 off-CPU 剖析火焰图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h4 id=&#34;禁用写入&#34;&gt;禁用写入&lt;/h4&gt;
+&lt;p&gt;SkyWalking 实现了 Envoy 的访问日志服务（ALS）功能，允许我们使用 gRPC 协议将访问日志发送到 SkyWalking 可观察性分析平台（OAP）。即使禁用访问日志，我们仍然可以使用 ALS 来捕获 / 汇总日志。我们使用以下命令禁用了对访问日志的写入。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;istioctl install -y --set &lt;span class=&#34;nv&#34;&gt;profile&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;demo --set meshConfig.accessLogFile&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;s2&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;禁用访问日志功能后，我们进行了 off-CPU 剖析。如下图所示，文件写入条目已经消失了。Envoy 的吞吐量也从 &lt;strong&gt;5.7K&lt;/strong&gt; 增加到 &lt;strong&gt;5.9K&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-禁用访问日志功能后的-off-cpu-剖析火焰图&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;禁用访问日志功能后的 off-CPU 剖析火焰图&#34; srcset=&#34;
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-disable_hu5e4e6d524a292897da8cca3705844d39_104099_5d9c5dc3f590028c1b5386c0232bffb5.webp 400w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-disable_hu5e4e6d524a292897da8cca3705844d39_104099_64a520f1998a1b10dd8b102cdaefebbb.webp 760w,
+               /blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-disable_hu5e4e6d524a292897da8cca3705844d39_104099_1200x1200_fit_q75_h2_lanczos.webp 1200w&#34;
+               src=&#34;https://cloudnative.to/blog/pinpoint-service-mesh-critical-performance-impact-by-using-ebpf/access-log-write-disable_hu5e4e6d524a292897da8cca3705844d39_104099_5d9c5dc3f590028c1b5386c0232bffb5.webp&#34;
+               width=&#34;760&#34;
+               height=&#34;385&#34;
+               loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      禁用访问日志功能后的 off-CPU 剖析火焰图
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;在这篇文章中，我们研究了 Apache SkyWalking 的 Trace Profiling 可以给我们带来的启示，以及使用 eBPF 剖析可以实现的更多功能。所有这些功能都在 &lt;a href=&#34;https://github.com/apache/skywalking-rover&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;skywalking-rover&lt;/a&gt; 中实现。除了 CPU 和 off-CPU 剖析之外，你还会发现以下功能：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;连续剖析&lt;/strong&gt;，帮助你自动剖析，无需人工干预。例如，当 Rover 检测到 CPU 超过一个可配置的阈值时，它会自动执行 CPU 剖析任务。&lt;/li&gt;
+&lt;li&gt;更多的剖析类型，以丰富使用场景，如网络和内存剖析。&lt;/li&gt;
+&lt;/ul&gt;
 </description>
     </item>
     
