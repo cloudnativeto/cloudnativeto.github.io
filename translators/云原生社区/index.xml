@@ -5,12 +5,286 @@
     <link>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/</link>
       <atom:link href="https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/index.xml" rel="self" type="application/rss+xml" />
     <description>云原生社区</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Tue, 09 Jan 2024 08:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Wed, 10 Jan 2024 12:00:00 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/avatar_hu704adb3a88ed39769145f561e6113c42_6553_270x270_fill_lanczos_center_3.png</url>
       <title>云原生社区</title>
       <link>https://cloudnative.to/translators/%E4%BA%91%E5%8E%9F%E7%94%9F%E7%A4%BE%E5%8C%BA/</link>
     </image>
+    
+    <item>
+      <title>用 eBPF 洞察应用层网络流量</title>
+      <link>https://cloudnative.to/blog/application-traffic-with-ebpf/</link>
+      <pubDate>Wed, 10 Jan 2024 12:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/application-traffic-with-ebpf/</guid>
+      <description>&lt;p&gt;本文译自：&lt;a href=&#34;https://thebsdbox.co.uk/2023/12/08/Application-traffic-with-eBPF/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Application traffic with eBPF&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;摘要：本文介绍了如何使用 eBPF 程序捕获、分析和修改应用层的网络数据，包括 HTTP 头部和 URL 路径。作者还展示了如何使用 eBPF map 在内核和用户空间之间传递数据。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;在&lt;a href=&#34;../ebpf-adventures-in-networking/&#34;&gt;先前的帖子&lt;/a&gt;中，我稍微谈到了建立 eBPF 知识，以开始更多地了解网络适配器的输入和输出情况。基本上，将以太网帧并剥离标头（以太网标头+IP 标头+TCP/UDP 标头），最终你将得到来自应用程序或数据角度的数据包中剩余的内容。&lt;/p&gt;
+&lt;p&gt;所有的代码都在“学习 eBPF”存储库中，具体的 eBPF 代码在&lt;a href=&#34;https://github.com/thebsdbox/learning-ebpf/blob/main/ebpf/http/http.c&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;。这篇文章的计划是逐步介绍我认为有用或可能重要的部分&amp;hellip;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：此代码确实对入口/出口数据包进行了一些修改，因此需要 6.1+ 的 Linux 内核才能使用一些 eBPF 助手函数。&lt;/p&gt;
+&lt;h2 id=&#34;映射&#34;&gt;映射！&lt;/h2&gt;
+&lt;p&gt;你可能以前遇到过这些吧？如果没有，不用担心！简而言之，eBPF 映射是在用户空间和内核中的 eBPF 程序之间通信的机制。在我看来，非常酷的一点是这些映射使用键和值&amp;hellip;所以我不必循环比较数据并寻找匹配的内容，我传递一个键，如果有匹配的内容，我就得到相应的数据:D&lt;/p&gt;
+&lt;p&gt;下面是我将要使用的映射，称为&lt;code&gt;url_map&lt;/code&gt;，键是 20 个字符长（可以说是有界的“字符串”），分配给该键的值是我在上面定义的结构体。&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;// 定义与键关联的不同URL
+struct url_path {
+  __u8 path_len;
+  __u8 path[max_path_len]; // 这应该是一个char，但在这里和Go之间的代码生成有点不同...
+};
+
+// 定义我的URL映射
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 1024);
+  __type(key, char[max_path_len]);
+  __type(value, struct url_path);
+}
+url_map SEC(&amp;#34;.maps&amp;#34;);
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;ebpf-程序&#34;&gt;eBPF 程序！&lt;/h2&gt;
+&lt;p&gt;代码中定义了两个 eBPF 程序&lt;code&gt;tc_egress&lt;/code&gt;和&lt;code&gt;tc_ingress&lt;/code&gt;，如果你能猜到它们是如何连接的，那就加分！在这篇文章中，我们只关注&lt;code&gt;tc_ingress&lt;/code&gt;程序。&lt;/p&gt;
+&lt;p&gt;就像我们在已经存在的众多示例中看到的那样，我们需要进行标头识别的操作。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;进行合理性检查，并将&lt;code&gt;data&lt;/code&gt;强制转换为&lt;code&gt;ethhdr&lt;/code&gt;类型（&lt;a href=&#34;https://en.wikipedia.org/wiki/Ethernet_frame&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;以太网标头&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;通过读取以太网标头内部的&lt;code&gt;h_proto&lt;/code&gt;（也称为&lt;code&gt;Ethertype&lt;/code&gt;）来查找以太网帧内部的协议。&lt;/li&gt;
+&lt;li&gt;将以太网标头后的数据强制转换为&lt;code&gt;iphdr&lt;/code&gt;类型（&lt;a href=&#34;https://en.wikipedia.org/wiki/Internet_Protocol_version_4#Header&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;IP 标头&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;在 IP 标头内查找协议，我们还需要确定 IP 标头的大小（原来它们可以有不同的大小！&lt;code&gt;¯\_(ツ)_/¯&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;为了确定标头的大小，我们将其值乘以四，你可能会问为什么！好吧，这个值乘以 32 位以确定标头的大小，所以如果值为 6，那么标头将是 192 位（或 24 字节）。所以，为了简单地确定 IP 标头的字节数，我们可以将这个值乘以 4！&lt;/li&gt;
+&lt;li&gt;将以 IP 标头后的数据强制转换为&lt;code&gt;tcphdr&lt;/code&gt;类型（&lt;a href=&#34;https://en.wikipedia.org/wiki/Transmission_Control_Protocol#TCP_segment_structure&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;TCP 标头&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;像步骤（5）一样，我们需要确定 TCP 标头的大小（它也可以是动态的），在这里的步骤也是一样的，我们只需要将值&lt;code&gt;doff&lt;/code&gt;乘以四来确定标头的大小（以字节为单位）。&lt;/li&gt;
+&lt;li&gt;通过计算所有这些，我们现在可以推断出数据位于以太网标头大小、IP 标头大小和 TCP 标头大小的末尾。&lt;/li&gt;
+&lt;li&gt;最后，我们可以通过从 IP 标头中减去 IP 和 TCP 标头的大小来确定应用程序数据的大小，使用&lt;code&gt;tot_len&lt;/code&gt;（总长度）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;应用数据&#34;&gt;应用数据！！&lt;/h3&gt;
+&lt;p&gt;为了读取这些数据，我们将需要上面提到的一些东西！&lt;/p&gt;
+&lt;p&gt;首先，我们需要数据偏移量（数据起始位置），它位于以太网标头+IP 标头大小（一旦计算出来）和 TCP 标头（再次，一旦计算出来）之后。我们还需要一个缓冲区来存储我们将从套接字缓冲区中读取的数据。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 用于存储我们应用程序数据的数据缓冲区
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;char&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;pdata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;60&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 计算数据实际位置的偏移量
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;poffset&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ETH_HLEN&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ip_hlen&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;+&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;tcp_hlen&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 从套接字缓冲区加载数据，poffset 从 TCP 标头的末尾开始
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;int&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;ret&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;bpf_skb_load_bytes&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;skb&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;poffset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;pdata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;60&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ret&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;   &lt;span class=&#34;k&#34;&gt;return&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们使用&lt;code&gt;bpf_skb_load_bytes&lt;/code&gt;从套接字缓冲区（&lt;code&gt;skb&lt;/code&gt;）中读取一定量的数据（60 个字节）到我们的缓冲区（&lt;code&gt;pdata&lt;/code&gt;），起始位置是我们知道数据位于的偏移量（&lt;code&gt;poffset&lt;/code&gt;）！&lt;/p&gt;
+&lt;p&gt;此时，我们有了 60 字节的数据，应该足够让我们编写一些代码来理解它。&lt;/p&gt;
+&lt;h3 id=&#34;http-数据--&#34;&gt;HTTP 数据 :-)&lt;/h3&gt;
+&lt;p&gt;让我们看看当我们尝试进行 HTTP 请求时会发生什么！&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt; ~ curl code/test -vvv
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;*   Trying 192.168.0.22:80...
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;* Connected to code (192.168.0.22) port 80 (#0)
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; GET /test HTTP/1.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; Host: code
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; User-Agent: curl/7.87.0
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;gt; Accept: */*
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我正在使用&lt;code&gt;curl&lt;/code&gt;从主机&lt;code&gt;code&lt;/code&gt;（code 是我的开发 VM，运行 code-server）请求 URL &lt;code&gt;/test&lt;/code&gt;。我们可以看到发送到服务器的数据（每行以&lt;code&gt;&amp;gt;&lt;/code&gt;开头，用于确定通信的方向）。HTTP 请求中的第一行数据通常是一个&lt;em&gt;动词&lt;/em&gt;，后面是我们希望与之交互的资源，然后是 HTTP 规范和回车符，如&lt;a href=&#34;https://en.wikipedia.org/wiki/HTTP#HTTP/1.1_request_messages&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;HTTP 标准&lt;/a&gt;中定义。因此，我们可以看到我们关心的行是&lt;code&gt;GET /test&lt;/code&gt;（在这一点上，我们/我不太关心 HTTP 规范:D）。&lt;/p&gt;
+&lt;p&gt;第一步是读取&lt;code&gt;pdata&lt;/code&gt;的前三个字符，查找&lt;code&gt;pdata[0] == G&lt;/code&gt;，&lt;code&gt;pdata[1] == E&lt;/code&gt;和&lt;code&gt;pdata[2] == T&lt;/code&gt;，这将有效地帮助我们确定首先是否是 HTTP 请求，特别是是否是 HTTP 请求！&lt;/p&gt;
+&lt;p&gt;一旦我们验证了这前 3 个字节，我们将想要从第 4 个字节（请求的前三个字节加上一个用于分隔的空格）开始读取更多数据！&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kt&#34;&gt;char&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;max_path_len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;memset&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;sizeof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;));&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kt&#34;&gt;int&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path_len&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 查找请求 URI（从偏移量 4 开始），以空格结束
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;for&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;int&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;i&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;i&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;sizeof&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;pdata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;;&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;++&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;pdata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;sc&#34;&gt;&amp;#39; &amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;pdata&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt; &lt;span class=&#34;k&#34;&gt;else&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;sc&#34;&gt;&amp;#39;\0&amp;#39;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;n&#34;&gt;path_len&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;i&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;-&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;4&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;        &lt;span class=&#34;k&#34;&gt;break&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;上面的函数将从 HTTP 数据的第 4 个字节开始（从第 4 个字节开始）读取其余的数据，直到遇到空格为止，留下我们要&lt;code&gt;GET&lt;/code&gt;的 URL！我们可以通过一个调试打印语句来验证这一点：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;n&#34;&gt;bpf_printk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;&amp;lt;- incoming path [%s], length [%d]&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path_len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这将在日志中显示如下：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&amp;lt;idle&amp;gt;-0       [001] dNs3. 2252901.017812: bpf_trace_printk: &amp;lt;- incoming path [/test], length [5]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;对-http-应用程序请求采取行动&#34;&gt;对 HTTP 应用程序请求采取行动&lt;/h3&gt;
+&lt;p&gt;上述解释详细说明了我们如何读取数据以及如何读取数据，但如果我们想要“动态”查找 HTTP 请求，我们将需要使用 eBPF 映射。&lt;/p&gt;
+&lt;p&gt;在我们的 Go 用户空间代码中，我们执行以下操作：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;path&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;flag&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;path&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;The URL Path to watch for&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;flag&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Parse&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// ...
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 创建一个 uint8 数组
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;var&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;urlPath&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[&lt;/span&gt;&lt;span class=&#34;mi&#34;&gt;20&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;]&lt;/span&gt;&lt;span class=&#34;kt&#34;&gt;uint8&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 将我们的字节复制到 uint8 数组中（我们可以进行类型转换）
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;copy&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;urlPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;[:],&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;// 将我们的 urlPath 作为键
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;objs&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;UrlMap&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Put&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;urlPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nx&#34;&gt;bpfUrlPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;Path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;urlPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;PathLen&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nb&#34;&gt;uint8&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;len&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;urlPath&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)),&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;!=&lt;/span&gt; &lt;span class=&#34;kc&#34;&gt;nil&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;nb&#34;&gt;panic&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;正如我们在上面的代码中看到的，当我们启动 Go 程序时，它将从标志&lt;code&gt;-path&lt;/code&gt;中读取，并将其用作我们 eBPF 映射中的&lt;strong&gt;键&lt;/strong&gt;，可以暂时忽略值。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-c&#34; data-lang=&#34;c&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;url_path&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;found_path&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;bpf_map_lookup_elem&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;url_map&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;if&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;found_path&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&#34;mi&#34;&gt;0&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;n&#34;&gt;bpf_printk&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;Looks like we&amp;#39;ve found your path [%s]&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;n&#34;&gt;path&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// 可能进行更多操作，阻止流量或重定向？
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;在我们的 eBPF 程序中，我们将对 HTTP 请求进行映射查找，如果该请求作为 char 数组存在于&lt;strong&gt;键&lt;/strong&gt;中，那么我们就可以对其进行操作！&lt;/p&gt;
+&lt;p&gt;现在启动我们的 Go 程序 &lt;code&gt;sudo ./http -interface ens160 -path /test&lt;/code&gt; 将得到以下结果：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-plaintext&#34; data-lang=&#34;plaintext&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;INFO[0000] Starting 🐝 the eBPF HTTP watcher, on interface [ens160] for path [/test]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;INFO[0000] Loaded TC QDisc
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;INFO[0000] Press Ctrl-C to exit and remove the program
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] d.s3. 2252901.015575: bpf_trace_printk: &amp;lt;- 0.0.0.0:56345 -&amp;gt; 0.0.0.0:80
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] D.s3
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;. 2252901.015642: bpf_trace_printk: -&amp;gt; 192.168.0.22:80 -&amp;gt; 192.168.0.180:56345
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] d.s3. 2252901.017552: bpf_trace_printk: &amp;lt;- 0.0.0.0:56345 -&amp;gt; 0.0.0.0:80
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] d.s3. 2252901.017793: bpf_trace_printk: &amp;lt;- 0.0.0.0:56345 -&amp;gt; 0.0.0.0:80
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] dNs3. 2252901.017812: bpf_trace_printk: &amp;lt;- incoming path [/test], length [5]
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;          &amp;lt;idle&amp;gt;-0       [001] dNs3. 2252901.017814: bpf_trace_printk: Looks like we&amp;#39;ve found your path [/test]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;结论&#34;&gt;结论&lt;/h2&gt;
+&lt;p&gt;解析 HTTP 并不太困难，因为它是一个相对简单的协议，它使用简单的动词和结构的简单方法，使用空格和回车符来区分。这种方法可能也适用于其他协议，如 DNS、POP3 或 SMTP。当数据加密时，我们需要一种解密的方法，然后才能解析数据（这超出了我的能力&amp;hellip;）。但是，我希望这会激发你更多地尝试使用 eBPF 来解析和操作应用程序的想法！&lt;/p&gt;
+&lt;p&gt;我一直想写一些有希望有用的关于 eBPF 的帖子，尽管通常在我想出可能有用的东西之后，别人已经抢先一步。鉴于我已经在一段时间里以某种方式关注网络，这基本上是我关注的领域，尽管我确实为最近的 eBPF 峰会 2023 编写了一些有趣的内容。如上所述，有很多人开始撰写 eBPF 内容，所以我可能会参考他们的帖子，而不是重复内容。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>如何用 eBPF 改变网络编程的游戏规则</title>
+      <link>https://cloudnative.to/blog/ebpf-adventures-in-networking/</link>
+      <pubDate>Wed, 10 Jan 2024 08:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/ebpf-adventures-in-networking/</guid>
+      <description>&lt;p&gt;本文译自：&lt;a href=&#34;https://thebsdbox.co.uk/2023/11/18/eBPF-adventures-in-networking/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;eBPF adventures in networking&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;摘要：这篇文章介绍了 eBPF 在网络领域的一些应用和实践，包括 XDP、TC 和 sysprobes 三种不同的 eBPF 程序挂载方式的优缺点，以及如何使用 eBPF 实现网络数据的捕获、分析和修改。作者还分享了一些有用的 eBPF 工具和资源，以及自己开发的一个 eBPF 网络代理的项目。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;我一直想写一些关于 eBPF 的帖子，希望它们能有所帮助，尽管通常在我想到可能有用的东西时，其他人已经先我一步了。鉴于我已经在网络方面集中精力一段时间，这基本上是我专注的领域，尽管我确实设法为最近的 eBPF 峰会 2023 准备了一些我认为很有趣的东西。正如我之前提到的，有很多人开始撰写关于 eBPF 的内容，因此我可能会参考他们的帖子，而不是重复内容。&lt;/p&gt;
+&lt;p&gt;我将从一些在 Linux 内核中可能或可能不会遇到的首字母缩写或技术开始。但基本上从我的角度来看，这些是你修改正在运行的系统以与网络数据交互的主要选项。&lt;/p&gt;
+&lt;h3 id=&#34;xdp&#34;&gt;XDP&lt;/h3&gt;
+&lt;p&gt;关于 eXpress Data Plane 已经存在大量信息，因此我不会深入探讨太多细节。&lt;code&gt;tl;dr&lt;/code&gt;是 XDP eBPF 程序挂钩到 XDP 将使其能够访问由内核自身处理之前的传入网络帧。在某些情况下，eBPF 程序将加载到 NIC 驱动程序本身中，这将有效地将程序卸载到 NIC 本身。&lt;/p&gt;
+&lt;h3 id=&#34;优点&#34;&gt;优点&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;最佳性能&lt;/li&gt;
+&lt;li&gt;非常适用于防火墙、DDoS 防护或负载均衡等用例&lt;/li&gt;
+&lt;li&gt;在任何其他内容进行修改之前看到传入的流量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;缺点&#34;&gt;缺点&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;仅支持入站流量，使用 XDP 程序看到的任何流量都只是传入流量，目前无法看到出站流量&lt;/li&gt;
+&lt;li&gt;使用&lt;code&gt;XDP&lt;/code&gt;数据结构，与大多数套接字编程的默认数据结构&lt;code&gt;SKB&lt;/code&gt;有一些不同。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;tctraffic-control或流量控制&#34;&gt;TC（Traffic Control）或流量控制&lt;/h3&gt;
+&lt;p&gt;Traffic Control 是内核网络结构的一个重要组成部分，主要包括添加诸如 qdisc 和过滤器之类的功能到接口的能力。qdisc 主要集中在为 TBD（待定）提供服务，而过滤器通常在底层实际上是一个 eBPF 程序。&lt;/p&gt;
+&lt;p&gt;常见的工作流程是：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;创建一个关注入口或出口的 qdisc，或者替换一个现有的 qdisc。qdisc 将附加到接口上。&lt;/li&gt;
+&lt;li&gt;加载你的 eBPF 程序。&lt;/li&gt;
+&lt;li&gt;创建一个过滤器，将其附加到通过接口上的 qdisc 上的入口或出口之一。该过滤器将与 eBPF 程序相关联，这意味着所有传入或传出的流量现在都会通过一个程序运行（如果连接）。&lt;/li&gt;
+&lt;li&gt;获利 💰&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;优点-1&#34;&gt;优点&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;提供入口和出口的挂钩点&lt;/li&gt;
+&lt;li&gt;使用传统的&lt;code&gt;SKB&lt;/code&gt;数据结构&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;缺点-1&#34;&gt;缺点&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;将 TC 程序附加到入口或出口队列稍微复杂一些。用户需要使用 qdisc 来做到这一点，某些 eBPF SDK 不会原生支持 TC 程序的使用。&lt;/li&gt;
+&lt;li&gt;TC eBPF 程序看到的流量可能已经被之前的 XDP 程序或内核本身修改。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;系统调用&#34;&gt;系统调用&lt;/h3&gt;
+&lt;p&gt;与其他两种专门设计用于处理网络的方法相比，这可能会显得有些奇怪，因为它是将一些 eBPF 代码附加到内核中的系统调用的一种替代方法，具体来说是&lt;code&gt;tcp4_connect()&lt;/code&gt; / &lt;code&gt;tcp6_connect()&lt;/code&gt;等调用。这在协议栈中略微靠后，因为在此时，传入数据包已经经过了很多内核逻辑，而 eBPF 内省点是当流量即将与应用程序本身交互时。&lt;/p&gt;
+&lt;h2 id=&#34;编写网络程序&#34;&gt;编写网络程序！&lt;/h2&gt;
+&lt;p&gt;所以在这一点上，我们（希望）意识到我们有许多不同的入口点，允许我们在“传送带”上注入我们的代码，这个传送带从 NIC 开始，一直到应用程序（以及在出站的情况下）。&lt;/p&gt;
+&lt;h3 id=&#34;回顾&#34;&gt;回顾&lt;/h3&gt;
+&lt;p&gt;在我们所谓的“传送带”的开头，我们可以附加我们的 XDP 程序并获得未经触碰的原始网络数据。在“传送带”的中间，我们的 TC 程序将成为通过内核的路径的一部分，并接收可能被修改的网络数据。在传送带的末端，我们可以将代码附加到应用程序将在它被运行之前获取网络数据的函数，这些函数可以在传送带的末端进行附加。&lt;/p&gt;
+&lt;h3 id=&#34;数据表示&#34;&gt;数据表示&lt;/h3&gt;
+&lt;p&gt;你的程序附加到的位置决定了两个主要事物，一个是潜在的流量修改的相对级别，另一个是流量的表示方式。&lt;/p&gt;
+&lt;h3 id=&#34;xdp-结构&#34;&gt;XDP 结构&lt;/h3&gt;
+&lt;p&gt;我会写关于它的内容，但是 DataDog 已经做了，你可以在&lt;a href=&#34;https://www.datadoghq.com/blog/xdp-intro/#the-flow-of-an-xdp-program&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;阅读。&lt;/p&gt;
+&lt;h3 id=&#34;skb套接字缓冲区&#34;&gt;SKB（套接字缓冲区）&lt;/h3&gt;
+&lt;p&gt;SKB 是在 eBPF 添加到内核之前就存在于内核中的数据类型，它已经具备了一些使与 SKB 对象交互变得稍微容易一些的辅助功能。有关更深入的 SKB 介绍，你可以阅读此文 -&amp;gt; &lt;a href=&#34;http://vger.kernel.org/~davem/skb_data.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://vger.kernel.org/~davem/skb_data.html&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id=&#34;解析数据&#34;&gt;解析数据&lt;/h3&gt;
+&lt;p&gt;无论与哪个结构进行交互，它们都共享一些共同之处，这主要是两个变量，对于这两种数据类型来说是相同的。&lt;/p&gt;
+&lt;p&gt;这些变量是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;data&lt;/code&gt;，它是 eBPF 程序接收到的数据的指针&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;data_len&lt;/code&gt;，它是一个整数，指定了有多少数据可用（以帮助确保你永远不会访问&lt;code&gt;data&lt;/code&gt;超过&lt;code&gt;data_len&lt;/code&gt;（显而易见的真理 🤓））&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;所以这一切似乎很简单，但等等&amp;hellip; &lt;code&gt;*data&lt;/code&gt;中实际上有什么？（这取决于你的发现）&lt;/p&gt;
+&lt;p&gt;通过不断“转换”&lt;code&gt;*data&lt;/code&gt;并沿着它移动以剥离各种标头，我们可以了解和查找底层数据！&lt;/p&gt;
+&lt;h3 id=&#34;转换&#34;&gt;转换？&lt;/h3&gt;
+&lt;p&gt;如果你愿意，你可以跳过此部分，但这是一个快速（且糟糕）的示例，说明了我们通常如何将一些原始数据转换为有意义的东西。目前，&lt;code&gt;*data&lt;/code&gt;将只是一串随机数据，毫无意义，我们需要有效地为其添加“格式”以便我们可以理解其外观。&lt;/p&gt;
+&lt;p&gt;考虑一下随机数据行：“Bobby0004500100.503 Harvard Drive90210”，其中一些对裸眼来说是有意义的，但有些是不清楚的。&lt;/p&gt;
+&lt;p&gt;想象一下名为“person”的数据结构：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name: string
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Age: number
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Balance: float
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Street: string
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ZipCode: number
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如果我们要将我们的随机数据“转换”为上面的“person”结构，它将突然变成：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Name: Bobby
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Age: &lt;span class=&#34;m&#34;&gt;45&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Balance: 100.50
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;Street: &lt;span class=&#34;m&#34;&gt;3&lt;/span&gt; Harvard Drive
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;ZipCode: &lt;span class=&#34;m&#34;&gt;90210&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;现在突然间，我能够理解并访问结构中的底层变量，因为它们现在是有意义的，即 person-&amp;gt;Name，并且发现此特定的 person 类型对象具有名称变量“Bobby”！&lt;/p&gt;
+&lt;p&gt;这正是我们将对我们的&lt;code&gt;*data&lt;/code&gt;所做的！&lt;/p&gt;
+&lt;h3 id=&#34;数据中包含什么&#34;&gt;数据中包含什么？&lt;/h3&gt;
+&lt;p&gt;因此，第一步是确定数据是否以以太网帧开头！几乎所有传输的数据都以以太网帧开头，这相当简单，但其作用是具有源和目标硬件地址（无论虚拟化/容器化/有线网络还是 WiFi 如何）。因此，我们的第一步是将我们的&lt;code&gt;*data&lt;/code&gt;转换为类型&lt;code&gt;ETHHDR&lt;/code&gt;，如果成功，我们现在将能够了解组成以太网头数据类型的变量。这些包括源和目标 MAC 地址，但更重要的是剩余数据的内容是什么。再次，在大多数情况下，以太网头之后的&lt;code&gt;*data&lt;/code&gt;内容通常是 IP 头，但我们将通过检查以太网帧的 TBD 变量来验证。&lt;/p&gt;
+&lt;p&gt;一旦我们验证下一组数据是 IP 头，我们将需要将以太网头之后的数据转换为 IPHDR 类型。一旦我们这样做，我们将能够访问 IP 特定的数据，例如源 IP（&lt;code&gt;saddr&lt;/code&gt;）或目标地址（&lt;code&gt;daddr&lt;/code&gt;），再次重要的是 IP 头包含一个变量，详细说明了 IP 头之后的数据是什么。这通常是 TCP 头或 UDP 头，但还有其他选择，例如 sctp 等。&lt;/p&gt;
+&lt;p&gt;一旦我们查看了 IP 头的内部并确定数据类型是 TCP（也可能是 UDP 或其他内容），我们将把以太网头和 IP 头之后的数据都转换为 TCP 头类型！（几乎完成了）。通过访问 TCP 头的内容，我们可以获得 TCP 特定的数据，例如源端口或目标端口，用于验证数据的有效性的校验和以及其他有用的变量。&lt;/p&gt;
+&lt;p&gt;现在我们几乎拥有一切，但是 TCP 头的长度可能是可变的，因此我们需要通过查看 tcl_len 变量来确定这一点，我们需要将其乘以 4。现在我们拥有了访问最终数据所需的一切！&lt;/p&gt;
+&lt;p&gt;因此，&lt;code&gt;*data&lt;/code&gt;指向数据的开头！我们已经确定了以太网头之后是 IP 头，最后是 TCP 头，这意味着`*data + 以太网头 + IP 头 + TCP 头 = 实际应用程序数据！&lt;/p&gt;
+&lt;h3 id=&#34;我们可以用这些信息做什么&#34;&gt;我们可以用这些信息做什么？&lt;/h3&gt;
+&lt;p&gt;当我们解析各种标头时，实际上在 OSI 模型的不同层次上解锁了越来越多的信息！&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;[第 2 层]&lt;/strong&gt; 以太网头为我们提供了源和目标硬件地址，我们可以使用此信息来潜在地阻止从我们知道危险的源 MAC 地址处理的帧。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;[第 3 层]&lt;/strong&gt; IP 头包含源和目标 IP 地址，再次，我们可以像防火墙一样运作，通过使用 eBPF 程序丢弃特定 IP 地址的所有流量。或者，我们可以根据 IP 地址重定向流量，或者甚至在这一层实施负载均衡逻辑，以将流量重定向到其他底层 IP 地址集合。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;[第 4 层]&lt;/strong&gt; TCP 或 UDP 标头定义了目标端口号，我们可以使用这些信息来确定应用程序协议是什么（即端口 80 通常意味着剩余的*data 可能是 HTTP 数据）。在这一层，我们通常会执行负载均衡等操作，基于目标（即在多个其他负载均衡器地址之间平衡）。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;[第 7 层]&lt;/strong&gt; 正如前面提到的，各种标头集合的末尾的数据是实际的应用程序数据，只要我们知道格式，我们也可以解析它。例如，如果外部 Web 浏览器尝试访问我的计算机上的&lt;code&gt;/index.html&lt;/code&gt;并附加了 eBPF 程序，我会解析到 TCP，然后确定它是端口 80，然后应用程序数据应该是 HTTP 格式。我可以通过查看应用程序数据的前三个字符（在所有标头之后）来验证这一点，使用以下伪代码：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nv&#34;&gt;ApplicationData&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; EthernetHDR + IPHDR + TCPHDR // 将所有标头长度相加以找到数据
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;If &lt;span class=&#34;o&#34;&gt;(&lt;/span&gt; data&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;ApplicationData&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;G&amp;#34;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; data&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;ApplicationData+1&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;E&amp;#34;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&amp;amp;&lt;/span&gt; data&lt;span class=&#34;o&#34;&gt;[&lt;/span&gt;ApplicationData+2&lt;span class=&#34;o&#34;&gt;]&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;=&lt;/span&gt; &lt;span class=&#34;s2&#34;&gt;&amp;#34;T&amp;#34;&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	// 这是一个HTTP GET请求
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;	// 做一些令人兴奋的事情
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;o&#34;&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;现在我们“有点”理解了这个逻辑，也许我们应该考虑实施一些代码来完成所有这些&amp;hellip;但这将是另一天的事情。&lt;/p&gt;
+</description>
+    </item>
+    
+    <item>
+      <title>云原生软件的关键用例安全保障之道</title>
+      <link>https://cloudnative.to/blog/securing-cloud-natives-most-important-use-cases/</link>
+      <pubDate>Wed, 10 Jan 2024 08:00:00 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/securing-cloud-natives-most-important-use-cases/</guid>
+      <description>&lt;p&gt;本文译自 &lt;a href=&#34;https://www.chainguard.dev/unchained/securing-cloud-natives-most-important-use-cases&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Securing cloud native’s most important use cases&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;摘要：云原生软件开发意味着为公有云和私有云的特性优化应用和环境。Chainguard 旨在提供不影响开发者体验的软件供应链安全工具，通过提供最小化、强化的容器镜像，让用户能够准确地扫描漏洞并消除 CVE 警报。本文介绍了 Chainguard Images 为 Istio 和 Cilium 这两个云原生基础技术提供的安全增强方案。&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;从根本上说，构建云原生软件意味着构建针对公共和私有云特性进行优化的应用程序和环境。开发云原生软件意味着管理一定程度的混乱，这不是所有类型的软件都需要的。&lt;/p&gt;
+&lt;p&gt;这在新的一年尤其重要，我们可以预期产品将趋向于优先考虑开发者体验，并且平台工程的崛起。良好的工程和工具使开发者可以专注于构建和创新。已经构建的所有内部开发者平台和即将推出的平台都需要尽量将基础设施管理从开发者那里抽象出来。&lt;/p&gt;
+&lt;p&gt;这正是 Chainguard 想要解决的问题领域，特别是在安全性和漏洞管理方面。我们致力于提供不妨碍开发者体验的工具，以确保软件供应链的安全。我们通过提供最小化、加固的容器镜像来实现这一目标，这使我们的用户可以获得准确的扫描结果，并将 CVE 收件箱警报降至零。&lt;/p&gt;
+&lt;h3 id=&#34;推出新的-chainguard-images-捆绑包适用于-cilium-和-istio&#34;&gt;推出新的 Chainguard Images 捆绑包，适用于 Cilium 和 Istio&lt;/h3&gt;
+&lt;p&gt;为了实现这一目标，我们密切关注最受欢迎的开源项目，但也关注那些如果经过加固，将为整个开源生态系统提供重要的安全改进的项目。为了在整个生态系统中产生最大的影响，我们应该帮助加固那些作为云原生软件基石的技术。Istio 和 Cilium 正是这样的明显示例，它们是云原生软件生态系统的基础构建模块之一。通过提供新的 Chainguard Images Istio 和 Cilium 捆绑包，我们为这些项目的用户提供了一个安全地将它们引入其构建流程的简便方法。&lt;/p&gt;
+&lt;p&gt;在任何给定的供应链中，有些原材料比其他原材料更为基础。如果这些原材料得到了妥善保护，那么这将对后续工作产生连锁效应（或者如果你愿意的话，可以说是对整个堆栈产生上下游影响）。&lt;/p&gt;
+&lt;p&gt;Cilium 和 Istio 技术都涵盖了对 Kubernetes 环境具有基础作用的各种用例。Cilium 和 Istio 是两个流行的工具，通过提供流量路由、负载平衡、服务发现等功能来帮助解决这些挑战。这些功能对于确保 Kubernetes 和其他云原生软件部署的顺利、高效和安全运行至关重要。最终，构建云原生软件意味着创建专为云设计的应用程序，而 Cilium 和 Istio 在帮助开发者实现这一目标方面发挥了关键作用。&lt;/p&gt;
+&lt;h3 id=&#34;istio-和-cilium-在云计算中不可或缺的作用&#34;&gt;Istio 和 Cilium 在云计算中不可或缺的作用&lt;/h3&gt;
+&lt;p&gt;根据 2022 年的 &lt;a href=&#34;https://www.cncf.io/reports/cncf-annual-survey-2022/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;CNCF 年度调查&lt;/a&gt;，Istio 是受访者中使用最广泛的服务网格，73% 的受访公司使用它。这种广泛的采用证明了 Istio 在解决各种服务管理挑战方面的有效性，使其成为现代企业寻求构建强大、安全和可扩展的微服务架构的重要工具。Istio 在 GitHub 上拥有超过 34,000 颗星星，使其成为 CNCF 中最受欢迎的项目之一。&lt;/p&gt;
+&lt;p&gt;从同一份 CNCF 调查中，有 47% 的受访者将 Cilium 作为他们容器编排平台（如 Kubernetes）的首选网络插件。它也受欢迎于网络安全领域，有 43% 的受访者将其用于此目的。eBPF 的未来和力量是不可思议的，所有人都同意这一点。&lt;/p&gt;
+&lt;p&gt;最近，我们推出了我们的新的 &lt;a href=&#34;https://images.chainguard.dev/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Chainguard Images 目录&lt;/a&gt;，这是一个公开可用的网站，用户可以在其中浏览我们库存中的所有镜像。在每个 Chainguard&lt;/p&gt;
+&lt;p&gt;Image 列表中，你将找到有关安装、基础设施、签名和 SBOM 的源数据的相关信息，以及更多其他相关信息。Chainguard Images 目录还包括一个新的&lt;a href=&#34;https://images.chainguard.dev/security&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;安全通报&lt;/a&gt;页面，显示用户已知的 CVE，修复的状态等信息。&lt;/p&gt;
+&lt;p&gt;如果你正在寻找更多关于如何在本地环境中启动 Chainguard Images Cilium 或 Istio 捆绑包的技术指导，请查看 Chainguard 工程师&lt;a href=&#34;https://www.linkedin.com/in/tcnghia/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Nghia Tran&lt;/a&gt;在 Chainguard Academy 上提供的这些方便入门的指南。非常感谢我们的朋友&lt;a href=&#34;https://www.linkedin.com/in/feroz-salam-372a4113/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Isovalent&lt;/a&gt;的 Feroz Salam 在 Cilium Images 方面给了我们帮助，以及多年来帮助我们的 Istio 的&lt;a href=&#34;https://www.linkedin.com/in/-johnhoward/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;John Howard&lt;/a&gt;！以下是指南：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&#34;https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/getting-started-istio/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开始使用 Istio&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&#34;https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/getting-started-cilium/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;开始使用 Cilium&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Chainguard Developer Images 提供了带有 &lt;code&gt;:latest&lt;/code&gt; 和 &lt;code&gt;:latest-dev&lt;/code&gt; 标签的免费镜像，供你在开发和测试环境中使用。在新的目录中，每个镜像页面还包括重要的特定于镜像的详细信息，例如版本标签和其他变体，如 FIPS 和长期支持（LTS），这些都适用于购买了这些解决方案的 Chainguard Images 客户。如果你想了解有关我们的 Production Images 中面向企业的功能的更多信息，请&lt;a href=&#34;https://www.chainguard.dev/contact&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;联系我们的团队&lt;/a&gt;。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>如何使用 Calico 构建和管理 Kubernetes Cluster Mesh</title>
