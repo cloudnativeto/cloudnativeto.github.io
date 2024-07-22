@@ -5,12 +5,145 @@
     <link>https://cloudnative.to/tag/ztunnel/</link>
       <atom:link href="https://cloudnative.to/tag/ztunnel/index.xml" rel="self" type="application/rss+xml" />
     <description>Ztunnel</description>
-    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Tue, 07 Mar 2023 19:00:00 +0800</lastBuildDate>
+    <generator>Wowchemy (https://wowchemy.com)</generator><language>zh</language><lastBuildDate>Mon, 22 Jul 2024 18:46:32 +0800</lastBuildDate>
     <image>
       <url>https://cloudnative.to/media/sharing.png</url>
       <title>Ztunnel</title>
       <link>https://cloudnative.to/tag/ztunnel/</link>
     </image>
+    
+    <item>
+      <title>无需 Kubernetes 测试 Kubernetes 网络实现</title>
+      <link>https://cloudnative.to/blog/ztunnel-testing/</link>
+      <pubDate>Mon, 22 Jul 2024 18:46:32 +0800</pubDate>
+      <guid>https://cloudnative.to/blog/ztunnel-testing/</guid>
+      <description>&lt;p&gt;由于在开发过程中我&lt;a href=&#34;https://blog.howardjohn.info/posts/ideal-ci/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;真的不喜欢等待&lt;/a&gt;，所以在构建 Ztunnel（一个为 Istio 的新&lt;a href=&#34;https://istio.io/latest/blog/2022/introducing-ambient-mesh/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;Ambient 模式&lt;/a&gt;设计的底层网络代理）时，我的首要任务之一便是确保测试的快速进行（包括运行和编写测试），并且易于调试。&lt;/p&gt;
+&lt;p&gt;这一任务颇为棘手，因为在大多数真实场景中，Ztunnel 高度依赖 Kubernetes。虽然它能够完全独立于 Kubernetes 运行，但许多关键代码路径的行为完全不同，使得仅通过这种方式进行测试变得不可行。&lt;/p&gt;
+&lt;p&gt;下图为典型的 Ztunnel 部署架构：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-ztunnel-架构概览&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;Ztunnel 架构概览&#34;
+           src=&#34;https://cloudnative.to/blog/ztunnel-testing/ztunnel-architecture.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      Ztunnel 架构概览
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在此架构中，用户将运行一个包含多个节点的 Kubernetes 集群。每个节点上都运行着一个 Ztunnel，配置了宿主机和每个 pod 的网络栈。&lt;/p&gt;
+&lt;p&gt;此外，Ztunnel 实际上进入了每个 pod 的网络命名空间，并代表其发送/接收流量。这一点非常奇特且酷炫，但也大大增加了测试的难度！（&lt;a href=&#34;https://www.youtube.com/watch?v=cuMeEhpyH5s&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;详细信息&lt;/a&gt;）&lt;/p&gt;
+&lt;h2 id=&#34;加速测试&#34;&gt;加速测试&lt;/h2&gt;
+&lt;p&gt;启动完整的 Kubernetes 环境、重建镜像、部署到每个节点的过程非常缓慢且难以调试。&lt;/p&gt;
+&lt;p&gt;黄金标准应该是将所有操作运行在一个简单的单一二进制文件中——仅需执行 &lt;code&gt;cargo test&lt;/code&gt;。这种方式避开了复杂的设置和缓慢的重建，并使调试变得轻而易举（当然，你可以将调试器连接到正在运行的 pod，但这很麻烦）。&lt;/p&gt;
+&lt;h2 id=&#34;设置网络&#34;&gt;设置网络&lt;/h2&gt;
+&lt;p&gt;如果我们去除无尽的抽象层，Kubernetes pods 实际上只是几个 Linux 命名空间和挂载的组合。Docker 在这方面管理得很好，&lt;a href=&#34;https://github.com/p8952/bocker&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;bash&lt;/a&gt;也可以。&lt;/p&gt;
+&lt;p&gt;我们特别关注的是&lt;a href=&#34;https://man7.org/linux/man-pages/man7/network_namespaces.7.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;网络命名空间&lt;/a&gt;，它可以实现网络栈的隔离。每个 pod 都有自己的网络命名空间，通过各种机制连接，允许与同一节点上的其他 pod、其他节点以及外部目的地通信。&lt;/p&gt;
+&lt;p&gt;好消息是创建网络命名空间非常简单。&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-shell&#34; data-lang=&#34;shell&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;$ sudo ip netns add testing
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们的最终目标是设置一系列的网络命名空间，外观与我们在 Kubernetes 上的真实架构类似：&lt;/p&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-所需的网络命名空间设置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;所需的网络命名空间设置&#34;
+           src=&#34;https://cloudnative.to/blog/ztunnel-testing/ztunnel-network-namespaces.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      所需的网络命名空间设置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;在网络命名空间之间建立连接稍微复杂一些。像 &lt;a href=&#34;https://www.cni.dev/docs/cnitool/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;&lt;code&gt;cnitool&lt;/code&gt;&lt;/a&gt; 这样的工具可以帮助我们完成（它实际上执行了一些 Kubernetes 环境中用于设置网络的相同逻辑，但作为 CLI 工具），但你也可以完全手动操作。我们选择了后者。&lt;/p&gt;
+&lt;p&gt;最终，我们的设置如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个测试都拥有自己的网络命名空间，通过一个桥接设备（&lt;code&gt;br0&lt;/code&gt;）来促进节点之间的流量。&lt;/li&gt;
+&lt;li&gt;每个节点配置了一个 &lt;code&gt;veth&lt;/code&gt; 设备。一端成为节点上的 &lt;code&gt;eth0&lt;/code&gt;，另一端连接到根命名空间中的 &lt;code&gt;br0&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;每个 pod 都配置了一个 &lt;code&gt;veth&lt;/code&gt; 设备。一端成为 pod 上的 &lt;code&gt;eth0&lt;/code&gt;，另一端位于节点网络命名空间中。&lt;/li&gt;
+&lt;li&gt;为每个 pod 设置路由以将流量发送到节点。&lt;/li&gt;
+&lt;li&gt;为每对节点设置路由，以实现跨节点流量。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+&lt;figure  id=&#34;figure-所需的网络连接设置&#34;&gt;
+  &lt;div class=&#34;d-flex justify-content-center&#34;&gt;
+    &lt;div class=&#34;w-100&#34; &gt;&lt;img alt=&#34;所需的网络连接设置&#34;
+           src=&#34;https://cloudnative.to/blog/ztunnel-testing/ztunnel-network-devices.svg&#34;
+           loading=&#34;lazy&#34; data-zoomable /&gt;&lt;/div&gt;
+  &lt;/div&gt;&lt;figcaption&gt;
+      所需的网络连接设置
+    &lt;/figcaption&gt;&lt;/figure&gt;
+&lt;/p&gt;
+&lt;p&gt;除了根命名空间/桥接设备外，这与许多现实世界中的 Kubernetes 集群的运行方式相同（在现实世界中，根命名空间是两台机器之间的物理网络）。&lt;/p&gt;
+&lt;p&gt;你可以在&lt;a href=&#34;https://github.com/istio/ztunnel/blob/34fce85a6a2b2a85eb170a04096731e2ea4e0e9f/src/test_helpers/netns.rs#L194&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;这里&lt;/a&gt;找到所有细节。&lt;/p&gt;
+&lt;h2 id=&#34;运行测试&#34;&gt;运行测试&lt;/h2&gt;
+&lt;p&gt;一旦我们有了这些命名空间，我们仍然需要一种实际使用它们的方法。幸运的是，Linux 允许在运行时更改当前命名空间线程（这是接下来重要的内容）。这让我们建立了一个基本的帮助函数（真实的代码稍微更复杂）：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-rust&#34; data-lang=&#34;rust&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;fn&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;run_in_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;namespace&lt;/span&gt;: &lt;span class=&#34;nc&#34;&gt;Namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;f&lt;/span&gt;: &lt;span class=&#34;nb&#34;&gt;Fn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;())&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;original_namespace&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get_current_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;enter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;original_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;enter&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;有了这个，我们可以轻松地从任意的“pods”或“nodes”执行代码。&lt;/p&gt;
+&lt;p&gt;然而，我们仍然面临一个问题。我们的所有代码都运行在 &lt;a href=&#34;https://tokio.rs/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;tokio&lt;/a&gt; 异步运行时中，它会根据需要将我们的各种任务安排到物理操作系统线程上（类似于 Go 运行时的工作方式）。由于网络命名空间是线程相关的，所以当我们的任务在线程之间跳转时，这一切都会崩溃。&lt;/p&gt;
+&lt;p&gt;幸运的是，Rust 给了我们比 Go 更多的关于异步运行时的灵活性——我们可以同时拥有多个！借此，我们能够构建一个能够异步执行 &lt;code&gt;run_in_namespace&lt;/code&gt;。对于我们想要执行的每个函数，我们启动一个新线程并构建一个专用的单线程异步运行时来处理它：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-rust&#34; data-lang=&#34;rust&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;k&#34;&gt;async&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;k&#34;&gt;fn&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;async_run_in_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;namespace&lt;/span&gt;: &lt;span class=&#34;nc&#34;&gt;Namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;f&lt;/span&gt;: &lt;span class=&#34;nc&#34;&gt;async&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;nb&#34;&gt;Fn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;())&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;thread&lt;/span&gt;::&lt;span class=&#34;n&#34;&gt;spawn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;move&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;run_in_namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;namespace&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;||&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;rt&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;tokio&lt;/span&gt;::&lt;span class=&#34;n&#34;&gt;runtime&lt;/span&gt;::&lt;span class=&#34;n&#34;&gt;Builder&lt;/span&gt;::&lt;span class=&#34;n&#34;&gt;new_current_thread&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;enable_all&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;build&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;rt&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;block_on&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;f&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;())&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;})&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;});&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;&lt;span class=&#34;w&#34;&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;我们为每个命名空间运行一次这个函数，因此这里的开销是最小的。如果我们想要运行许多小函数，可以在顶层构建一个抽象来发送工作到线程以执行。&lt;/p&gt;
+&lt;p&gt;我们需要的最后一件事是一种合理的方法来识别如何调用每个目的地。虽然它们都会被分配一个 IP（基于我们代码中的简单 IPAM 策略），但我们不希望每个测试都必须猜测 IP。为了处理这个问题，我们构建了一个简单的名称解析器。这就像 DNS，但简单得多：对于我们创建的每个“pod”，我们记录一个&lt;code&gt;name -&amp;gt; IP&lt;/code&gt;的映射，并允许查找 IP。&lt;/p&gt;
+&lt;p&gt;将所有这些放在一起，一个简单的测试启动了3个 pods（客户端、服务器和 ztunnel）在一个单一节点上看起来像这样：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-rust&#34; data-lang=&#34;rust&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;cp&#34;&gt;#[tokio::test]&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;k&#34;&gt;async&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;k&#34;&gt;fn&lt;/span&gt; &lt;span class=&#34;nf&#34;&gt;simple_test&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(){&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;ztunnel&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;manager&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;deploy_ztunnel&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;no&#34;&gt;DEFAULT_NODE&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;).&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;await&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;workload_builder&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;server&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;no&#34;&gt;DEFAULT_NODE&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;register&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;await&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;run_tcp_server&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;server&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;manager&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;workload_builder&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;client&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;no&#34;&gt;DEFAULT_NODE&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;register&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;()&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;k&#34;&gt;await&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;run_tcp_client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;client&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;manager&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;n&#34;&gt;resolve&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;s&#34;&gt;&amp;#34;server&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;))&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;?&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;;&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;// ... some assertions here }
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id=&#34;放弃权限&#34;&gt;放弃权限&lt;/h2&gt;
+&lt;p&gt;上述设置效果很好，但也带来了一些问题。&lt;/p&gt;
+&lt;p&gt;基本上设置的每一步都需要提升的 root 权限；这让简单的 &lt;code&gt;cargo test&lt;/code&gt; 案例的开箱即用变得乏味，通常也不可取。&lt;/p&gt;
+&lt;p&gt;此外，这会在主机环境中污染大量的命名空间。虽然我们有一些清理过程，但这些并不是100%可靠，可能会导致悬挂的命名空间阻碍未来的执行。&lt;/p&gt;
+&lt;p&gt;解决拥有太多命名空间的问题的方法？更多的命名空间！为此，我们需要的不仅仅是网络命名空间。&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://man7.org/linux/man-pages/man7/user_namespaces.7.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;用户命名空间&lt;/a&gt; 允许我们实质上假装是 UID 0 (root)，同时实际上将其映射回我们原始的 UID。这里的力量在于，在该命名空间中，我们可以做一些本来需要 root 权限的事情——特别是创建新的网络命名空间。&lt;/p&gt;
+&lt;p&gt;然而，我们不能做的一件事是修改主机-root 拥有的文件（这将是明显的权限违规）。尽管我们可能可以绕过它们，但我们在测试中使用的很多工具喜欢触摸 root 文件。这再次可以通过 &lt;a href=&#34;https://man7.org/linux/man-pages/man7/mount_namespaces.7.html&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;mount 命名空间&lt;/a&gt; 解决，它允许我们将我们拥有的文件绑定挂载到主机-root 拥有的文件上，而不会影响命名空间外的事物。&lt;/p&gt;
+&lt;p&gt;将所有这些放在一起，我们有这样的东西：&lt;/p&gt;
+&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-rust&#34; data-lang=&#34;rust&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;let&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;original_uid&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;n&#34;&gt;get_uid&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;();&lt;/span&gt;&lt;span class=&#34;w&#34;&gt; &lt;/span&gt;&lt;span class=&#34;c1&#34;&gt;// 首先，进入一个新的用户命名空间。 unshare(CloneFlags::CLONE_NEWUSER).unwrap(); // 将用户命名空间中的 root 映射到我们原始的 UID File::create(&amp;#34;/proc/self/uid_map&amp;#34;).write(format!(&amp;#34;0 {original_uid} 1&amp;#34;)); // 设置一个新的网络命名空间 unshare(CloneFlags::CLONE_NEWNET).unwrap(); // 设置一个新的挂载命名空间 unshare(CloneFlags::CLONE_NEWNS).unwrap(); // 将一个文件夹在我们的每个测试目录中挂载到 /var/run/netns mount(tmp_dir.join(&amp;#34;netns&amp;#34;), &amp;#34;/var/run/netns&amp;#34;, MS_BIND); // 一个方便手动调试的好帮手信息，如果需要的话。 let pid = get_pid(); eprintln!(&amp;#34;Starting test in {tmp_dir}. Debug with `sudo nsenter --mount --net -t {pid}`&amp;#34;);
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;如上所述，一个技巧是，进入命名空间是按线程进行的。我们需要在生成任何额外线程之前设置这一点。&lt;/p&gt;
+&lt;p&gt;Rust 实际上为我们提供了这样做的能力，但这意味着我们失去了 &lt;code&gt;#[tokio::test]&lt;/code&gt; 宏帮助。我们可以写自己的宏，但这有点痛苦。幸运的是，通过 &lt;a href=&#34;https://crates.io/crates/ctor&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;链接器的花招&lt;/a&gt; 我们可以迫使我们的代码在进程执行的非常早期运行。&lt;/p&gt;
+&lt;p&gt;Go 中的类似方法也有效（请参见 &lt;a href=&#34;https://github.com/howardjohn/unshare-go&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;我写的帮助库&lt;/a&gt;），实际上在那里是必需的，因为设置必须在 Go 运行时启动之前完成（这通常在任何用户代码运行之前很久）。&lt;/p&gt;
+&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;p&gt;有了所有这些设备，一个完整的测试只需要大约 200 毫秒。一切都在一个单一进程中运行，使调试变得轻而易举。所有的测试也都是完全隔离的，因此可以完全并行运行测试（包括相同的测试，用于压力测试以消除测试缺陷）。&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Istio Ambient Mesh 中基于 Rust 的 Ztunnel 组件介绍</title>
