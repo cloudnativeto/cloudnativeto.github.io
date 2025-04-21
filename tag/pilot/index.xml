@@ -18,18 +18,15 @@
       <pubDate>Thu, 21 Jun 2018 16:55:56 +0800</pubDate>
       <guid>https://cloudnativecn.com/blog/istio-service-mesh-pilot-xds-note/</guid>
       <description>&lt;blockquote&gt;
-&lt;p&gt;本文转载自&lt;a href=&#34;https://ninokop.github.io/2018/06/19/pilot-xDS/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;nino&amp;rsquo;s blog&lt;/a&gt;。&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;本文转载自&lt;a href=&#34;https://ninokop.github.io/2018/06/19/pilot-xDS/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;nino&amp;rsquo;s blog&lt;/a&gt;。&lt;/p&gt;&lt;/blockquote&gt;
 &lt;p&gt;本篇总结 pilot 的 xDS 常用接口，顺便浏览了部分 pilot 实现，下篇总结下 istio 的流量管理和服务发现的实现。简单来说 istio 做为管理面，集合了配置中心和服务中心两个功能，并把配置发现和服务发现以一组统一的 xDS 接口提供出来，数据面的 envoy 通过 xDS 获取需要的信息来做服务间通信和服务治理。&lt;/p&gt;
 &lt;h2 id=&#34;api-v1-reference&#34;&gt;api v1 reference&lt;/h2&gt;
 &lt;p&gt;Istio 中部署 pilot 的启动方式是&lt;code&gt;pilot-discovery discovery&lt;/code&gt;。初始化阶段依次 init 了各种模块，其中 discovery service 就是 xDS 相关实现。&lt;a href=&#34;https://www.envoyproxy.io/docs/envoy/latest/&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy API reference&lt;/a&gt; 可以查到 v1 和 v2 两个版本的 API 文档。&lt;a href=&#34;https://github.com/envoyproxy/go-control-plane&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;envoy control plane&lt;/a&gt; 给了 v2 grpc 接口相关的数据结构和接口。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;&lt;a href=&#34;https://github.com/ninokop/nino-notes/blob/master/istio/pilot-xDS.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;pilot-xDS&lt;/a&gt;是几个月前 0.6.0 版本的环境上实验的接口，今天在 0.8.0 上跑发现 RDS 和 CDS 都查不到配置了，心好累。追到对应版本的代码发现因为 routerule 的配置升级到 v1alpha3 routing API 之后，APIV1 只支持原来 route rule 配置，APIV2 才支持 virtual service 相关配置，所以 0.8.0 环境上 RDS 查不到信息。&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/ninokop/nino-notes/blob/master/istio/pilot-xDS.md&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;pilot-xDS&lt;/a&gt;是几个月前 0.6.0 版本的环境上实验的接口，今天在 0.8.0 上跑发现 RDS 和 CDS 都查不到配置了，心好累。追到对应版本的代码发现因为 routerule 的配置升级到 v1alpha3 routing API 之后，APIV1 只支持原来 route rule 配置，APIV2 才支持 virtual service 相关配置，所以 0.8.0 环境上 RDS 查不到信息。&lt;/p&gt;&lt;/blockquote&gt;
 &lt;h3 id=&#34;sds&#34;&gt;sDS&lt;/h3&gt;
 &lt;blockquote&gt;
-&lt;p&gt;&lt;strong&gt;Tips&lt;/strong&gt; 最初看 xDS 的文档的时候，非常疑惑这些接口里的 service-key service-node cluster-name 到底是什么含义，在 0.6.0 版本中有个 cache_stats 接口，只要 envoy 调用过，这次查询记录就可以在 cache_stats 中看到。本节记录每个字段的含义和查询方式。&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Tips&lt;/strong&gt; 最初看 xDS 的文档的时候，非常疑惑这些接口里的 service-key service-node cluster-name 到底是什么含义，在 0.6.0 版本中有个 cache_stats 接口，只要 envoy 调用过，这次查询记录就可以在 cache_stats 中看到。本节记录每个字段的含义和查询方式。&lt;/p&gt;&lt;/blockquote&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://xx/v1/registration
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://xx/v1/registration/reviews.nino.svc.cluster.local&lt;span class=&#34;se&#34;&gt;\|&lt;/span&gt;http
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://xx/v1/registration/reviews.nino.svc.cluster.local&lt;span class=&#34;se&#34;&gt;\|&lt;/span&gt;http&lt;span class=&#34;se&#34;&gt;\|&lt;/span&gt;&lt;span class=&#34;nv&#34;&gt;version&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;=&lt;/span&gt;v2
@@ -56,8 +53,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;cds&#34;&gt;cDS&lt;/h3&gt;
 &lt;p&gt;cDS 的接口里的 cluster_name 和 service_node 可以通过 envoy 启动参数配置。其中 cluster_name 可以通过 serviceCluster 配置，service_node 默认通过 ENVOY_TYPE、POD_NAME、POD_NAMESPACE 和 INSTANCE_IP 这些环境变量合成。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;/v1/{:cluster_name}/{:service_node}&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;/v1/{:cluster_name}/{:service_node}&lt;/p&gt;&lt;/blockquote&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://xx/v1/clusters/productpage/sidecar~10.244.0.40~productpage-v1-
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;8666ffbd7c-mf5f4.nino~nino.svc.cluster.local
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
@@ -92,8 +88,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;rds&#34;&gt;rDS&lt;/h3&gt;
 &lt;p&gt;接口类似 cDS，通过 istioctl 创建了 route rule 之后可以通过 routes 查到结果。下面的例子是发布了关于 reviews 服务的权重规则。可以通过以下 RDS 接口查到对应的权重规则。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;/v1/{:route_config_name}/{:cluster_name}/{:service_node}&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;/v1/{:route_config_name}/{:cluster_name}/{:service_node}&lt;/p&gt;&lt;/blockquote&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-bash&#34; data-lang=&#34;bash&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;curl http://xx/v1/routes/9080/productpage/sidecar~10.244.0.40~
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;productpage-v1-8666ffbd7c-mf5f4.nino~nino.svc.cluster.local
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-json&#34; data-lang=&#34;json&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
@@ -232,8 +227,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;这个 ResourceNames 支持两种格式，其中 v1 和 version=v1 可以没有，这个代表 labels 和新版定义的 subsets。eds 的解析里兼容两个版本的解析方式。&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;outbound|http|v1|istioserver.pilot.svc.cluster.local&lt;/p&gt;
-&lt;p&gt;istioserver.pilot.svc.cluster.local|http|version=v1&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;istioserver.pilot.svc.cluster.local|http|version=v1&lt;/p&gt;&lt;/blockquote&gt;
 &lt;p&gt;&lt;strong&gt;istio/pilot/pkg/proxy/envoy/v2/eds.go&lt;/strong&gt;&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;xds&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;xdsapi&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewEndpointDiscoveryServiceClient&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;edsstr&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;err&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;xds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;StreamEndpoints&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;context&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Background&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;())&lt;/span&gt;
@@ -247,16 +241,16 @@
 &lt;p&gt;&lt;strong&gt;github.com/envoyproxy/go-control-plane/envoy/api/v2/eds.pb.go&lt;/strong&gt;&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ClusterLoadAssignment&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;struct&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;ClusterName&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;string&lt;/span&gt; 
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// List of endpoints to load balance to.
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;Endpoints&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;envoy_api_v2_endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;LocalityLbEndpoints&lt;/span&gt; 
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Load balancing policy settings.
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nx&#34;&gt;Policy&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ClusterLoadAssignment_Policy&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// List of endpoints to load balance to.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;Endpoints&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;[]&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;envoy_api_v2_endpoint&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;LocalityLbEndpoints&lt;/span&gt; 
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// Load balancing policy settings.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;Policy&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;ClusterLoadAssignment_Policy&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;ads-grpc&#34;&gt;ads grpc&lt;/h3&gt;
 &lt;p&gt;查询 eds 还有另一种方式 ads，即 Aggregated Discovery Service，它封装了下面这个接口。istio 在实现过程中根据 typeUrl 识别 xDS 的类别。除了 eds 以外，其他 lds rds cds 都是由 ads 集成的，没有单独的 xds 接口了。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;kd&#34;&gt;type&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;AggregatedDiscoveryServiceServer&lt;/span&gt; &lt;span class=&#34;kd&#34;&gt;interface&lt;/span&gt; &lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// This is a gRPC-only API.
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;c1&#34;&gt;&lt;/span&gt;    &lt;span class=&#34;nf&#34;&gt;StreamAggregatedResources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;AggregatedDiscoveryService_StreamAggregatedResourcesServer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;error&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;c1&#34;&gt;// This is a gRPC-only API.&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nf&#34;&gt;StreamAggregatedResources&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;AggregatedDiscoveryService_StreamAggregatedResourcesServer&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt; &lt;span class=&#34;kt&#34;&gt;error&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;当类型选择为 EndpointType 时，查询结果跟 eds 一致，不过 ads 接口要求 NodeID 必须在 pilot 缓存中存在。&lt;/p&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;xds&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;:=&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;ads&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;NewAggregatedDiscoveryServiceClient&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;conn&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;)&lt;/span&gt;
@@ -273,8 +267,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h3 id=&#34;cds-http-debug&#34;&gt;cds http debug&lt;/h3&gt;
 &lt;p&gt;通过 cdsz 可以看到每个 nodeID 对应的 clusters 的配置，如果系统中用户没有发布 subnets，从 cds 实际上查不到带 tag 或者说带 version 的信息。&lt;/p&gt;
 &lt;blockquote&gt;
-&lt;p&gt;curl &lt;a href=&#34;http://10.99.241.12:8080/debug/cdsz&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://10.99.241.12:8080/debug/cdsz&lt;/a&gt;&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;curl &lt;a href=&#34;http://10.99.241.12:8080/debug/cdsz&#34; target=&#34;_blank&#34; rel=&#34;noopener&#34;&gt;http://10.99.241.12:8080/debug/cdsz&lt;/a&gt;&lt;/p&gt;&lt;/blockquote&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s&#34;&gt;&amp;#34;name&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;outbound|8084||istioserver.pilot.svc.cluster.local&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;  &lt;span class=&#34;s&#34;&gt;&amp;#34;type&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;s&#34;&gt;&amp;#34;EDS&amp;#34;&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;,&lt;/span&gt;
@@ -319,8 +312,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;ValidateClusters&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;*&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;google_protobuf&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;BoolValue&lt;/span&gt; 
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;p&#34;&gt;}&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;blockquote&gt;
-&lt;p&gt;看了数据结构注释，在 RDS 当中 ResourceName 填的是 routeConfiguration 的名字。&lt;/p&gt;
-&lt;/blockquote&gt;
+&lt;p&gt;看了数据结构注释，在 RDS 当中 ResourceName 填的是 routeConfiguration 的名字。&lt;/p&gt;&lt;/blockquote&gt;
 &lt;div class=&#34;highlight&#34;&gt;&lt;pre tabindex=&#34;0&#34; class=&#34;chroma&#34;&gt;&lt;code class=&#34;language-go&#34; data-lang=&#34;go&#34;&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;&lt;span class=&#34;nx&#34;&gt;rds&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Send&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(&lt;/span&gt;&lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;xdsapi&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;DiscoveryRequest&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;ResponseNonce&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;nx&#34;&gt;time&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;Now&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;().&lt;/span&gt;&lt;span class=&#34;nf&#34;&gt;String&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;(),&lt;/span&gt;
 &lt;/span&gt;&lt;/span&gt;&lt;span class=&#34;line&#34;&gt;&lt;span class=&#34;cl&#34;&gt;    &lt;span class=&#34;nx&#34;&gt;Node&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;:&lt;/span&gt; &lt;span class=&#34;o&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;envoy_api_v2_core1&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;.&lt;/span&gt;&lt;span class=&#34;nx&#34;&gt;Node&lt;/span&gt;&lt;span class=&#34;p&#34;&gt;{&lt;/span&gt;
